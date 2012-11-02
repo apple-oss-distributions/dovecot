@@ -1,8 +1,8 @@
-Pre-Authentificated Sessions
-============================
+Pre-Authenticated Sessions
+==========================
 
 For debugging purpose or to perform IMAP actions on-behalf of an user, you can
-use pre-authentificated sessions. You can do this by simply running:
+use pre-authenticated sessions. You can do this by simply running:
 
 ---%<-------------------------------------------------------------------------
 /usr/local/libexec/dovecot/imap
@@ -19,4 +19,4 @@ login, you can execute
 Of course, you may need to run the above command as root if it needs to change
 process's uid/gid.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

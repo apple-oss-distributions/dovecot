@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension envelope
@@ -87,7 +87,8 @@ static const struct sieve_command_def envelope_test = {
 	2, 0, FALSE, FALSE,
 	tst_envelope_registered, 
 	NULL,
-	tst_envelope_validate, 
+	tst_envelope_validate,
+	NULL, 
 	tst_envelope_generate, 
 	NULL 
 };

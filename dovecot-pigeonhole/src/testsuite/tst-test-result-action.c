@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "sieve-common.h"
@@ -42,7 +42,8 @@ const struct sieve_command_def tst_test_result_action = {
 	1, 0, FALSE, FALSE,
 	tst_test_result_action_registered, 
 	NULL,
-	tst_test_result_action_validate, 
+	tst_test_result_action_validate,
+	NULL,
 	tst_test_result_action_generate, 
 	NULL 
 };

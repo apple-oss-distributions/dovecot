@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -19,8 +19,6 @@
 #include "sieve-binary.h"
 
 #include "sieve-tool.h"
-
-#include "sieve-ext-debug.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -464,8 +462,8 @@ int main(int argc, char **argv)
 	/* Finish tool initialization */
 	svinst = sieve_tool_init_finish(sieve_tool, TRUE);
 
-	/* Register Sieve debug extension */
-	(void) sieve_extension_register(svinst, &debug_extension, TRUE);
+        /* Enable debug extension */
+        sieve_enable_debug_extension(svinst);
 
 	/* Create error handler */
 	ehandler = sieve_stderr_ehandler_create(svinst, 0);

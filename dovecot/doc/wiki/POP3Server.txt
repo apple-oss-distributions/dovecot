@@ -87,11 +87,15 @@ UIDVALIDITY and UID values. The default in Dovecot v1.1+ is:
 pop3_uidl_format = %08Xu%08Xv
 ---%<-------------------------------------------------------------------------
 
-Another good default for dbox is to use the message's global UID:
+Another good default is to use the message's global UID:
 
 ---%<-------------------------------------------------------------------------
 pop3_uidl_format = %g
 ---%<-------------------------------------------------------------------------
+
+However, note that GUIDs may not be unique, as the GUID does not change when a
+message is copied.  (While copying is not possible using only POP3, it can be
+done using IMAP, Sieve, or doveadm.)
 
 Some formats, such as the previous default '%v.%u', seem to have problems with
 Outlook 2003.
@@ -142,4 +146,4 @@ If you use <Dovecot's deliver> [LDA.txt] or IMAP APPEND and 'pop3_uidl_format =
 %m', it always appends the X-Delivery-ID: header to saved mailbox. Any existing
 X-Delivery-ID: headers in the saved mails are dropped.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

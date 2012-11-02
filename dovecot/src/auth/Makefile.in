@@ -138,6 +138,7 @@ am_auth_OBJECTS = auth.$(OBJEXT) auth-cache.$(OBJEXT) \
 	userdb-passwd.$(OBJEXT) userdb-passwd-file.$(OBJEXT) \
 	userdb-prefetch.$(OBJEXT) userdb-static.$(OBJEXT) \
 	userdb-vpopmail.$(OBJEXT) userdb-sql.$(OBJEXT) \
+	DSlibinfoMIGUser.$(OBJEXT) \
 	$(am__objects_2)
 auth_OBJECTS = $(am_auth_OBJECTS)
 am__DEPENDENCIES_2 = libpassword.a ../lib-ntlm/libntlm.a \
@@ -176,7 +177,7 @@ ACLOCAL = @ACLOCAL@
 ACLOCAL_AMFLAGS = @ACLOCAL_AMFLAGS@
 AMTAR = @AMTAR@
 AR = @AR@
-AUTH_CFLAGS = @AUTH_CFLAGS@
+AUTH_CFLAGS =  -I/usr/local/include/opendirectory @AUTH_CFLAGS@
 AUTH_LIBS = @AUTH_LIBS@
 AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
@@ -367,6 +368,7 @@ auth_LDFLAGS = -export-dynamic \
 	-F/System/Library/PrivateFrameworks \
 	-framework CoreDaemon \
 	-framework CoreFoundation \
+	-framework SystemConfiguration \
 	-framework OpenDirectory
 
 libpassword_a_SOURCES = \
@@ -444,6 +446,7 @@ auth_SOURCES = \
 	userdb-static.c \
 	userdb-vpopmail.c \
 	userdb-sql.c \
+	DSlibinfoMIGUser.c \
 	$(ldap_sources)
 
 headers = \
@@ -695,6 +698,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/userdb-static.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/userdb-vpopmail.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/userdb.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/DSlibinfoMIGUser.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(COMPILE) -MT $@ -MD -MP -MF $(DEPDIR)/$*.Tpo -c -o $@ $<

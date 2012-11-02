@@ -1,5 +1,6 @@
 #include "lib.h"
 #include "array.h"
+#include "ipwd.h"
 #include "var-expand.h"
 #include "file-lock.h"
 #include "fsync-mode.h"
@@ -796,6 +797,7 @@ extern const struct setting_parser_info master_setting_parser_info;
 struct master_settings {
 	const char *base_dir;
 	const char *libexec_dir;
+	const char *instance_name;
 	const char *import_environment;
 	const char *protocols;
 	const char *listen;
@@ -834,14 +836,17 @@ struct login_settings {
 	const char *ssl_key_password;
 	const char *ssl_cipher_list;
 	const char *ssl_cert_username_field;
+	const char *ssl_client_cert;
+	const char *ssl_client_key;
 	bool ssl_verify_client_cert;
 	bool auth_ssl_require_client_cert;
 	bool auth_ssl_username_from_cert;
 	bool verbose_ssl;
 
 	bool disable_plaintext_auth;
-	bool verbose_auth;
+	bool auth_verbose;
 	bool auth_debug;
+	bool auth_debug_passwords;
 	bool verbose_proctitle;
 
 	unsigned int mail_max_userip_connections;
@@ -886,6 +891,8 @@ struct imap_settings {
 extern const struct setting_parser_info *imap_login_setting_roots[];
 struct imap_login_settings {
 	const char *imap_capability;
+	const char *imap_id_send;
+	const char *imap_id_log;
 #ifdef APPLE_OS_X_SERVER
 	const char *aps_topic;
 #endif
@@ -898,6 +905,9 @@ struct doveadm_settings {
 	const char *mail_plugin_dir;
 	const char *doveadm_socket_path;
 	unsigned int doveadm_worker_count;
+	unsigned int doveadm_proxy_port;
+	const char *doveadm_password;
+	const char *doveadm_allowed_commands;
 
 	ARRAY_DEFINE(plugin_envs, const char *);
 };
@@ -1232,7 +1242,7 @@ struct service_settings pop3_login_service_settings = {
 	.client_limit = 0,
 	.service_count = 1,
 	.idle_kill = 0,
-	.vsz_limit = 64*1024*1024,
+	.vsz_limit = (uoff_t)-1,
 
 	.unix_listeners = ARRAY_INIT,
 	.fifo_listeners = ARRAY_INIT,
@@ -1434,6 +1444,7 @@ master_settings_verify(void *_set, pool_t pool, const char **error_r)
 	struct service_settings *const *services;
 	const char *const *strings;
 	ARRAY_TYPE(const_string) all_listeners;
+	struct passwd pw;
 	unsigned int i, j, count, len, client_limit, process_limit;
 	unsigned int max_auth_client_processes, max_anvil_client_processes;
 
@@ -1451,6 +1462,17 @@ master_settings_verify(void *_set, pool_t pool, const char **error_r)
 	if (set->last_valid_gid != 0 &&
 	    set->first_valid_gid > set->last_valid_gid) {
 		*error_r = "first_valid_gid can't be larger than last_valid_gid";
+		return FALSE;
+	}
+
+	if (i_getpwnam(set->default_login_user, &pw) == 0) {
+		*error_r = t_strdup_printf("default_login_user doesn't exist: %s",
+					   set->default_login_user);
+		return FALSE;
+	}
+	if (i_getpwnam(set->default_internal_user, &pw) == 0) {
+		*error_r = t_strdup_printf("default_internal_user doesn't exist: %s",
+					   set->default_internal_user);
 		return FALSE;
 	}
 
@@ -1733,6 +1755,7 @@ const struct setting_parser_info service_setting_parser_info = {
 static const struct setting_define master_setting_defines[] = {
 	DEF(SET_STR, base_dir),
 	DEF(SET_STR, libexec_dir),
+	DEF(SET_STR, instance_name),
 	DEF(SET_STR, import_environment),
 	DEF(SET_STR, protocols),
 	DEF(SET_STR, listen),
@@ -1758,6 +1781,7 @@ static const struct setting_define master_setting_defines[] = {
 struct master_settings master_default_settings = {
 	.base_dir = PKG_RUNDIR,
 	.libexec_dir = PKG_LIBEXECDIR,
+	.instance_name = PACKAGE,
 	.import_environment = "TZ" ENV_SYSTEMD ENV_GDB,
 	.protocols = "imap pop3 lmtp",
 	.listen = "*, ::",
@@ -1835,6 +1859,11 @@ static bool login_settings_check(void *_set, pool_t pool, const char **error_r)
 		set->ssl_verify_client_cert = TRUE;
 	}
 
+	if (set->auth_debug_passwords)
+		set->auth_debug = TRUE;
+	if (set->auth_debug)
+		set->auth_verbose = TRUE;
+
 	if (strcmp(set->ssl, "no") == 0) {
 		/* disabled */
 	} else if (strcmp(set->ssl, "yes") == 0) {
@@ -1872,13 +1901,15 @@ static const struct setting_define login_setting_defines[] = {
 	DEF(SET_STR, ssl_key_password),
 	DEF(SET_STR, ssl_cipher_list),
 	DEF(SET_STR, ssl_cert_username_field),
+	DEF(SET_STR, ssl_client_cert),
+	DEF(SET_STR, ssl_client_key),
 	DEF(SET_BOOL, ssl_verify_client_cert),
 	DEF(SET_BOOL, auth_ssl_require_client_cert),
 	DEF(SET_BOOL, auth_ssl_username_from_cert),
 	DEF(SET_BOOL, verbose_ssl),
 
 	DEF(SET_BOOL, disable_plaintext_auth),
-	DEF(SET_BOOL, verbose_auth),
+	DEF(SET_BOOL, auth_verbose),
 	DEF(SET_BOOL, auth_debug),
 	DEF(SET_BOOL, verbose_proctitle),
 
@@ -1903,13 +1934,15 @@ static const struct login_settings login_default_settings = {
 	.ssl_key_password = "",
 	.ssl_cipher_list = "ALL:!LOW:!SSLv2:!EXP:!aNULL",
 	.ssl_cert_username_field = "commonName",
+	.ssl_client_cert = "",
+	.ssl_client_key = "",
 	.ssl_verify_client_cert = FALSE,
 	.auth_ssl_require_client_cert = FALSE,
 	.auth_ssl_username_from_cert = FALSE,
 	.verbose_ssl = FALSE,
 
 	.disable_plaintext_auth = TRUE,
-	.verbose_auth = FALSE,
+	.auth_verbose = FALSE,
 	.auth_debug = FALSE,
 	.verbose_proctitle = FALSE,
 
@@ -1981,10 +2014,10 @@ struct service_settings lmtp_service_settings = {
 
 	.process_min_avail = 0,
 	.process_limit = 0,
-	.client_limit = 0,
+	.client_limit = 1,
 	.service_count = 0,
 	.idle_kill = 0,
-	.vsz_limit = 0,
+	.vsz_limit = (uoff_t)-1,
 
 	.unix_listeners = { { &lmtp_unix_listeners_buf,
 			      sizeof(lmtp_unix_listeners[0]) } },
@@ -2019,6 +2052,45 @@ const struct setting_parser_info lmtp_setting_parser_info = {
 	.parent_offset = (size_t)-1,
 
 	.dependencies = lmtp_setting_dependencies
+};
+/* ../../src/ipc/ipc-settings.c */
+/* <settings checks> */
+static struct file_listener_settings ipc_unix_listeners_array[] = {
+	{ "ipc", 0600, "", "" },
+	{ "login/ipc-proxy", 0600, "$default_login_user", "" }
+};
+static struct file_listener_settings *ipc_unix_listeners[] = {
+	&ipc_unix_listeners_array[0],
+	&ipc_unix_listeners_array[1]
+};
+static buffer_t ipc_unix_listeners_buf = {
+	ipc_unix_listeners, sizeof(ipc_unix_listeners), { 0, }
+};
+/* </settings checks> */
+struct service_settings ipc_service_settings = {
+	.name = "ipc",
+	.protocol = "",
+	.type = "",
+	.executable = "ipc",
+	.user = "$default_internal_user",
+	.group = "",
+	.privileged_group = "",
+	.extra_groups = "",
+	.chroot = "empty",
+
+	.drop_priv_before_exec = FALSE,
+
+	.process_min_avail = 0,
+	.process_limit = 1,
+	.client_limit = 0,
+	.service_count = 0,
+	.idle_kill = 0,
+	.vsz_limit = (uoff_t)-1,
+
+	.unix_listeners = { { &ipc_unix_listeners_buf,
+			      sizeof(ipc_unix_listeners[0]) } },
+	.fifo_listeners = ARRAY_INIT,
+	.inet_listeners = ARRAY_INIT
 };
 /* ../../src/imap/imap-settings.c */
 /* <settings checks> */
@@ -2198,7 +2270,7 @@ struct service_settings imap_login_service_settings = {
 	.client_limit = 0,
 	.service_count = 1,
 	.idle_kill = 0,
-	.vsz_limit = 64*1024*1024,
+	.vsz_limit = (uoff_t)-1,
 
 	.unix_listeners = ARRAY_INIT,
 	.fifo_listeners = ARRAY_INIT,
@@ -2210,6 +2282,8 @@ struct service_settings imap_login_service_settings = {
 	{ type, #name, offsetof(struct imap_login_settings, name), NULL }
 static const struct setting_define imap_login_setting_defines[] = {
 	DEF(SET_STR, imap_capability),
+	DEF(SET_STR, imap_id_send),
+	DEF(SET_STR, imap_id_log),
 #ifdef APPLE_OS_X_SERVER
 	DEF(SET_STR, aps_topic),
 #endif
@@ -2218,6 +2292,8 @@ static const struct setting_define imap_login_setting_defines[] = {
 };
 static const struct imap_login_settings imap_login_default_settings = {
 	.imap_capability = "",
+	.imap_id_send = "",
+	.imap_id_log = "",
 #ifdef APPLE_OS_X_SERVER
 	.aps_topic = ""
 #endif
@@ -2301,6 +2377,9 @@ static const struct setting_define doveadm_setting_defines[] = {
 	DEF(SET_STR, mail_plugin_dir),
 	DEF(SET_STR, doveadm_socket_path),
 	DEF(SET_UINT, doveadm_worker_count),
+	DEF(SET_UINT, doveadm_proxy_port),
+	DEF(SET_STR, doveadm_password),
+	DEF(SET_STR, doveadm_allowed_commands),
 
 	{ SET_STRLIST, "plugin", offsetof(struct doveadm_settings, plugin_envs), NULL },
 
@@ -2312,6 +2391,9 @@ const struct doveadm_settings doveadm_default_settings = {
 	.mail_plugin_dir = MODULEDIR,
 	.doveadm_socket_path = "doveadm-server",
 	.doveadm_worker_count = 0,
+	.doveadm_proxy_port = 0,
+	.doveadm_password = "",
+	.doveadm_allowed_commands = "",
 
 	.plugin_envs = ARRAY_INIT
 };
@@ -2911,6 +2993,7 @@ static struct service_settings *config_all_services[] = {
 	&pop3_login_service_settings,
 	&log_service_settings,
 	&lmtp_service_settings,
+	&ipc_service_settings,
 	&imap_service_settings,
 	&imap_login_service_settings,
 	&doveadm_service_settings,

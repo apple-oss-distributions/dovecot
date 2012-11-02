@@ -18,5 +18,7 @@
 	<array>
 		<string>/var/db/dovecot.fts.update</string>
 	</array>
+	<key>PreventsSleep</key>
+	<true/>
 </dict>
 </plist>

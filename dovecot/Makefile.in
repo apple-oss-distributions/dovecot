@@ -85,10 +85,10 @@ am__nobase_list = $(am__nobase_strip_setup); \
 am__base_list = \
   sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
   sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
-am__installdirs = "$(DESTDIR)$(aclocaldir)" "$(DESTDIR)$(pkglibdir)" \
+am__installdirs = "$(DESTDIR)$(aclocaldir)" \
 	"$(DESTDIR)$(systemdsystemunitdir)" \
 	"$(DESTDIR)$(pkgincludedir)" "$(DESTDIR)$(pkgincludedir)"
-DATA = $(aclocal_DATA) $(pkglib_DATA) $(systemdsystemunit_DATA)
+DATA = $(aclocal_DATA) $(noinst_DATA) $(systemdsystemunit_DATA)
 HEADERS = $(dist_pkginclude_HEADERS) $(nodist_pkginclude_HEADERS)
 RECURSIVE_CLEAN_TARGETS = mostlyclean-recursive clean-recursive	\
   distclean-recursive maintainer-clean-recursive
@@ -315,18 +315,18 @@ dist_pkginclude_HEADERS = \
 
 EXTRA_DIST = COPYING.LGPL COPYING.MIT ChangeLog is-tagged.py \
 	run-test.sh update-version.sh $(conf_DATA) $(am__append_1)
-datafiles = \
-	dovecot-config
-
+noinst_DATA = dovecot-config
 nodist_pkginclude_HEADERS = config.h
-pkglib_DATA = $(datafiles)
 aclocal_DATA = dovecot.m4
 @HAVE_SYSTEMD_TRUE@systemdsystemunit_DATA = \
 @HAVE_SYSTEMD_TRUE@        dovecot.socket \
 @HAVE_SYSTEMD_TRUE@        dovecot.service
 
 CLEANFILES = $(datafiles) $(am__append_2)
-DISTCLEANFILES = $(top_builddir)/dovecot-version.h
+DISTCLEANFILES = \
+	$(top_builddir)/dovecot-version.h \
+	$(top_builddir)/dovecot-config
+
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-recursive
 
@@ -415,26 +415,6 @@ uninstall-aclocalDATA:
 	test -n "$$files" || exit 0; \
 	echo " ( cd '$(DESTDIR)$(aclocaldir)' && rm -f" $$files ")"; \
 	cd "$(DESTDIR)$(aclocaldir)" && rm -f $$files
-install-pkglibDATA: $(pkglib_DATA)
-	@$(NORMAL_INSTALL)
-	test -z "$(pkglibdir)" || $(MKDIR_P) "$(DESTDIR)$(pkglibdir)"
-	@list='$(pkglib_DATA)'; test -n "$(pkglibdir)" || list=; \
-	for p in $$list; do \
-	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
-	  echo "$$d$$p"; \
-	done | $(am__base_list) | \
-	while read files; do \
-	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pkglibdir)'"; \
-	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pkglibdir)" || exit $$?; \
-	done
-
-uninstall-pkglibDATA:
-	@$(NORMAL_UNINSTALL)
-	@list='$(pkglib_DATA)'; test -n "$(pkglibdir)" || list=; \
-	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
-	test -n "$$files" || exit 0; \
-	echo " ( cd '$(DESTDIR)$(pkglibdir)' && rm -f" $$files ")"; \
-	cd "$(DESTDIR)$(pkglibdir)" && rm -f $$files
 install-systemdsystemunitDATA: $(systemdsystemunit_DATA)
 	@$(NORMAL_INSTALL)
 	test -z "$(systemdsystemunitdir)" || $(MKDIR_P) "$(DESTDIR)$(systemdsystemunitdir)"
@@ -812,7 +792,7 @@ check: check-recursive
 all-am: Makefile $(DATA) $(HEADERS) config.h
 installdirs: installdirs-recursive
 installdirs-am:
-	for dir in "$(DESTDIR)$(aclocaldir)" "$(DESTDIR)$(pkglibdir)" "$(DESTDIR)$(systemdsystemunitdir)" "$(DESTDIR)$(pkgincludedir)" "$(DESTDIR)$(pkgincludedir)"; do \
+	for dir in "$(DESTDIR)$(aclocaldir)" "$(DESTDIR)$(systemdsystemunitdir)" "$(DESTDIR)$(pkgincludedir)" "$(DESTDIR)$(pkgincludedir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: install-recursive
@@ -871,7 +851,7 @@ install-dvi: install-dvi-recursive
 
 install-dvi-am:
 
-install-exec-am: install-pkglibDATA
+install-exec-am:
 	@$(NORMAL_INSTALL)
 	$(MAKE) $(AM_MAKEFLAGS) install-exec-hook
 install-html: install-html-recursive
@@ -913,7 +893,7 @@ ps: ps-recursive
 ps-am:
 
 uninstall-am: uninstall-aclocalDATA uninstall-dist_pkgincludeHEADERS \
-	uninstall-nodist_pkgincludeHEADERS uninstall-pkglibDATA \
+	uninstall-nodist_pkgincludeHEADERS \
 	uninstall-systemdsystemunitDATA
 
 .MAKE: $(RECURSIVE_CLEAN_TARGETS) $(RECURSIVE_TARGETS) all \
@@ -932,14 +912,14 @@ uninstall-am: uninstall-aclocalDATA uninstall-dist_pkgincludeHEADERS \
 	install-dvi-am install-exec install-exec-am install-exec-hook \
 	install-html install-html-am install-info install-info-am \
 	install-man install-nodist_pkgincludeHEADERS install-pdf \
-	install-pdf-am install-pkglibDATA install-ps install-ps-am \
-	install-strip install-systemdsystemunitDATA installcheck \
-	installcheck-am installdirs installdirs-am maintainer-clean \
+	install-pdf-am install-ps install-ps-am install-strip \
+	install-systemdsystemunitDATA installcheck installcheck-am \
+	installdirs installdirs-am maintainer-clean \
 	maintainer-clean-generic mostlyclean mostlyclean-generic \
 	mostlyclean-libtool pdf pdf-am ps ps-am tags tags-recursive \
 	uninstall uninstall-aclocalDATA uninstall-am \
 	uninstall-dist_pkgincludeHEADERS \
-	uninstall-nodist_pkgincludeHEADERS uninstall-pkglibDATA \
+	uninstall-nodist_pkgincludeHEADERS \
 	uninstall-systemdsystemunitDATA
 
 
@@ -969,7 +949,7 @@ dovecot-config: dovecot-config.in Makefile
 @HAVE_SYSTEMD_TRUE@	$(AM_V_GEN)sed -e 's,@sbindir\@,$(sbindir),g' $< > $@
 
 install-exec-hook:
-	rm $(DESTDIR)$(pkglibdir)/dovecot-config && \
+	$(mkdir_p) $(DESTDIR)$(pkglibdir); \
 	grep -v '^LIBDOVECOT_.*_INCLUDE' dovecot-config | \
 	grep -v '^LIBDOVECOT.*_DEPS' | sed \
 	-e "s|^\(LIBDOVECOT\)=.*$$|\1='-L$(pkglibdir) -ldovecot'|" \

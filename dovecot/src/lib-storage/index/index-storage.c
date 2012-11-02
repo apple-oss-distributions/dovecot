@@ -203,9 +203,11 @@ int index_storage_mailbox_open(struct mailbox *box, bool move_to_memory)
 
 	box->opened = TRUE;
 
+	if ((box->enabled_features & MAILBOX_FEATURE_CONDSTORE) != 0)
+		mail_index_modseq_enable(box->index);
+
 	index_thread_mailbox_opened(box);
-	if (hook_mailbox_opened != NULL)
-		hook_mailbox_opened(box);
+	hook_mailbox_opened(box);
 
 	if ((box->flags & MAILBOX_FLAG_OPEN_DELETED) == 0) {
 		if (mail_index_is_deleted(box->index)) {
@@ -267,11 +269,8 @@ int index_storage_mailbox_enable(struct mailbox *box,
 {
 	if ((feature & MAILBOX_FEATURE_CONDSTORE) != 0) {
 		box->enabled_features |= MAILBOX_FEATURE_CONDSTORE;
-		if (mailbox_open(box) < 0)
-			return -1;
-		T_BEGIN {
+		if (box->opened)
 			mail_index_modseq_enable(box->index);
-		} T_END;
 	}
 	return 0;
 }
@@ -405,7 +404,7 @@ int index_storage_mailbox_update(struct mailbox *box,
 	}
 
 	if ((ret = mail_index_transaction_commit(&trans)) < 0)
-		mail_storage_set_internal_error(box->storage);
+		mail_storage_set_index_error(box);
 	mail_index_view_close(&view);
 	return ret;
 }
@@ -435,6 +434,7 @@ int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted)
 int index_storage_mailbox_delete(struct mailbox *box)
 {
 	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	enum mail_error error;
 
 	if (!box->opened) {
 		/* \noselect mailbox, try deleting only the directory */
@@ -461,7 +461,14 @@ int index_storage_mailbox_delete(struct mailbox *box)
 
 	mailbox_list_add_change(box->list, MAILBOX_LOG_RECORD_DELETE_MAILBOX,
 				mailbox_guid);
-	return index_storage_mailbox_delete_dir(box, TRUE);
+	if (index_storage_mailbox_delete_dir(box, TRUE) < 0) {
+		(void)mail_storage_get_last_error(box->storage, &error);
+		if (error != MAIL_ERROR_EXISTS)
+			return -1;
+		/* we deleted the mailbox, but couldn't delete the directory
+		   because it has children. that's not an error. */
+	}
+	return 0;
 }
 
 int index_storage_mailbox_rename(struct mailbox *src, struct mailbox *dest,

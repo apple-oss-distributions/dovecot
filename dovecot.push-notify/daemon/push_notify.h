@@ -1,7 +1,15 @@
 /*
- * Contains:   Routines to support Apple Push Notification service.
- * Written by: Michael Dasenbrock (for addtl writers check SVN comments).
- * Copyright:  © 2008-2011 Apple, Inc., all rights reserved.
+ * Contains:   Routines Mail Services support for Apple Push Notification Service.
+ * Written by: Michael (for addtl writers check SVN comments).
+ *
+ * Copyright:  (c) 2008-2012 Apple Inc. All Rights Reserved.
+ * 
+ * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+ * computers and is subject to the terms and conditions of the Apple Software
+ * License Agreement accompanying the package this file is a part of.
+ * You may not port this file to another platform without Apple's written consent.
+ * 
+ *
  * Note:       When editing this file set Xcode to "Editor uses tabs/width=4".
  *             Any other editor or tab setting may not show this file nicely!
  */
@@ -13,35 +21,23 @@
 #define	BUFF_SIZE			8192
 #define MAX_BUF_SIZE		5120000
 #define	GUID_BUFF_SIZE		64
-#define	AUTH_INFO_PATH		"/etc/dovecot/notify/notify.plist"
+#define DEVICE_MAPS_PATH	@"/Library/Server/Mail/Data/mta/guid_device_maps.plist"
+#define SERVER_ADMIN		@"/Applications/Server.app/Contents/ServerRoot/usr/sbin/serveradmin"
 
+// verbose logging
+extern	int sig_usr1;
+
+#define	VLOG_ERR		sig_usr1 ? LOG_CRIT : LOG_ERR
+#define	VLOG_WARNING	sig_usr1 ? LOG_CRIT : LOG_WARNING
+#define	VLOG_NOTICE		sig_usr1 ? LOG_CRIT : LOG_NOTICE
+#define	VLOG_INFO		sig_usr1 ? LOG_CRIT : LOG_INFO
+#define	VLOG_DEBUG		sig_usr1 ? LOG_CRIT : LOG_DEBUG
+
+// user, id & device info from mail service
 typedef struct msg_data_s {
-	unsigned long msg;
-	unsigned long pid;
-
+	char msg[16];
 	char d1[128];
 	char d2[512];
 	char d3[512];
 	char d4[512];
 } msg_data_t;
-
-typedef struct server_info_s {
-	int			port;
-	char		*address;
-	char		*username;
-	char		*passwd;
-	CFStringRef	cf_str_addr;
-	CFStringRef	cf_str_pubsub;
-	CFStringRef	cf_str_apn;
-	CFStringRef	cf_str_user;
-	CFStringRef	cf_str_pwd;
-} server_info_t;
-
-int		get_server_info			( server_info_t *in_out_info );
-int		error_callback			( XMLNodeRef in_err_node, void *in_user_info );
-void	session_callback		( XMPPSessionRef in_sess_ref, XMPPSessionEvent in_event );
-void	create_node				( const char * );
-void	publish					( msg_data_t *in_msg );
-int		publish_callback		( void *in_user_info );
-void	start_xmpp_session		();
-void	reschedule_xmpp_connect	();

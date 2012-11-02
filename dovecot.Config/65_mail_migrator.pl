@@ -1,6 +1,11 @@
 #!/usr/bin/perl
 #
-# Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+# Copyright (c) 2010-2012 Apple Inc. All rights reserved.
+# 
+# IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+# computers and is subject to the terms and conditions of the Apple Software
+# License Agreement accompanying the package this file is a part of.
+# You may not port this file to another platform without Apple's written consent.
 # 
 # Redistribution and use in source and binary forms, with or without  
 # modification, are permitted provided that the following conditions  
@@ -38,8 +43,8 @@ use strict;
 # --sourceRoot <path> The path to the root of the system to migrate
 # --sourceType <System | TimeMachine> Gives the type of the migration source, whether it's a runnable system or a
 #                  Time Machine backup.
-# --sourceVersion <ver> The version number of the old system (like 10.5.7 or 10.6). Since we support migration from 10.5, 10.6,
-#                   and other 10.7 installs.
+# --sourceVersion <ver> The version number of the old system (like 10.6.5 or 10.7). Since we support migration from 10.6, 10.7,
+#                   and other 10.8 installs.
 # --targetRoot <path> The path to the root of the new system.
 # --language <lang> A language identifier, such as \"en.\" Long running scripts should return a description of what they're doing
 #                   (\"Migrating Open Directory users\"), and possibly provide status update messages along the way. These messages
@@ -47,7 +52,7 @@ use strict;
 #                   This argument will identify the Server Assistant language. As an alternative to doing localization yourselves
 #                   send them in English, but in case the script will do this it will need this identifier.
 #
-# Example: /System/Library/ServerSetup/MigrationExtras/65_mail_migrator.pl --purge 0 --language en --sourceType System --sourceVersion 10.5 --sourceRoot "/Previous System" --targetRoot "/"
+# Example: /System/Library/ServerSetup/MigrationExtras/65_mail_migrator.pl --purge 0 --language en --sourceType System --sourceVersion 10.6 --sourceRoot "/Previous System" --targetRoot "/"
 
 ############################# System  Constants #############################
 my $CAT = "/bin/cat";
@@ -60,95 +65,89 @@ my $ECHO = "/bin/echo";
 my $GREP = "/usr/bin/grep";
 my $CHOWN = "/usr/sbin/chown";
 my $LAUNCHCTL = "/bin/launchctl";
-my $SERVER_ADMIN = "/usr/sbin/serveradmin";
+my $POSTMAP = "/usr/sbin/postmap";
 my $POSTCONF = "/usr/sbin/postconf";
+my $POSTFIX = "/usr/sbin/postfix";
 my $MKDIR = "/bin/mkdir";
 my $PLIST_BUDDY = "/usr/libexec/PlistBuddy";
-my $CVT_MAIL_DATA = "/usr/bin/cvt_mail_data";
 my $TAR = "/usr/bin/tar";
 
-################################## Consts ###################################
-my $IMAPD_CONF="/private/etc/imapd.conf";
-my $MIGRATION_LOG= "/Library/Logs/MailMigration.log";
+# ServerRoot paths
+my $SERVER_ROOT		= "/Applications/Server.app/Contents/ServerRoot";
+my $CERT_ADMIN		= "/Applications/Server.app/Contents/ServerRoot/usr/sbin/certadmin";
+my $SERVER_CTL		= "/Applications/Server.app/Contents/ServerRoot/usr/sbin/serverctl";
+my $SERVER_ADMIN	= "/Applications/Server.app/Contents/ServerRoot/usr/sbin/serveradmin";
+my $CVT_MAIL_DATA	= "/Applications/Server.app/Contents/ServerRoot/usr/bin/cvt_mail_data";
+my $MIGRATION_PLIST	= "/Applications/Server.app/Contents/ServerRoot/System/Library/LaunchDaemons/com.apple.mail_migration.plist";
+
+# Cyrus imapd.conf
+my $IMAPD_CONF		= "/private/etc/imapd.conf";
+
+# Config & Data Roots
+my $MAIL_ROOT		= "/Library/Server/Mail";
+my $DATA_ROOT		= "/Library/Server/Mail/Data";
+my $CONFIG_ROOT		= "/Library/Server/Mail/Config";
+my $POSTFIX_CONFIG	= "/Library/Server/Mail/Config/postfix";
+my $DOVECOT_CONFIG	= "/Library/Server/Mail/Config/dovecot";
+
+# Migration logs
+my $MIGRATION_LOG_DIR	= "/Library/Logs/Migration";
+my $MIGRATION_LOG		= "/Library/Logs/Migration/mailmigrator.log";
+
+# Launchd
+my $POSTFIX_LAUNCHD_PLIST	= "/System/Library/LaunchDaemons/org.postfix.master.plist";
 
 ############################## Version Consts  ##############################
-my $SYS_VERS	= "0";	#10.5.7
+my $SYS_VERS	= "0";	#10.6.5
 my $SYS_MAJOR	= "0";	#10
-my $SYS_MINOR	= "0";	# 5
-my $SYS_UPDATE	= "-";	# 7
-my $SRV_VERS	= "0";	#10.5.7
+my $SYS_MINOR	= "0";	# 6
+my $SYS_UPDATE	= "-";	# 5
+my $SRV_VERS	= "0";	#10.6.5
 my $SRV_MAJOR	= "0";	#10
-my $SRV_MINOR	= "0";	# 5
-my $SRV_UPDATE	= "-";	# 7
-my $MIN_VER		= "10.5"; # => 10.5
-my $MAX_VER		= "10.8"; # <  10.8
+my $SRV_MINOR	= "0";	# 6
+my $SRV_UPDATE	= "-";	# 5
+my $MIN_VER		= "10.6"; # => 10.6
+my $MAX_VER		= "10.9"; # <  10.9
 
-my $TARGET_VER = "10.7";
-
-################################### Paths ###################################
-my $HOSTCONFIG		= "/private/etc/hostconfig";
-
-# amavisd-new
-my $g_amavisd_launchd_plist			= "/System/Library/LaunchDaemons/org.amavis.amavisd.plist";
-my $g_amavisd_cleanup_launchd_plist	= "/System/Library/LaunchDaemons/org.amavis.amavisd_cleanup.plist";
-# Clam AV
-my $g_clamav_launchd_plist			= "/System/Library/LaunchDaemons/org.clamav.clamd.plist";
-my $g_freshclam_launchd_plist		= "/System/Library/LaunchDaemons/org.clamav.freshclam.plist";
-# SpamAssassin
-my $g_updatesa_launchd_plist		= "/System/Library/LaunchDaemons/com.apple.updatesa.plist";
-my $g_learn_junk_launchd_plist		= "/System/Library/LaunchDaemons/com.apple.learnjunkmail.plist";	# pre 10.7
-my $g_salearn_launchd_plist			= "/System/Library/LaunchDaemons/com.apple.salearn.plist";			# 10.7+
-# dovecot
-my $g_dovecot_launchd_plist			= "/System/Library/LaunchDaemons/org.dovecot.dovecotd.plist";
-my $g_push_notify_launchd_plist		= "/System/Library/LaunchDaemons/com.apple.push_notify.plist";
-my $g_fts_update_launchd_plist		= "/System/Library/LaunchDaemons/org.dovecot.fts.update.plist";
-my $g_dovecot_sieve_launchd_plist	= "/System/Library/LaunchDaemons/com.apple.wiki_sieve_manager.plist";
-# mailman
-my $g_mailman_launchd_plist			= "/System/Library/LaunchDaemons/org.list.mailmanctl.plist";
-# postfix
-my $g_postfix_launchd_plist			= "/System/Library/LaunchDaemons/org.postfix.master.plist";
-
-################################### Keys ####################################
-my $g_postfix_launchd_key	= "org.postfix.master";
-my $g_cyrus_launchd_key		= "edu.cmu.andrew.cyrus.master";
-my $g_mailman_launchd_key	= "org.list.mailmanctl";
+my $TARGET_VER = "10.8";
 
 ################################## Globals ##################################
-my $g_purge			= 0;		# So we will be default copy the items if
-								#there's no option specified.
+my $g_purge				= 0;	# So we will be default copy the items if
+								# there's no option specified.
 my $g_source_root		= "";
 my $g_source_type		= "";
 my $g_source_version	= "";	# This is the version number of the old system
 								# passed into us by Server Assistant.
-								# [10.5.x, 10.6.x, and potentially 10.7.x]
+								# [10.6.x, 10.7.x, and potentially 10.8.x]
+my $g_source_uuid		= "";
 my $g_target_root		= "";
 my $g_language			= "en";	# Should be Tier-0 only in iso format
 								# [en, fr, de, ja], we default this to English, en.
+
 my $g_xsan_volume		= "null";
 my $g_dovecot_ssl_key	= "";
 my $g_dovecot_ssl_cert	= "";
-my $g_dovecot_ssl_ca	= "/etc/certs/Default.csr";
-my $g_postfix_ssl_key	= "";
-my $g_postfix_ssl_cert	= "";
-my $g_postfix_ssl_ca	= "";
-my $g_luser_relay		= 0;
-
-my $g_cyrus_enabled		= 0;
-my $g_mailman_enabled	= 0;
+my $g_dovecot_ssl_ca	= "";
 
 my @g_partitions		= ();
 my @g_clean_partitions	= ();
-my $g_default_partition	= "/var/spool/imap";
+my $g_default_partition	= "/Library/Server/Mail/Data/mail";
 my $g_db_path			= "/private/var/imap";
 my $g_imapd_conf		= "/tmp/imapd.conf.tmp";
 my $g_migration_plist	= "/var/db/.mailmigration.plist";
-my $g_migration_ld_plist= "/System/Library/LaunchDaemons/com.apple.mail_migration.plist";
 
 my $g_enable_spam		= 0;
 my $g_enable_virus		= 0;
+my $g_required_hits		= 6.9;
+my $g_spam_subj_tag		= "*** JUNK MAIL ***";
 
-my $g_sl_src			= 0;	# Set to 1 if source is Snow Leopard Server
-my $g_postfix_root		= "/";
+my $g_mtn_lion_src		= 0;	# Set to 1 if source is Mountain Lion Server (10.8.x)
+my $g_lion_src			= 0;	# Set to 1 if source is Lion Server (10.7.x)
+my $g_snow_leopard_src	= 0;	# Set to 1 if source is Snow Leopard Server  (10.6.x)
+my $g_leopard_src		= 0;	# Set to 1 if source is Snow Server  (10.5.x)
+
+################################## Strings ##################################
+my $g_header_string		= "### DO NOT MANUALLY EDIT THIS FILE ###\n# This file is automatically generated\n# any manual additions to this file will be lost\n\n";
 
 ################################### Flags ###################################
 my $DEBUG		= 0;
@@ -173,6 +172,10 @@ parse_options();
 if ( ${DEBUG} ) {
 	print_script_args( @ARGV ); }
 
+if ( !path_exists( $MIGRATION_LOG_DIR ) ) {
+	mkdir($MIGRATION_LOG_DIR, 0755);
+}
+
 open (LOG_FILE, ">> ${MIGRATION_LOG}") or die("$MIGRATION_LOG: $!\n");
 
 do_migration( @ARGV );
@@ -192,8 +195,7 @@ sub print_message ()
 	my ( $line_2 ) = $_[2];
 	my ( $line_3 ) = $_[3];
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::print_message : S\n" ); }
+	log_funct( "print_message" );
 
 	print LOG_FILE "*************************************************************\n";
 	if ( ! ("${line_0}" eq "") ) {
@@ -207,11 +209,32 @@ sub print_message ()
 	print LOG_FILE "** Please refer to the Migration and Upgrade Guide for\n";
 	print LOG_FILE "** instructions on how to manually migrate configuration data.\n";
 	print LOG_FILE "*************************************************************\n";
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::print_message : E\n" ); }
 } # print_message
 
+################################################################################
+# function log
+
+sub log_funct ($)
+{
+	my( $in_function ) = @_;
+
+	if ( ${FUNC_LOG} ) {
+		print LOG_FILE "----------------------\n";
+		print LOG_FILE ":: $in_function () ::\n";
+	}
+}
+
+################################################################################
+# log if DEBUG
+
+sub log_debug ($)
+{
+	my( $in_string ) = @_;
+
+	if ( ${DEBUG} ) {
+		print LOG_FILE "$in_string\n";
+	}
+}
 
 ################################################################################
 # plist methods
@@ -224,6 +247,39 @@ sub obj_value
 
 
 #################################################################
+# get_cert_name ()
+#
+#	normalize certificate names for comparison
+
+sub get_cert_name ($)
+{
+	my( $in_cert ) = @_;
+	my $out_cert = $in_cert;
+
+	# we will only migrate certificates from /etc/certificates
+	if ( substr( $out_cert, 0, 18) eq "/etc/certificates/" ){
+		$out_cert = substr( $out_cert, 18 );
+	}
+
+	# ket suffix so we can map correct file
+	my $cert_suffix = substr( $out_cert, -8 );
+
+	if ( $cert_suffix eq ".key.pem" ) {
+		$out_cert = substr( $out_cert, 0, length($out_cert)-49) . ".key.pem";
+	} elsif ( $cert_suffix eq "cert.pem" ) {
+		$out_cert = substr( $out_cert, 0, length($out_cert)-50) . ".cert.pem";
+	} elsif ( $cert_suffix eq "hain.pem" ) {
+		$out_cert = substr( $out_cert, 0, length($out_cert)-51) . ".chain.pem";
+	} elsif ( $cert_suffix eq "ncat.pem" ) {
+		$out_cert = substr( $out_cert, 0, length($out_cert)-52) . ".concat.pem";
+	} else {
+		$out_cert = "";
+	}
+
+	return( $out_cert );
+}
+
+#################################################################
 # map_ssl_cert ()
 #
 #	: map default certificate from 10.5 to 10.6/7 certificates
@@ -232,179 +288,289 @@ sub map_ssl_cert ($)
 {
 	my( $in_cert ) = @_;
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::map_ssl_cert : S\n" ); }
+	log_funct( "map_ssl_cert" );
+	log_debug( "Mapping certificate: ${in_cert}" );
 
-	if ( ${DEBUG} ) {
-		print( "Mapping certificate: ${in_cert}\n" ); }
+	# map from current certificates directory
+	chdir( "/private/etc/certificates" );
 
-	# we will only migrate certificates from /etc/certificates
-	if ( substr( ${in_cert}, 0, 18) eq "/etc/certificates/" )
-	{
-		# get the certificate name by removing path
-		my $cert_name = substr( ${in_cert}, 18 );
+	my @mail_certs = <*>;
+	foreach my $a_cert ( @mail_certs ) {
+		chomp($a_cert);
+		my $cert_name = get_cert_name($a_cert);
 
-		# ket suffix so we can map key or cert
-		my $cert_suffix = substr( ${cert_name}, -4 );
-
-		# remove the .key or .crt suffix for name mapping
-		$cert_name = substr( ${cert_name}, 0, length(${cert_name})-4);
-
-		# map from current certificates directory
-		chdir( "/private/etc/certificates" );
-
-		my @mail_certs = <*>;
-		foreach my $a_cert ( @mail_certs )
-		{
-			chomp($a_cert);
-
-			# looking for key
-			if ( ${cert_suffix} eq ".key" )
-			{
-				if ( ((substr( ${a_cert}, 0, length(${cert_name})) eq ${cert_name})) && (index($a_cert, ".key.pem") != -1) )
-				{
-					print LOG_FILE "Mapping certificate: ${in_cert} to: ${a_cert}\n";
-					return($a_cert);
-				}
-			}
-			elsif ( ${cert_suffix} eq ".crt" )
-			{
-				if ( ((substr( ${a_cert}, 0, length(${cert_name})) eq ${cert_name})) && (index($a_cert, ".cert.pem") != -1) )
-				{
-					print LOG_FILE "Mapping certificate: ${in_cert} to: ${a_cert}\n";
-					return($a_cert);
-				}
-			}
-			elsif ( ${cert_suffix} eq ".csr" )
-			{
-				if ( ((substr( ${a_cert}, 0, length(${cert_name})) eq ${cert_name})) && (index($a_cert, ".chain.pem") != -1) )
-				{
-					print LOG_FILE "Mapping certificate: ${in_cert} to: ${a_cert}\n";
-					return($a_cert);
-				}
-			} else {
-				print LOG_FILE "Unknown certificate type:" . ${in_cert} ."\n";
-			}
+		# looking for key
+		if ( $cert_name eq $in_cert ) {
+			print LOG_FILE "  Mapping certificate name: ${in_cert} to: ${a_cert}\n";
+			return("/etc/certificates/" . $a_cert);
 		}
 	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::map_ssl_cert : E\n" ); }
 
 	# Not good, no certificate found in /etc/certificates that matches
 	#	configuration settings from previous server
 	print LOG_FILE "Warning: No certificate map found for: " . ${in_cert} ."\n";
 
 	return( "" );
-
 } # map_ssl_cert
 
 
 #################################################################
-# get_ssl_certs ()
+# set_ssl_certs ()
 
-sub get_ssl_certs ()
+sub set_ssl_certs ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_ssl_certs : S\n" ); }
+	log_funct( "set_ssl_certs" );
 
-	# cert migration not necessary from 10.6/7 to 10.6.x/10.7
-	if ( $g_sl_src ) {
-		return;
+	print LOG_FILE "Migrating SSL certificates\n";
+
+	#################################
+	# Default Certificate validataion
+	#################################
+
+	## certificate sanity check
+	# first get default certificates (we may need these later)
+	my $default_cert = qx( $CERT_ADMIN --default-certificate-path );
+	chomp($default_cert);
+	print LOG_FILE "  default-certificate: $default_cert\n";
+
+	my $default_key = qx( $CERT_ADMIN --default-private-key-path );
+	chomp($default_key);
+	print LOG_FILE "  default-private-key: $default_key\n";
+
+	my $default_ca = qx( $CERT_ADMIN --default-certificate-authority-chain-path );
+	chomp($default_ca);
+	print LOG_FILE "  default-certificate-authority-chain: $default_ca\n";
+
+	##################################
+	# POP/IMAP Certificate validataion
+	##################################
+
+	# migrate cyrus if from Leopard Server only
+	print LOG_FILE "Getting current POP/IMAP server certificate settings\n";
+
+	my $valid_imap_key = 0;
+	my $imap_key = qx( grep "^ssl_key " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/ssl_key//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+	chomp($imap_key);
+	if ( $imap_key eq "" ) {
+		$imap_key = qx( grep "^#ssl_key " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/#ssl_key//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+		chomp($imap_key);
 	}
 
-	# get certs from cyrus imapd.conf
-	#	do -not- check for open failure, certs will simply not get migrated
-	#	if /etc/impad.conf does not exist
-	open(CYRUS_CONFIG, "<${g_source_root}" . ${IMAPD_CONF});
-	while( <CYRUS_CONFIG> )
-	{
-		# store $_ value because subsequent operations may change it
-		my( $config_key ) = $_;
-		my( $config_value ) = $_;
+	my $valid_imap_cert = 0;
+	my $imap_cert = qx( grep "^ssl_cert " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/ssl_cert//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+	chomp($imap_cert);
+	if ( $imap_cert eq "" ) {
+		$imap_cert = qx( grep "^#ssl_cert " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/#ssl_cert//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+		chomp($imap_cert);
+	}
 
-		# strip the trailing newline from the line
-		chomp($config_key);
-		chomp($config_value);
+	my $valid_imap_ca = 0;
+	my $imap_ca = qx( grep "^ssl_ca " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/ssl_ca//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+	chomp($imap_ca);
+	if ( $imap_ca eq "" ) {
+		$imap_ca = qx( grep "^#ssl_ca " "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/#ssl_ca//' | sed 's/=//' | sed 's/ //g' | sed 's/<//' );
+		chomp($imap_ca);
+	}
 
-		if ( $config_key =~ s/:.*// )
-		{
-			if ( $config_value =~ s/^.*:// )
-			{
-				# trim whitespace
-				$config_value =~ s/^\s+//;
-				$config_value =~ s/\s+$//;
+	# validate current IMAP certificates
+	if ( !($imap_key eq "") && path_exists($imap_key) ) {
+		print LOG_FILE "  ssl_key: $imap_key\n";
+		$valid_imap_key = 1;
+	}
 
-				SWITCH: {
-					if ( $config_key eq "tls_key_file" )
-					{
-						$g_dovecot_ssl_key = map_ssl_cert( ${config_value} );
-						last SWITCH;
-					}
-					if ( $config_key eq "tls_cert_file" )
-					{
-						$g_dovecot_ssl_cert = map_ssl_cert( ${config_value} );
-						last SWITCH;
-					}
-					if ( $config_key eq "tls_ca_file" )
-					{
-						$g_dovecot_ssl_ca = map_ssl_cert( ${config_value} );
-						last SWITCH;
-					}
-					last SWITCH;
-				}
+	if ( !($imap_cert eq "") && path_exists($imap_cert) ) {
+		print LOG_FILE "  ssl_cert: $imap_cert\n";
+		$valid_imap_cert = 1;
+	}
+
+	if ( !($imap_ca eq "") && path_exists($imap_ca) ) {
+		print LOG_FILE "  ssl_ca: $imap_ca\n";
+		$valid_imap_ca = 1;
+	}
+
+	# log success if all certificates map
+	if ( ($valid_imap_key == 1) && ($valid_imap_cert == 1) && ($valid_imap_ca == 1) ) {
+		print LOG_FILE "Using existing POP/IMAP SSL certificates:\n";
+		print LOG_FILE "  ssl_key: $imap_key\n";
+		print LOG_FILE "  ssl_cert: $imap_cert\n";
+		print LOG_FILE "  ssl_ca: $imap_ca\n";
+		qx( ${SERVER_ADMIN} settings mail:imap:tls_key_file = $imap_key );
+		qx( ${SERVER_ADMIN} settings mail:imap:tls_cert_file = $imap_cert );
+		qx( ${SERVER_ADMIN} settings mail:imap:tls_ca_file = $imap_ca );
+	} else {
+		# first see if we care 
+		my $use_ssl = qx( grep "^ssl =" "${g_target_root}${DOVECOT_CONFIG}/conf.d/10-ssl.conf" | sed 's/ssl//' | sed 's/=//' | sed 's/ //g' );
+		chomp($use_ssl);
+
+		# map certificates when using SSL and the oritinal certificates cannot be found
+		if ( ($use_ssl eq "yes") || ($use_ssl eq "required") ) {
+			# list missing certificates
+			print LOG_FILE "Missing existing POP/IMAP SSL certificates:\n";
+			if ( $valid_imap_key != 1) {
+				print LOG_FILE "  ssl_key: $imap_key\n";
 			}
+			if ( $valid_imap_cert != 1) {
+				print LOG_FILE "  ssl_cert: $imap_cert\n";
+			}
+			if ( $valid_imap_ca != 1 ) {
+				print LOG_FILE "  ssl_ca: $imap_ca\n";
+			}
+
+			# get current settings
+			my $imap_server_opts = qx( ${SERVER_ADMIN} settings mail:imap:tls_server_options );
+			chomp($imap_server_opts);
+
+			# try to map names to existing certificate
+			print LOG_FILE "Attempting to map missing certificates:\n";
+			my $ssl_key = map_ssl_cert( get_cert_name( $imap_key ) );
+			my $ssl_cert = map_ssl_cert( get_cert_name( $imap_cert ) );
+			my $ssl_ca = map_ssl_cert( get_cert_name( $imap_ca ) );
+			# use mapped certificates if they all exist
+			if ( path_exists($ssl_key) && path_exists($ssl_cert) && path_exists($ssl_ca) ) {
+				print LOG_FILE "Using mapped POP/IMAP services certificate settings\n  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_key_file = $ssl_key >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_cert_file = $ssl_cert >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_ca_file = $ssl_ca >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings $imap_server_opts >> ${MIGRATION_LOG} );
+			} elsif ( path_exists($default_cert) && path_exists($default_key) && path_exists($default_ca) ) {
+				# some mappings failed so setting to default
+				print LOG_FILE "Setting default certificates for POP/IMAP services\n  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_key_file = $default_key >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_cert_file = $default_cert >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_ca_file = $default_ca >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings $imap_server_opts >> ${MIGRATION_LOG} );
+			} else {
+				# Worst case: no certificate mappings and no default certificates found
+				print LOG_FILE "ERROR: No default certificats found.  Disabling SSL for POP/IMAP services\n  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_key_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_cert_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_ca_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:imap:tls_server_options = "none" >> ${MIGRATION_LOG} );
+			}
+		} else {
+			print LOG_FILE "  ";
+			qx( ${SERVER_ADMIN} settings mail:imap:tls_server_options = "none" >> ${MIGRATION_LOG} );
+			print LOG_FILE "POP/IMAP SSL settings not set: ssl = $use_ssl\n";
 		}
 	}
 
-	# close it, close it up again
-	close( CYRUS_CONFIG );
+	###############################
+	# SMTP Certificate validataion
+	###############################
 
-	# get postfix certs
-	my @smtp_key = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" smtpd_tls_key_file );
-	chomp(@smtp_key);
-	$g_postfix_ssl_key = map_ssl_cert( $smtp_key[0] );
+	print LOG_FILE "Getting current SMTP service certificate settings\n";
 
-	my @smtp_cert = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" smtpd_tls_cert_file );
-	chomp(@smtp_cert);
-	$g_postfix_ssl_cert = map_ssl_cert( $smtp_cert[0] );
+	# get current SMTP certificates
+	my $valid_smtp_key = 0;
+	my $smtp_key = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" smtpd_tls_key_file );
+	chomp($smtp_key);
 
-	my @smtp_ca = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" smtpd_tls_CAfile );
-	chomp(@smtp_ca);
-	$g_postfix_ssl_ca = map_ssl_cert( $smtp_ca[0] );
+	my $valid_smtp_cert = 0;
+	my $smtp_cert = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" smtpd_tls_cert_file );
+	chomp($smtp_cert);
 
-	# sanity check
-	# if the cert and key are set but chained is not, look for valid chained cert and set it.
-	if ( !(${g_dovecot_ssl_key} eq "") && !(${g_dovecot_ssl_cert} eq "") )
-	{
-		if ( ${g_dovecot_ssl_ca} eq "" || $g_dovecot_ssl_ca	eq "/etc/certs/Default.csr" )
-		{
-			my $offset = index(${g_dovecot_ssl_key}, ".key.pem");
-			if ( $offset != -1 )
-			{
-				# this will ket the cert name up to .key.pem
-				$g_dovecot_ssl_ca = substr( ${g_dovecot_ssl_key}, 0, ${offset} );
-				$g_dovecot_ssl_ca = ${g_dovecot_ssl_ca} . ".chain.pem";
-			}
-		}
+	my $valid_smtp_ca = 0;
+	my $smtp_ca = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" smtpd_tls_CAfile );
+	chomp($smtp_ca);
+
+	# validate current SMTP certificates
+	if ( !($smtp_key eq "") && path_exists($smtp_key) ) {
+		print LOG_FILE "  smtpd_tls_key_file: $smtp_key\n";
+		$valid_smtp_key = 1;
 	}
 
-	if ( !(${g_postfix_ssl_key} eq "") && !(${g_postfix_ssl_cert} eq "") )
-	{
-		if ( ${g_postfix_ssl_ca} eq "" )
-		{
-			my $offset = index(${g_postfix_ssl_key}, ".key.pem");
-			if ( $offset != -1 )
-			{
-				# this will ket the cert name up to .key.pem
-				$g_postfix_ssl_ca = substr( ${g_postfix_ssl_key}, 0, ${offset} );
-				$g_postfix_ssl_ca = ${g_postfix_ssl_ca} . ".chain.pem";
-			}
-		}
+	if ( !($smtp_cert eq "") && path_exists($smtp_cert) ) {
+		print LOG_FILE "  smtpd_tls_cert_file: $smtp_cert\n";
+		$valid_smtp_cert = 1;
 	}
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_ssl_certs : E\n" ); }
+	if ( !($smtp_ca eq "") && path_exists($smtp_ca) ) {
+		print LOG_FILE "  smtpd_tls_CAfile: $smtp_ca\n";
+		$valid_smtp_ca = 1;
+	}
+
+	# log success if all certificates map
+	if ( ($valid_smtp_key == 1) && ($valid_smtp_cert == 1) && ($valid_smtp_ca == 1) ) {
+		print LOG_FILE "Using existing SMTP SSL certificates:\n";
+		print LOG_FILE "  smtpd_tls_key_file: $smtp_key\n";
+		print LOG_FILE "  smtpd_tls_cert_file: $smtp_cert\n";
+		print LOG_FILE "  smtpd_tls_CAfile: $smtp_ca\n";
+	} else {
+		# first see if we care 
+		my $use_tls = qx( grep "^smtpd_use_tls =" "${g_target_root}${POSTFIX_CONFIG}/main.cf" | sed 's/smtpd_use_tls//' | sed 's/=//' | sed 's/ //g' );
+		chomp($use_tls);
+
+		# map certificates when using SSL but oritinals cannot be found
+		if ( $use_tls eq "yes" ) {
+			# list missing certificates
+			print LOG_FILE "Missing existing SMTP SSL certificates:\n";
+			if ( $valid_smtp_key != 1 ) {
+				print LOG_FILE "  smtpd_tls_key_file: $smtp_key\n";
+			}
+			if ( $valid_smtp_cert != 1 ) {
+				print LOG_FILE "  smtpd_tls_cert_file: $smtp_cert\n";
+			}
+			if ( $valid_smtp_ca != 1 ) {
+				print LOG_FILE "  smtpd_tls_CAfile: $smtp_ca\n";
+			}
+
+			# get current settings
+			my $smtp_server_opts = qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options );
+			chomp($smtp_server_opts);
+
+			# try to map names to existing certificate
+			print LOG_FILE "Attempting to map missing certificates:\n";
+			my $ssl_key = map_ssl_cert( get_cert_name( $smtp_key ) );
+			my $ssl_cert = map_ssl_cert( get_cert_name( $smtp_cert ) );
+			my $ssl_ca = map_ssl_cert( get_cert_name( $smtp_ca ) );
+
+			# use mapped certificates if they all exist
+			if ( path_exists($ssl_key) && path_exists($ssl_cert) && path_exists($ssl_ca) ) {
+				print LOG_FILE "Mapping SMTP service certificate settings\n  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = $ssl_key >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_cert_file = $ssl_cert >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = $ssl_ca >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings $smtp_server_opts >> ${MIGRATION_LOG} );
+			} elsif ( path_exists($default_cert) && path_exists($default_key) && path_exists($default_ca) ) {
+				# some mappings failed so setting to default
+				print LOG_FILE "Setting default certificates for SMTP services\n  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = $default_key >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_cert_file = $default_cert >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = $default_ca >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings $smtp_server_opts >> ${MIGRATION_LOG} );
+			} else {
+				# Worst case: no certificate mappings and no default certificates found
+				print LOG_FILE "ERROR: No default certificats found.  Disabling SSL for SMTP services\n  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_cert_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = "" >> ${MIGRATION_LOG} );
+				print LOG_FILE "  ";
+				qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options = none >> ${MIGRATION_LOG} );
+			}
+		} else {
+			print LOG_FILE "  ";
+			qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options = none >> ${MIGRATION_LOG} );
+			print LOG_FILE "SMTP SSL settings not set: smtpd_use_tls = $use_tls\n";
+		}
+	}
+	print LOG_FILE "Migrating of SSL certificates complete\n";
 } # get_ssl_certs
 
 
@@ -413,14 +579,12 @@ sub get_ssl_certs ()
 
 sub migrate_db_update_times ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_db_update_times : S\n" ); }
+	log_funct( "migrate_db_update_times" );
 
 	print LOG_FILE "Migrating virus database upgrade interval\n";
 
 	open(CLAMAV_PLIST, "<${g_source_root}" . "/System/Library/LaunchDaemons/org.clamav.freshclam.plist");
-	while( <CLAMAV_PLIST> )
-	{
+	while( <CLAMAV_PLIST> ) {
 		# store $_ value because subsequent operations may change it
 		my( $line ) = $_;
 
@@ -428,11 +592,9 @@ sub migrate_db_update_times ()
 		chomp( $line );
 
 		my $key = index($line, "-c ");
-		if ( ${key} != -1 )
-		{
+		if ( ${key} != -1 ) {
 			my $value;
-			if ( substr( ${line}, ${key}+4, 1 ) eq "<" )
-			{
+			if ( substr( ${line}, ${key}+4, 1 ) eq "<" ) {
 				$value = substr( ${line}, ${key}+3, 1 );
 			} else {
 				$value = substr( ${line}, ${key}+3, 2 );
@@ -440,11 +602,7 @@ sub migrate_db_update_times ()
 			qx( ${SERVER_ADMIN} settings mail:postfix:virus_db_update_days = ${value} >> ${MIGRATION_LOG} );
 		}
 	}
-
 	close( CLAMAV_PLIST );
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_db_update_times : E\n" ); }
 } # migrate_db_update_times
 
 
@@ -453,8 +611,7 @@ sub migrate_db_update_times ()
 
 sub migrate_log_settings ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_log_settings : S\n" ); }
+	log_funct( "migrate_log_settings" );
 
 	# look for syslog.conf in source-root or in target-root with ~previous extension
 	my $syslog_conf_path = ${g_target_root} . "/private/etc/syslog.conf~previous";
@@ -473,70 +630,59 @@ sub migrate_log_settings ()
 
 	# get mail. & local6. log settings
 	open(SYS_LOG, "<${syslog_conf_path}");
-	while( <SYS_LOG> )
-	{
+	while( <SYS_LOG> ) {
 		# store $_ value because subsequent operations may change it
 		my( $line ) = $_;
 
 		# strip the trailing newline from the line
 		chomp( $line );
 
-		my $offset = 0;
+		my $key = "";
 		my $value = "";
-		if ( substr( ${line}, 0, 5) eq "mail." )
-		{
+		my $offset = 0;
+		if ( substr( ${line}, 0, 5) eq "mail." ) {
 			${offset} = 5;
+			${key} = "mail:postfix:log_level";
 		}
-		elsif (substr( ${line}, 0, 7) eq "local6." )
-		{
+		elsif (substr( ${line}, 0, 7) eq "local2." ) {
 			${offset} = 7;
+			${key} = "mail:postfix:virus_log_level";
+		}
+		elsif (substr( ${line}, 0, 7) eq "local6." ) {
+			${offset} = 7;
+			${key} = "mail:imap:log_level";
 		}
 
-		if ( ${offset} != 0 )
-		{
+		if ( ${offset} != 0 ) {
 			SWITCH: {
-				if ( substr( ${line}, ${offset}, 3) eq "err" )
-				{
+				if ( substr( ${line}, ${offset}, 3) eq "err" ) {
 					${value} = "err";
 					last SWITCH;
 				}
-				if ( substr( ${line}, ${offset}, 4) eq "crit" )
-				{
+				if ( substr( ${line}, ${offset}, 4) eq "crit" ) {
 					${value} = "crit";
 					last SWITCH;
 				}
-				if ( substr( ${line}, ${offset}, 4) eq "warn" )
-				{
+				if ( substr( ${line}, ${offset}, 4) eq "warn" ) {
 					${value} = "warn";
 					last SWITCH;
 				}
-				if ( substr( ${line}, ${offset}, 6) eq "notice" )
-				{
+				if ( substr( ${line}, ${offset}, 6) eq "notice" ) {
 					${value} = "notice";
 					last SWITCH;
 				}
-				if ( substr( ${line}, ${offset}, 4) eq "info" )
-				{
+				if ( substr( ${line}, ${offset}, 4) eq "info" ) {
 					${value} = "info";
 					last SWITCH;
 				}
-				if ( substr( ${line}, ${offset}, 1) eq "*" )
-				{
+				if ( substr( ${line}, ${offset}, 1) eq "*" ) {
 					${value} = "debug";
 					last SWITCH;
 				}
 				last SWITCH;
 			}
-			if ( !(${value} eq "") )
-			{
-				if ( ${offset} == 5 )
-				{
-					qx( ${SERVER_ADMIN} settings mail:postfix:log_level = ${value} >> ${MIGRATION_LOG} );
-				}
-				elsif  ( ${offset} == 7 )
-				{
-					qx( ${SERVER_ADMIN} settings mail:imap:log_level = ${value} >> ${MIGRATION_LOG} );
-				}
+			if ( !(${value} eq "") && !(${key} eq "") ) {
+				qx( ${SERVER_ADMIN} settings ${key} = ${value} >> ${MIGRATION_LOG} );
 			}
 		}
 	}
@@ -544,215 +690,52 @@ sub migrate_log_settings ()
 	# close it, close it up again
 	close( SYS_LOG );
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_log_settings : E\n" ); }
 } # migrate_log_settings
 
 
 #################################################################
-# get_services_state ()
+# set_log_defaults ()
 
-sub get_services_state ()
+sub set_log_defaults ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_services_state : S\n" ); }
-
-	# the response to launchctl list is: "launchctl list returned unknown response"
-	# if the service is not running, otherwise it returns the full launchd plist
-
-	# check cyrus imap state
-	my $TEST = qx( ${LAUNCHCTL} list $g_cyrus_launchd_key >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	if ( ! (substr( $TEST, 0, 9) eq "launchctl") )
-	{
-		if ( ${DEBUG} ) {
-			print( "Cyrus enabled:\n $TEST\n" ); }
-
-		$g_cyrus_enabled = 1;
-	}
-
-	# check mailman state
-	$TEST = qx( ${LAUNCHCTL} list $g_mailman_launchd_key >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	if ( ! (substr( $TEST, 0, 9) eq "launchctl") )
-	{
-		if ( ${DEBUG} ) {
-			print( "Mailman enabled:\n $TEST\n" ); }
-
-		$g_mailman_enabled = 1;
-	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_services_state : E\n" ); }
-} # get_services_state
+	qx( ${SERVER_ADMIN} settings mail:imap:log_level = "info" >> ${MIGRATION_LOG} );
+	qx( ${SERVER_ADMIN} settings mail:postfix:log_level = "info" >> ${MIGRATION_LOG} );
+	qx( ${SERVER_ADMIN} settings mail:postfix:spam_log_level = "info" >> ${MIGRATION_LOG} );
+	qx( ${SERVER_ADMIN} settings mail:postfix:virus_log_level = "info" >> ${MIGRATION_LOG} );
+	qx( ${SERVER_ADMIN} settings mail:postfix:virus_db_log_level = "info" >> ${MIGRATION_LOG} );
+} # set_log_defaults
 
 
 #################################################################
-# halt_mail_services ()
+# load_postfix ()
 
-sub halt_mail_services ()
+sub load_postfix ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::halt_mail_services : S\n" ); }
-
-	print LOG_FILE "Halting mail services\n";
-
-	# stop amavisd
-	if ( path_exists("${g_amavisd_launchd_plist}") ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping amavisd\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_amavisd_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( path_exists("${g_amavisd_cleanup_launchd_plist}") ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping amavisd cleanup\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_amavisd_cleanup_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	# stop clamav
-	if ( path_exists( "${g_clamav_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping clamd\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_clamav_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( path_exists( "${g_freshclam_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping freshclam\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_freshclam_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	# stop SpamAssassin
-	if ( path_exists( "${g_updatesa_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping sa-update\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_updatesa_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( path_exists( "${g_salearn_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping sa-learn\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_salearn_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	# stop mailman
-	if ( path_exists( "${g_mailman_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping mailman\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_mailman_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
+	log_funct( "load_postfix" );
+	print LOG_FILE "Reloading current SMPT instance\n";
 
 	# stop postfix
-	if ( path_exists( "${g_postfix_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping postfix\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_postfix_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+	if ( path_exists( "${POSTFIX_LAUNCHD_PLIST}" ) ) {
+		log_debug( "- Stopping postfix" );
+		qx( ${LAUNCHCTL} load -w ${POSTFIX_LAUNCHD_PLIST} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 	}
-
-	# stop dovecot
-	if (path_exists($g_fts_update_launchd_plist)) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping update-fts-index\n" ); }
-
-		qx(${LAUNCHCTL} unload -w ${g_fts_update_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}");
-	}
-
-	if ( path_exists( "${g_push_notify_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping push notification\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_push_notify_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( path_exists( "${g_dovecot_sieve_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping dovecot sieve\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_dovecot_sieve_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( path_exists( "${g_dovecot_launchd_plist}" ) ) {
-		if ( ${DEBUG} ) {
-			print( "- Stopping dovecot\n" ); }
-
-		qx( ${LAUNCHCTL} unload -w ${g_dovecot_launchd_plist} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::halt_mail_services : E\n" ); }
-
-} # halt_mail_services
+} # load_postfix
 
 
 #################################################################
-# copy_plists ()
+# unload_postfix ()
 
-sub copy_plists ()
+sub unload_postfix ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::copy_plists : S\n" ); }
-
-	print LOG_FILE "Halting mail services\n";
-
-	# copy amavisd
-	if ( path_exists("${g_source_root}" . "${g_amavisd_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_amavisd_launchd_plist}", "${g_amavisd_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_amavisd_cleanup_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_amavisd_cleanup_launchd_plist}", "${g_amavisd_cleanup_launchd_plist}" );
-	}
-
-	# stop clamav
-	if ( path_exists("${g_source_root}" . "${g_clamav_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_clamav_launchd_plist}", "${g_clamav_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_freshclam_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_freshclam_launchd_plist}", "${g_freshclam_launchd_plist}" );
-	}
-
-	# stop SpamAssassin
-	if ( path_exists("${g_source_root}" . "${g_updatesa_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_updatesa_launchd_plist}", "${g_updatesa_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_salearn_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_salearn_launchd_plist}", "${g_salearn_launchd_plist}" );
-	}
-
-	# stop mailman
-	if ( path_exists("${g_source_root}" . "${g_mailman_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_mailman_launchd_plist}", "${g_mailman_launchd_plist}" );
-	}
+	log_funct( "unload_postfix" );
+	print LOG_FILE "Unloading current SMPT instance\n";
 
 	# stop postfix
-	if ( path_exists("${g_source_root}" . "${g_postfix_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_postfix_launchd_plist}", "${g_postfix_launchd_plist}" );
+	if ( path_exists( "${POSTFIX_LAUNCHD_PLIST}" ) ) {
+		log_debug( "- Stopping postfix" );
+		qx( ${LAUNCHCTL} unload -w ${POSTFIX_LAUNCHD_PLIST} >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 	}
-
-	# stop dovecot
-	if ( path_exists("${g_source_root}" . "${g_fts_update_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_fts_update_launchd_plist}", "${g_fts_update_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_push_notify_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_push_notify_launchd_plist}", "${g_push_notify_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_dovecot_sieve_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_dovecot_sieve_launchd_plist}", "${g_dovecot_sieve_launchd_plist}" );
-	}
-	if ( path_exists("${g_source_root}" . "${g_dovecot_launchd_plist}") ) {
-		copy("${g_source_root}" . "${g_dovecot_launchd_plist}", "${g_dovecot_launchd_plist}" );
-	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::copy_plists : E\n" ); }
-
-} # copy_plists
+} # unload_postfix
 
 
 ################################################################################
@@ -761,26 +744,18 @@ sub copy_plists ()
 sub get_server_version ($)
 {
 	my ($VERS) = @_;
-	if ( ${FUNC_LOG} ) {
-		print( "::get_server_version : S\n"); }
-
-	if ( ${DEBUG} ) {
-		printf( "- sourceVersion: %s\n", "${VERS}"); }
+	log_funct( "get_server_version" );
 
 	my @SRV_VER_PARTS = split(/\./, $VERS); 
-	if ( ${DEBUG} )
-	{
-		print( "- Major : " . ${SRV_VER_PARTS}[0] . "\n" );
-		print( "- Minor : " . ${SRV_VER_PARTS}[1] . "\n" );
-		print( "- Update: " . ${SRV_VER_PARTS}[2] . "\n" );
-	}
+
+	log_debug( sprintf("sourceVersion: %s", "${VERS}") );
+	log_debug( sprintf("  major : %s", ${SRV_VER_PARTS}[0]) );
+	log_debug( sprintf("  minor : %s", ${SRV_VER_PARTS}[1]) );
+	log_debug( sprintf("  update: %s", ${SRV_VER_PARTS}[2]) );
 
 	$SRV_MAJOR = ${SRV_VER_PARTS}[0];
 	$SRV_MINOR = ${SRV_VER_PARTS}[1];
 	$SRV_UPDATE = ${SRV_VER_PARTS}[2];
-
-	if (${FUNC_LOG}) {
-		print( "::get_server_version : E\n"); }
 } # get_server_version
 
 
@@ -789,11 +764,8 @@ sub get_server_version ($)
 
 sub get_mail_partitions ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_mail_partitions : S\n" ); }
-
-	if ( ${DEBUG} ) {
-		print( "- opening: ${g_source_root} . ${IMAPD_CONF}\n" ); }
+	log_funct( "get_mail_partitions" );
+	log_debug( "- opening: ${g_source_root} . ${IMAPD_CONF}" );
 
 	#	do -not- check for open failure, custom mail partitions will
 	#	 simply not get migrated if /etc/impad.conf does not exist
@@ -828,8 +800,7 @@ sub get_mail_partitions ()
 						} else {
 							&print_message( "Warning:", "Mail data was located on an Xsan volume:", "  ${data_path}", "This data will need to be migrated manually" );
 						}
-						if ( ${DEBUG} ) {
-							printf( "- default partition: \"${data_path}\n" ); }
+						log_debug( "- default partition: \"${data_path}" );
 					} else {
 						# only do migration on non-Xsan volumes
 						if ( ! (substr( "${data_path}", 0, length($g_xsan_volume)) eq $g_xsan_volume) ) {
@@ -837,16 +808,12 @@ sub get_mail_partitions ()
 						} else {
 							&print_message( "Warning:", "Mail data was located on an Xsan volume:", "  ${data_path}", "This data will need to be migrated manually" );
 						}
-						if ( ${DEBUG} ) {
-							printf( "- alt partition: \"${data_path}\"\n" ); }
+						log_debug( "- alt partition: \"${data_path}\"" );
 					}
 				}
 			}
 		}
 	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::get_mail_partitions : E\n" ); }
 
 	close( cyrus_imapd );
 
@@ -858,10 +825,9 @@ sub get_mail_partitions ()
 
 sub do_xsan_check ()
 {
-	if (${FUNC_LOG}) {
-		print( "::do_xsan_check : S\n"); }
+	log_funct( "do_xsan_check" );
 
-	my $MOUNTS_TXT = "/private/etc/dovecot/mount.txt";
+	my $MOUNTS_TXT = "/Library/Server/Mail/Config/dovecot/mount.txt";
 
 	qx( mount -v > ${MOUNTS_TXT} );
 
@@ -876,8 +842,7 @@ sub do_xsan_check ()
 		chomp( $TYPE );
 		chomp( $VOL_NAME );
 
-		if ( ${DEBUG} ) {
-			printf( "- Volume: %s\n", ${VOL_NAME}); }
+		log_debug( sprintf( "- Volume: %s\n", ${VOL_NAME}) );
 
 		# get the volume type from mount text:
 		#	ie. /dev/disk0s4 on /Volumes/Leopard-GM (hfs, local, journaled)
@@ -888,16 +853,14 @@ sub do_xsan_check ()
 		# if it is of acfs type, then is an Xsan volume
 		if ( ${TYPE} eq "acfs" )
 		{
-			if ( ${DEBUG} ) {
-				printf( "- Xsan volume: %s\n", ${VOL_NAME}); }
+			log_debug( sprintf( "- Xsan volume: %s\n", ${VOL_NAME}) );
 
 			# get the volume name
 			$VOL_NAME =~ s/^.*on //;
 			$VOL_NAME =~ s/ .*//;
 			$g_xsan_volume = $VOL_NAME;
 
-			if ( ${DEBUG} ) {
-				printf( "- Xsan volume name: %s\n", ${g_xsan_volume}); }
+			log_debug( sprintf( "- Xsan volume name: %s\n", ${g_xsan_volume}) );
 
 			# only 1 xsan supported so break if we find 1
 			last;
@@ -909,8 +872,6 @@ sub do_xsan_check ()
 	if ( path_exists("${MOUNTS_TXT}") ) {
 		unlink("${MOUNTS_TXT}"); }
 
-	if (${FUNC_LOG}) {
-		print( "::do_xsan_check : E\n"); }
 } # do_xsan_check
 
 
@@ -919,8 +880,7 @@ sub do_xsan_check ()
 
 sub do_cyrus_db_cleanup ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_db_cleanup : S\n" ); }
+	log_funct( "do_cyrus_db_cleanup" );
 
 	# nothing to clean up if in-place-upgrade
 	if ( "${g_source_root}" eq "/Previous System" )
@@ -931,8 +891,7 @@ sub do_cyrus_db_cleanup ()
 
 	my $exit_code = 1;
 
-	if ( ${DEBUG} ) {
-		print( "- opening: ${g_source_root} . ${IMAPD_CONF}\n" ); }
+	log_debug( "- opening: ${g_source_root} . ${IMAPD_CONF}" );
 
 	open( cyrus_imapd, "<${g_source_root}" . ${IMAPD_CONF} );
 	while( <cyrus_imapd> )
@@ -945,8 +904,7 @@ sub do_cyrus_db_cleanup ()
 		chomp($config_key);
 		chomp($config_value);
 
-		if ( ${DEBUG} ) {
-			print( "- line: $config_key\n" ); }
+		log_debug( "- line: $config_key" );
 
 		if ( $config_key =~ s/:.*// )
 		{
@@ -972,8 +930,7 @@ sub do_cyrus_db_cleanup ()
 						# copy cyrus db to /var/imap
 						qx( ${CP} -rpfv "${g_db_path}" "/private/var/imap" 2>&1 >> ${MIGRATION_LOG} );
 
-						if ( ${DEBUG} ) {
-							print( "- copy user database from: ${g_db_path}\n" ); }
+						log_debug( "- copy user database from: ${g_db_path}" );
 
 						$exit_code = 0;
 					} else {
@@ -989,11 +946,7 @@ sub do_cyrus_db_cleanup ()
 	if ( $exit_code != 0 ) {
 		&print_message( "Error:", "Missing configdirectory key in ${g_source_root}" ); }
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_db_cleanup : E\n" ); }
-
 	return( $exit_code );
-
 } # do_cyrus_db_cleanup
 
 
@@ -1007,8 +960,7 @@ sub do_dovecot_data_migration ($)
 	my( $src_path ) = $_[0];
 	my( $dst_path ) = $_[1];
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_dovecot_data_migration : S\n" ); }
+	log_funct( "do_dovecot_data_migration" );
 
 	# create a temporary imapd.conf
 	if ( path_exists( "${g_imapd_conf}" ) ) {
@@ -1050,8 +1002,7 @@ sub do_dovecot_data_migration ($)
 		#	used for mapping into cyrus database directory layout
 		my $user_tag = substr( $user_id, 0, 1 );
 
-		if ( ${DEBUG} ) {
-			printf( "- verifying user seen db: \"${g_db_path}/user/${user_tag}/${user_id}.seen\"\n" ); }
+		log_debug( "- verifying user seen db: \"${g_db_path}/user/${user_tag}/${user_id}.seen\"" );
 
 		if ( path_exists( "${g_db_path}/user/${user_tag}/${user_id}.seen" ) )
 		{
@@ -1059,29 +1010,27 @@ sub do_dovecot_data_migration ($)
 			qx( "${cyrus_bins}/cvt_cyrusdb" -C "${g_imapd_conf}" "${g_db_path}/user/${user_tag}/${user_id}.seen" skiplist "${g_db_path}/user/${user_tag}/${user_id}.seen.flat" flat >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 
 			# Migrate mail data
-			if ( ${DEBUG} )
-			{
-				printf( "-  /usr/bin/cvt_mail_data -g ${cvt_flag} -d ${g_db_path} -s ${src_path} -t ${dst_path} -a ${user_id}\n" );
-				qx( /usr/bin/cvt_mail_data -g ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+			if ( ${DEBUG} ) {
+				print LOG_FILE "-  ${CVT_MAIL_DATA} -g ${cvt_flag} -d ${g_db_path} -s ${src_path} -t ${dst_path} -a ${user_id}\n";
+				qx( ${CVT_MAIL_DATA} -g ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 			} else {
-				qx( /usr/bin/cvt_mail_data ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+				qx( ${CVT_MAIL_DATA} ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 			}
-			
+
 			# clean up
 			qx( ${RM} "${g_db_path}/user/${user_tag}/${user_id}.seen.flat" >> "${MIGRATION_LOG}" );
 		} else {
 			# Do mail migration without setting any seen flags
-			if ( ${DEBUG} )
-			{
-				printf( "-  /usr/bin/cvt_mail_data -g ${cvt_flag} -d ${g_db_path} -s ${src_path} -t ${dst_path} -a ${user_id}\n" );
-				qx( /usr/bin/cvt_mail_data -g ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+			if ( ${DEBUG} ) {
+				print LOG_FILE "-  ${CVT_MAIL_DATA} -g ${cvt_flag} -d ${g_db_path} -s ${src_path} -t ${dst_path} -a ${user_id}\n";
+				qx( ${CVT_MAIL_DATA} -g ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 			} else {
-				qx( /usr/bin/cvt_mail_data ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+				qx( ${CVT_MAIL_DATA} ${cvt_flag} -d "${g_db_path}" -s "${src_path}" -t "${dst_path}" -a ${user_id} >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 			}
 		}
 
 		# do user id to guid mapping
-		my $user_guid = qx( /usr/bin/cvt_mail_data -i ${user_id} );
+		my $user_guid = qx( ${CVT_MAIL_DATA} -i ${user_id} );
 		chomp( ${user_guid} );
 		if ( substr(${user_guid}, 0, 13) eq "No GUID found" ) {
 			qx( chown -R _dovecot:mail "${dst_path}/${user_id}" >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
@@ -1094,9 +1043,6 @@ sub do_dovecot_data_migration ($)
 	if ( path_exists( "${g_imapd_conf}" ) ) {
 		qx( ${RM} -rf "${g_imapd_conf}" >> ${MIGRATION_LOG} ); }
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_dovecot_data_migration : S\n" ); }
-
 } # do_dovecot_data_migration
 
 
@@ -1107,8 +1053,7 @@ sub do_cyrus_dovecot_migration ()
 {
 	my $INDEX=0;
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_dovecot_migration : S\n" ); }
+	log_funct( "do_cyrus_dovecot_migration" );
  
 	# get partitions from imapd.conf
 	get_mail_partitions();
@@ -1125,10 +1070,6 @@ sub do_cyrus_dovecot_migration ()
 		qx( ${PLIST_BUDDY} -c 'Add :alternate_partitions:${INDEX} string ${a_partition}' ${g_migration_plist} );
 		${INDEX} = ${INDEX} + 1;
 	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_dovecot_migration : E\n" ); }
-
 } # do_cyrus_dovecot_migration
 
 
@@ -1139,24 +1080,15 @@ sub do_cyrus_config_check ($)
 {
 	my ( $arg_1 ) = @_;
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_config_check : S\n" ); }
+	log_funct( "do_cyrus_config_check" );
 
-	if ( ${DEBUG} ) {
-		printf( "- Checking for: %s\n", "${g_source_root}" . "${IMAPD_CONF}" ); }
+	log_debug( "- Checking for: %s\n${g_source_root}${IMAPD_CONF}" );
 
-	if ( ! path_exists( "${g_source_root}" . "${IMAPD_CONF}" ) )
+	if ( ! path_exists( "${g_source_root}${IMAPD_CONF}" ) )
 	{
 		&print_message( "Error:", "Missing configuration file: ${g_source_root}" . "${IMAPD_CONF}", "No ${$arg_1} data was migrated." );
-
-		if ( ${FUNC_LOG} ) {
-			printf( "::do_cyrus_config_check : E - 1\n" ); }
-
 		return( 1 );
 	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cyrus_config_check : E - 0\n" ); }
 
 	return( 0 );
 } # do_cyrus_config_check
@@ -1167,29 +1099,23 @@ sub do_cyrus_config_check ($)
 
 sub migrate_cyrus_config ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_cyrus_config : S\n" ); }
+	log_funct( "migrate_cyrus_config" );
 
-	if ( do_cyrus_config_check( "configuration" ) )
-	{
-		if ( ${FUNC_LOG} ) {
-			printf( "::migrate_cyrus_config : 1: 1\n" ); }
-
+	if ( do_cyrus_config_check( "configuration" ) ) {
 		return;
 	}
 
 	#################################################################
 	# Setup temp partition file
 	my $clear_auth_enabled = "yes";
-	my $quota_warn_value = 90;	# 10.5 default
+	my $quota_warn_value = 90;	# 10.6 default
 	my $INDEX=0;
-	my $TMP_FILE="/private/etc/dovecot/tmp-partitions.txt";
+	my $TMP_FILE="/Library/Server/Mail/Config/dovecot/tmp-partitions.txt";
 	if ( path_exists("${TMP_FILE}") ) {
 		unlink("${TMP_FILE}"); }
 
 	open( CYRUS_CONFIG, "<${g_source_root}" . ${IMAPD_CONF} );
-	while( <CYRUS_CONFIG> )
-	{
+	while( <CYRUS_CONFIG> ) {
 		# store $_ value because subsequent operations may change it
 		my( $config_key ) = $_;
 		my( $config_value ) = $_;
@@ -1198,8 +1124,7 @@ sub migrate_cyrus_config ()
 		chomp($config_key);
 		chomp($config_value);
 
-		if ( ${DEBUG} ) {
-			print( "- line: $config_key\n" ); }
+		log_debug( "- line: $config_key" );
 
 		if ( $config_key =~ s/:.*// )
 		{
@@ -1209,15 +1134,13 @@ sub migrate_cyrus_config ()
 				$config_value =~ s/^\s+//;
 				$config_value =~ s/\s+$//;
 
-				if ( ${DEBUG} ) {
-					print( "- key: $config_key,  value: $config_value\n" ); }
+				log_debug( "- key: $config_key,  value: $config_value" );
 
 				my $TAG = substr( $config_key, 0, 10 );
 				if ( $TAG eq "partition-" ) {
 					$TAG = substr( $config_key, 10, (length($config_key) - 10) );
 
-					if ( ${DEBUG} ) {
-						print( "- tag: $TAG,  value: $config_value\n" ); }
+					log_debug( "- tag: $TAG,  value: $config_value" );
 
 					if ( "$TAG" eq "default" )
 					{
@@ -1322,6 +1245,7 @@ sub migrate_cyrus_config ()
 			}
 		}
 	}
+	close( CYRUS_CONFIG );
 
 	# set quota warning level
 	qx( ${SERVER_ADMIN} settings mail:imap:quotawarn = $quota_warn_value >> ${MIGRATION_LOG} );
@@ -1335,44 +1259,11 @@ sub migrate_cyrus_config ()
 		qx( ${SERVER_ADMIN} settings < "${TMP_FILE}" >> ${MIGRATION_LOG} );
 		unlink("${TMP_FILE}");
 	}
-
-	# set SSL keys for postfix
-	my @smtp_use_tls = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" smtpd_use_tls );
-	chomp(@smtp_use_tls);
-
-	if ( $smtp_use_tls[0] eq "yes" )
-	{
-		if ( !($g_postfix_ssl_key eq "") && !($g_postfix_ssl_cert eq "") )
-		{
-			my @smtp_enforce_tls = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" smtpd_enforce_tls );
-			chomp(@smtp_enforce_tls);
-			if ( $smtp_enforce_tls[0] eq "yes" )
-			{
-				qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options = "require" >> ${MIGRATION_LOG} );
-			} else {
-				qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options = "use" >> ${MIGRATION_LOG} );
-			}
-
-			qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_key_file = /etc/certificates/${g_postfix_ssl_key} >> ${MIGRATION_LOG} );
-			qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_cert_file = /etc/certificates/${g_postfix_ssl_cert} >> ${MIGRATION_LOG} );
-			qx( ${SERVER_ADMIN} settings mail:postfix:smtpd_tls_CAfile = /etc/certificates/${g_postfix_ssl_ca} >> ${MIGRATION_LOG} );
-		} else {
-			&print_message( "Warning:", "SSL for SMTP was configured with: $smtp_use_tls[0].",
-							"The migration script was unable determine SSL certificate mapping",
-							"You will need to manually enable SSL for SMTP" );
-			qx( ${SERVER_ADMIN} settings mail:postfix:tls_server_options = "none" >> ${MIGRATION_LOG} );
-		}
-	}
-
-	close( CYRUS_CONFIG );
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_cyrus_config : E\n" ); }
 } # migrate_cyrus_config
 
 
 #################################################################
-# migrate_dovecot_config ()
+# sedconf ()
 
 sub sedconf
 {
@@ -1384,18 +1275,30 @@ sub sedconf
 	my $value = shift;
 	my $secpat = shift;
 
-	my $srcpath = "$g_target_root/etc/dovecot/$conf";
+	log_funct( "sedconf" );
+
+	my $srcpath = "${g_target_root}${DOVECOT_CONFIG}/$conf";
 	if (!open(SRC, "<", $srcpath)) {
 		print LOG_FILE "can't read config file $srcpath: $!\n";
 		return;
 	}
 
-	my $dstpath = "$g_target_root/etc/dovecot/$conf.new";
+	my $dstpath = "${g_target_root}${DOVECOT_CONFIG}/$conf.new";
 	if (!open(DST, ">", $dstpath)) {
 		print LOG_FILE "can't create config file $dstpath: $!\n";
 		close SRC;
 		return;
 	}
+
+	log_debug( "src path: $srcpath" );
+	log_debug( "dst path: $dstpath" );
+	log_debug( "    conf: $conf" );
+	log_debug( "     cmt: $cmt" );
+	log_debug( "     key: $key" );
+	log_debug( "  action: $action" );
+	log_debug( "    conf: $conf" );
+	log_debug( "   value: $value" );
+	log_debug( "  secpat: $secpat" );
 
 	my $cmtpat = "";
 	$cmtpat = qr{(?:#\s*)?} if $cmt;
@@ -1419,11 +1322,13 @@ sub sedconf
 		} elsif (!defined($secpat) || (@section == 1 && $section[0] =~ $secpat)) {
 			if ($action eq "=") {
 				# replace value
+				log_debug( "    line: $line" );
 				if ($line =~ s/^$cmtpat($key\s*=\s*).*$/$1$value/) {
 					$done = 1;
 				}
 			} elsif ($action eq "+") {
 				# append to list value if not already there
+				log_debug( "    line: $line" );
 				if ($line =~ /$key\s*=.*(\s|=)$value(\s|$)/) {
 					$unneeded = 1;
 				} elsif ($line =~ s/^$cmtpat($key\s*=\s*.*)/$1 $value/) {
@@ -1431,6 +1336,7 @@ sub sedconf
 				}
 			} elsif ($action eq "-") {
 				# remove from list value
+				log_debug( "    line: $line" );
 				if ($line =~ s/^$cmtpat($key\s*=\s*)$value(\s.*|$)/$1$2/ ||
 				    $line =~ s/^$cmtpat($key\s*=.*)\s$value(\s.*|$)/$1$2/) {
 					$done = 1;
@@ -1455,7 +1361,7 @@ sub sedconf
 		return;
 	}
 
-	my $savedir = "$g_target_root/etc/dovecot/pre-migrate";
+	my $savedir = "${g_target_root}${DOVECOT_CONFIG}/pre-migrate";
 	mkdir($savedir, 0755);
 	mkdir("$savedir/conf.d", 0755);
 	my $savepath = "$savedir/$conf";
@@ -1469,13 +1375,71 @@ sub sedconf
 	}
 }
 
-sub migrate_dovecot_config ()
+#################################################################
+# copy_dovecot_config ()
+
+sub copy_dovecot_config ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_dovecot_config : S\n" );
+	log_funct( "copy_dovecot_config" );
+
+	# copy 10.7.x config settings into default config location
+	qx(${CP} -rpf "${g_source_root}/private/etc/dovecot" "${g_target_root}${CONFIG_ROOT}/" );
+} 
+
+
+#################################################################
+# copy_dovecot_config ()
+
+sub update_dovecot_config_paths ()
+{
+	log_funct( "update_dovecot_config_paths" );
+	print LOG_FILE "Updating POP/IMAP configuation paths\n";
+
+	# modify paths to point to new conig location
+	my $src = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/auth-od.conf.ext";
+	my $dst = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/auth-od.conf.ext.new";
+	my $value = qx( ${GREP} "partition=/etc/dovecot/partition_map.conf" $src );
+	if ( !($value eq "") ) {
+		qx( /usr/bin/sed -e "s/\\/etc\\/dovecot\\/partition_map.conf/\\/Library\\/Server\\/Mail\\/Config\\/dovecot\\/partition_map.conf/" "$src" > "$dst" );
+		move( "$src",  "$src" . ".$g_source_version" . ".orig" );
+		move( "$dst", "$src" );
 	}
 
-	my ($hostname) = qx($GREP "^myhostname *=" "${g_target_root}/etc/postfix/main.cf" 2>>$MIGRATION_LOG | sed 's,.*= *,,');
+	# modify paths to point to new conig location
+	$src = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/auth-submit.conf.ext";
+	$dst = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/auth-submit.conf.ext.new";
+	my $value = qx( ${GREP} "/etc/dovecot/submit.passdb" $src );
+	if ( !($value eq "") ) {
+		qx( /usr/bin/sed -e "s/\\/etc\\/dovecot\\/submit.passdb/\\/Library\\/Server\\/Mail\\/Config\\/dovecot\\/submit.passdb/" "$src" > "$dst" );
+		move( "$src",  "$src" . ".$g_source_version" . ".orig" );
+		move( "$dst", "$src" );
+	}
+
+	# if data vol was set to /var/spool/imap/dovecot, then make target /Library/Server/Mail/Data/mail
+	my $mail_loc = qx( ${SERVER_ADMIN} settings mail:imap:partition-default );
+	chomp($mail_loc);
+	my $offset = index($mail_loc, "/var/spool/imap/dovecot/mail");
+	if ( index($mail_loc, "/var/spool/imap/dovecot/mail") > 0 ) {
+		qx( ${SERVER_ADMIN} settings mail:imap:partition-default = /Library/Server/Mail/Data/mail );
+	}
+
+	$src = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/10-master.conf";
+	$dst = "${g_target_root}${CONFIG_ROOT}/dovecot/conf.d/10-master.conf.new";
+	qx( /usr/bin/sed -e "1,/    #user =/s/    #user =/    user = _dovecot/" "$src" > "$dst" );
+	move( "$src",  "$src" . ".$g_source_version" . ".orig" );
+	move( "$dst", "$src" );
+} 
+
+#################################################################
+# migrate_dovecot_config ()
+
+sub migrate_dovecot_config ()
+{
+	log_funct( "migrate_dovecot_config" );
+
+	print LOG_FILE "Migrating previous POP/IMAP configuation settings";
+
+	my ($hostname) = qx($GREP "^myhostname *=" "${g_target_root}${POSTFIX_CONFIG}/main.cf" 2>>$MIGRATION_LOG | sed 's,.*= *,,');
 	chomp $hostname;
 	if (!defined($hostname) || $hostname eq "") {
 		$hostname = qx(hostname);
@@ -1489,8 +1453,8 @@ sub migrate_dovecot_config ()
 		$oldtag = "old";
 	}
 	if (path_exists("${g_source_root}/private/etc/dovecot")) {
-		qx(${RM} -rf "${g_target_root}/private/etc/dovecot/$oldtag" >> ${MIGRATION_LOG} 2>> ${MIGRATION_LOG});
-		qx(${CP} -rpf "${g_source_root}/private/etc/dovecot" "${g_target_root}/private/etc/dovecot/$oldtag" >> ${MIGRATION_LOG} 2>> ${MIGRATION_LOG});
+		qx(${RM} -rf "${g_target_root}${DOVECOT_CONFIG}/$oldtag" >> ${MIGRATION_LOG} 2>> ${MIGRATION_LOG});
+		qx(${CP} -rpf "${g_source_root}/private/etc/dovecot" "${g_target_root}${DOVECOT_CONFIG}/$oldtag" >> ${MIGRATION_LOG} 2>> ${MIGRATION_LOG});
 	}
 
 	# All the config files that may change.  Others not listed won't.
@@ -1546,9 +1510,9 @@ sub migrate_dovecot_config ()
 	my %hot;
 
 	# determine all options set in old config file(s)
-	my $from_dovecot2 = path_exists("$g_target_root/private/etc/dovecot/$oldtag/conf.d");
+	my $from_dovecot2 = path_exists("${g_target_root}${DOVECOT_CONFIG}/$oldtag/conf.d");
 	for my $file (@conf_files) {
-		my $dcold = "$g_target_root/private/etc/dovecot/$oldtag/$file";
+		my $dcold = "${g_target_root}${DOVECOT_CONFIG}/$oldtag/$file";
 		if (open(DCOLD, "<", $dcold)) {
 			my @section;
 			while (my $line = <DCOLD>) {
@@ -1568,6 +1532,7 @@ sub migrate_dovecot_config ()
 					$hot{$1} = $hot;
 				} elsif (@section == 0 &&
 					 $line =~ /^(disable_plaintext_auth |
+						     ssl |
 						     mail_location |
 						     mail_debug |
 						     mmap_disable |
@@ -1588,7 +1553,7 @@ sub migrate_dovecot_config ()
 						$val{ssl} = "required";
 					}
 					$hot{ssl} = $hot;
-				} elsif ($line =~ /^(ssl_(?:cert|key|ca))_file\s*=\s*(.*)/ && ($hot || !defined($hot{$1}))) {
+				} elsif ($line =~ /^(ssl_(?:cert|key|ca))(?:_file)?\s*=\s*(.*)/ && ($hot || !defined($hot{$1}))) {
 					die unless exists $val{$1};	# check for typos
 					$val{$1} = $2;
 					$hot{$1} = $hot;
@@ -1659,19 +1624,20 @@ sub migrate_dovecot_config ()
 	sedconf($imap_conf,		1, "protocols",			"+", "sieve",					undef)				if $hot{protocols}
 		and grep { $_ eq "managesieve" } @{$val{protocols}};
 	sedconf($imap_conf_auth,	1, "disable_plaintext_auth",	"=", $val{disable_plaintext_auth},		undef)				if $hot{disable_plaintext_auth};
-	sedconf($imap_conf_ssl,		1, "ssl",			"=", $val{ssl},					undef)				if $hot{ssl};
-	sedconf($imap_conf_ssl,		1, "ssl_cert",			"=", $val{ssl_cert},				undef)				if $hot{ssl_cert};
+	sedconf($imap_conf_ssl,		1, "ssl",			"=", $val{ssl},						undef)				if $hot{ssl};
+	sedconf($imap_conf_ssl,		1, "ssl_cert",			"=", $val{ssl_cert},			undef)				if $hot{ssl_cert};
 	sedconf($imap_conf_ssl,		1, "ssl_key",			"=", $val{ssl_key},				undef)				if $hot{ssl_key};
 	sedconf($imap_conf_ssl,		1, "ssl_ca",			"=", $val{ssl_ca},				undef)				if $hot{ssl_ca};
-	sedconf($imap_conf_mail,	0, "mail_location",		"=", $val{mail_location},			undef)				if $hot{mail_location};
-	sedconf($imap_conf_logging,	1, "mail_debug",		"=", $val{mail_debug},				undef)				if $hot{mail_debug};
-	sedconf($imap_conf_mail,	1, "mmap_disable",		"=", $val{mmap_disable},			undef)				if $hot{mmap_disable};
-	sedconf($imap_conf_mail,	1, "dotlock_use_excl",		"=", $val{dotlock_use_excl},			undef)				if $hot{dotlock_use_excl};
-	sedconf($imap_conf_master,	1, "process_limit",		"=", $val{max_mail_processes},			qr{^service\s+(imap|pop3)\s+})	if $hot{max_mail_processes};
-	sedconf($imap_conf,		1, "aps_topic",			"=", $val{aps_topic},				undef)				if $hot{aps_topic};
-	sedconf($imap_conf_lda,		1, "postmaster_address",	"=", $val{postmaster_address},			undef)				if $hot{postmaster_address}
+	sedconf($imap_conf_mail,	0, "mail_location",		"=", $val{mail_location},		undef)				if $hot{mail_location};
+	sedconf($imap_conf_logging,	1, "mail_debug",		"=", $val{mail_debug},			undef)				if $hot{mail_debug};
+	sedconf($imap_conf_mail,	1, "mmap_disable",		"=", $val{mmap_disable},		undef)				if $hot{mmap_disable};
+	sedconf($imap_conf_mail,	1, "dotlock_use_excl",	"=", $val{dotlock_use_excl},	undef)				if $hot{dotlock_use_excl};
+	#sedconf($imap_conf_master,	1, "user",				"=", "_dovecot_xxx",			qr{^service\s+auth\s+});
+	sedconf($imap_conf_master,	1, "process_limit",		"=", $val{max_mail_processes},	qr{^service\s+(imap|pop3)\s+})	if $hot{max_mail_processes};
+	sedconf($imap_conf,			1, "aps_topic",			"=", $val{aps_topic},			undef)				if $hot{aps_topic};
+	sedconf($imap_conf_lda,		1, "postmaster_address","=", $val{postmaster_address},	undef)				if $hot{postmaster_address}
 		and $val{postmaster_address} !~ /example\.com/;
-	sedconf($imap_conf_lda,		1, "hostname",			"=", $val{hostname},				undef)				if $hot{hostname};
+	sedconf($imap_conf_lda,		1, "hostname",			"=", $val{hostname},			undef)				if $hot{hostname};
 	sedconf($imap_conf_imap,	1, "mail_plugins",		"+", "urlauth",					qr{^protocol\s+imap\s+})	if $hot{ssl}
 		and ($val{ssl} eq "yes" || $val{ssl} eq "required");
 	sedconf($imap_conf_lda,		1, "mail_plugins",		"+", "sieve",					qr{^protocol\s+lda\s+})		if $hot{lda_plugins}
@@ -1681,22 +1647,22 @@ sub migrate_dovecot_config ()
 	sedconf($imap_conf_logging,	1, "auth_debug",		"=", $val{auth_debug},				undef)				if $hot{auth_debug};
 	sedconf($imap_conf_logging,	1, "auth_debug_passwords",	"=", $val{auth_debug_passwords},		undef)				if $hot{auth_debug_passwords};
 	if ($hot{auth_mechanisms}) {
-		sedconf($imap_conf_auth, 1, "auth_mechanisms",		"-", "cram-md5",				undef)
+		sedconf($imap_conf_auth, 1, "auth_mechanisms",	"-", "cram-md5",				undef)
 			if !grep { $_ eq "cram-md5" } @{$val{auth_mechanisms}};
-		sedconf($imap_conf_auth, 1, "auth_mechanisms",		"+", $_,					undef)
+		sedconf($imap_conf_auth, 1, "auth_mechanisms",	"+", $_,					undef)
 			for @{$val{auth_mechanisms}};
 	}
 	sedconf($imap_conf_od,		1, "args",			"=", join(" ", @{$val{userdb_od_args}}),	qr{^userdb\s+})			if $hot{userdb_od_args};
-	sedconf($imap_conf_quota,	1, "quota_warning",		"=", $val{quota_warning},			qr{^plugin\s+})			if $hot{quota_warning};
-	sedconf($imap_conf_quota,	1, "quota_warning2",		"=", $val{quota_warning2},			qr{^plugin\s+})			if $hot{quota_warning2};
-	qx($CP -f "$g_target_root/private/etc/dovecot/$oldtag/partition_map.conf" "$g_target_root/private/etc/dovecot/partition_map.conf");
+	sedconf($imap_conf_quota,	1, "quota_warning",	"=", $val{quota_warning},			qr{^plugin\s+})			if $hot{quota_warning};
+	sedconf($imap_conf_quota,	1, "quota_warning2","=", $val{quota_warning2},			qr{^plugin\s+})			if $hot{quota_warning2};
+	qx($CP -f "${g_target_root}${DOVECOT_CONFIG}/$oldtag/partition_map.conf" "${g_target_root}${DOVECOT_CONFIG}/partition_map.conf");
 
 	# Create submit.passdb with either the same password postfix is
 	# configured for, or an unguessable random password.
-	if (!path_exists("${g_target_root}/private/etc/dovecot/submit.passdb")) {
+	if (!path_exists("${g_target_root}${DOVECOT_CONFIG}/submit.passdb")) {
 		my $pw;
-		if (defined($hostname) && $hostname ne "" && path_exists("${g_target_root}/etc/postfix/submit.cred")) {
-			($pw) = qx($GREP "^$hostname|submit|" "${g_target_root}/etc/postfix/submit.cred" 2>>$MIGRATION_LOG | sed 's,.*|,,');
+		if (defined($hostname) && $hostname ne "" && path_exists("${g_target_root}${POSTFIX_CONFIG}/submit.cred")) {
+			($pw) = qx($GREP "^$hostname|submit|" "${g_target_root}${POSTFIX_CONFIG}/submit.cred" 2>>$MIGRATION_LOG | sed 's,.*|,,');
 			chomp $pw;
 		}
 		if (!defined($pw) || $pw eq "") {
@@ -1704,21 +1670,21 @@ sub migrate_dovecot_config ()
 			chomp $pw;
 		}
 		if (defined($pw) && $pw ne "") {
-			my $spnew = "${g_target_root}/private/etc/dovecot/submit.passdb";
+			my $spnew = "${g_target_root}${DOVECOT_CONFIG}/submit.passdb";
 			if (open(SPNEW, ">", $spnew)) {
 				print SPNEW "submit:{PLAIN}$pw\n";
 				close(SPNEW);
 			} else {
 				print LOG_FILE "can't write $spnew: $!\n";
 			}
-			qx( ${CHOWN} :mail "${g_target_root}/private/etc/dovecot/submit.passdb" >> "${MIGRATION_LOG}" 2>> "${MIGRATION_LOG}" );
-			chmod(0640, "${g_target_root}/private/etc/dovecot/submit.passdb");
+			qx( ${CHOWN} :mail "${g_target_root}${DOVECOT_CONFIG}/submit.passdb" >> "${MIGRATION_LOG}" 2>> "${MIGRATION_LOG}" );
+			chmod(0640, "${g_target_root}${DOVECOT_CONFIG}/submit.passdb");
 		}
 	}
 
 	# dovecot notify
-	if ( path_exists( "${g_target_root}/private/etc/dovecot/notify" ) ) {
-		qx( ${CHOWN} _dovecot:mail "${g_target_root}/private/etc/dovecot/notify" >> "${MIGRATION_LOG}" 2>> "${MIGRATION_LOG}" );
+	if ( path_exists( "${g_target_root}${DOVECOT_CONFIG}/notify" ) ) {
+		qx( ${CHOWN} _dovecot:mail "${g_target_root}${DOVECOT_CONFIG}/notify" >> "${MIGRATION_LOG}" 2>> "${MIGRATION_LOG}" );
 	}
 
 	# mailusers.plist
@@ -1729,8 +1695,6 @@ sub migrate_dovecot_config ()
 	qx(${CHOWN} _dovecot:mail "${g_target_root}/private/var/db/dovecot.fts.update" >> "${MIGRATION_LOG}" 2>> "${MIGRATION_LOG}");
 	chmod(0770, "${g_target_root}/private/var/db/dovecot.fts.update");
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_dovecot_config : E\n" ); }
 } # migrate_dovecot_config
 
 
@@ -1739,48 +1703,33 @@ sub migrate_dovecot_config ()
 
 sub migrate_postfix_spool ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_postfix_spool : S\n" ); }
+	log_funct( "migrate_postfix_spool" );
 
-		# clean up sockets & pipes
-		if ( path_exists( "${g_source_root}/private/var/spool/postfix/public" ) )
-		{
-			qx( ${RM} -rf "${g_source_root}/private/var/spool/postfix/public/"* >> ${MIGRATION_LOG} );
-		}
+	print LOG_FILE "Begin SMTP spool data migraiont\n";
 
-		if ( path_exists( "${g_source_root}/private/var/spool/postfix/private" ) )
-		{
-			qx( ${RM} -rf "${g_source_root}/private/var/spool/postfix/private/"* >> ${MIGRATION_LOG} );
-		}
+	my $src_spool_var = "${g_source_root}/private/var/spool/postfix";
+	my $src_spool_lib = "${g_source_root}/Library/Server/Mail/Data/spool";
+	my $dst_spool	  = "${g_target_root}/Library/Server/Mail/Data/spool";
 
+	# create dest dir if it doesn't exist
+	if ( !path_exists($dst_spool) ) {
 		qx(${MKDIR} -p -m 755 "${g_target_root}/Library/Server/Mail/Data/spool");
-		qx( rsync -av "${g_source_root}/private/var/spool/postfix/" "${g_target_root}/Library/Server/Mail/Data/spool/" >> ${MIGRATION_LOG} );
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_postfix_spool : E\n" ); }
-} # migrate_postfix_spool
-
-
-#################################################################
-# migrate_mailman_data ()
-
-sub migrate_mailman_data ()
-{
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_mailman_data : S\n" ); }
-
-	# only need to copy mailman data if target != source
-	if ( ! (${g_target_root} eq ${g_source_root}) )
-	{
-		print LOG_FILE "copying mailman data: ${g_source_root}/private/var/mailman to: ${g_target_root}/private/var/mailman\n";
-		qx( ${CP} -rpfv "${g_source_root}/private/var/mailman" "${g_target_root}/private/var/" >> ${MIGRATION_LOG} );
-	} else {
-		print LOG_FILE "not migrating mailman data, source: ${g_source_root} and target: ${g_target_root} are the same\n";
 	}
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_mailman_data : E\n" ); }
-} # migrate_mailman_data
+	# copy from 10.7 or 10.6 src spools
+	if ( path_exists(${src_spool_lib}) ) {
+		print LOG_FILE "migrating postfix spool data from: $src_spool_lib to: $dst_spool\n";
+		qx( rsync -av ${src_spool_lib} ${dst_spool} >> ${MIGRATION_LOG} );
+	} elsif ( path_exists(${src_spool_var}) ) {
+		print LOG_FILE "migrating postfix spool data from: $src_spool_lib to: $dst_spool\n";
+		qx( rsync -av ${src_spool_var} ${dst_spool} >> ${MIGRATION_LOG} );
+	} else {
+		print LOG_FILE "Warning: no source mail spool found\n";
+	}
+
+	print LOG_FILE "Finished SMTP spool data migraiont\n";
+
+} # migrate_postfix_spool
 
 
 #################################################################
@@ -1788,39 +1737,159 @@ sub migrate_mailman_data ()
 
 sub migrate_postfix_config ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_postfix_config : S\n" ); }
+	log_funct( "migrate_postfix_config" );
+	print LOG_FILE "Migrating SMTP configuration\n";
 
-	# keep a copy of default 10.7 default file
-	if ( path_exists( "${g_target_root}/private/etc/postfix/main.cf.default" ) ) {
-		qx( ${CP} -f "${g_target_root}/private/etc/postfix/main.cf.default" "${g_target_root}/private/etc/postfix/main.cf.default.$TARGET_VER" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+	# keep a copy of default 10.8 default file
+	if ( path_exists( "${g_target_root}${POSTFIX_CONFIG}/main.cf.default" ) ) {
+		qx( ${CP} -f "${g_target_root}${POSTFIX_CONFIG}/main.cf.default" "${g_target_root}${POSTFIX_CONFIG}/main.cf.default.$TARGET_VER" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
 	}
 
-	if ( path_exists( "${g_target_root}/private/etc/postfix/master.cf.default" ) ) {
-		qx( ${CP} -f "${g_target_root}/private/etc/postfix/master.cf.default" "${g_target_root}/private/etc/postfix/master.cf.default.$TARGET_VER" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+	if ( path_exists( "${g_target_root}${POSTFIX_CONFIG}/master.cf.default" ) ) {
+		qx( ${CP} -f "${g_target_root}${POSTFIX_CONFIG}/master.cf.default" "${g_target_root}${POSTFIX_CONFIG}/master.cf.default.$TARGET_VER" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
 	}
 
-	if ( path_exists("${g_source_root}/private/etc/postfix") ) {
-		print LOG_FILE "copying postfix configuration: ${g_source_root}/private/etc/postfix to: ${g_target_root}/private/etc/postfix\n";
-		qx( ${CP} -rpfv "${g_source_root}/private/etc/postfix" "${g_target_root}/private/etc/" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+	# copy config files from previous system
+	print LOG_FILE "Restoring SMTP service configuration from:\n";
+	if ( path_exists("${g_source_root}${POSTFIX_CONFIG}") ) {
+		print LOG_FILE "       source: ${g_source_root}${POSTFIX_CONFIG}\n";
+		print LOG_FILE "  destination: ${g_target_root}${POSTFIX_CONFIG}\n";
+		print LOG_FILE "           by: ${CP} -rpfv ${g_source_root}${POSTFIX_CONFIG} ${g_target_root}/Library/Server/Mail/Config/\n";
+
+		qx( ${CP} -rpfv "${g_source_root}${POSTFIX_CONFIG}" "${g_target_root}/Library/Server/Mail/Config/" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+	} elsif ( path_exists("${g_source_root}/private/etc/postfix") ) {
+		print LOG_FILE "       source: ${g_source_root}/private/etc/postfix\n";
+		print LOG_FILE "  destination: ${g_target_root}${POSTFIX_CONFIG}\n";
+		print LOG_FILE "           by: ${CP} -rpfv ${g_source_root}/private/etc/postfix ${g_target_root}/Library/Server/Mail/Config/\n";
+
+		print LOG_FILE "Copying postfix configuration: ${g_source_root}/private/etc/postfix to: ${g_target_root}${POSTFIX_CONFIG}\n";
+		qx( ${CP} -rpfv "${g_source_root}/private/etc/postfix" "${g_target_root}/Library/Server/Mail/Config/" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+	} 
+
+	# now copy main & master cf files from ~orig
+	print LOG_FILE "Restoring SMTP configuration files\n";
+	if ( path_exists("${g_source_root}/private/etc/postfix~orig/main.cf") ) {
+		# move previous copy out of the way
+		if ( path_exists("${g_target_root}${POSTFIX_CONFIG}/main.cf") ) {
+			move( "${g_target_root}${POSTFIX_CONFIG}/main.cf", "${g_target_root}${POSTFIX_CONFIG}/main.cf.$g_source_version" );
+		}
+		copy( "${g_source_root}/private/etc/postfix~orig/main.cf", "${g_target_root}${POSTFIX_CONFIG}/main.cf" );
+	}
+
+	if ( path_exists("${g_source_root}/private/etc/postfix~orig/master.cf") ) {
+		# move previous copy out of the way
+		if ( path_exists("${g_target_root}${POSTFIX_CONFIG}/master.cf") ) {
+			move( "${g_target_root}${POSTFIX_CONFIG}/master.cf", "${g_target_root}${POSTFIX_CONFIG}/master.cf.$g_source_version" );
+		}
+		copy( "${g_source_root}/private/etc/postfix~orig/master.cf", "${g_target_root}${POSTFIX_CONFIG}/master.cf" );
+	}
+
+	# clean up deprecated keys
+	print LOG_FILE "Removing deprecated SMTP configuration keys\n";
+
+	my $cnt = 0;
+	my $src = "${g_target_root}${POSTFIX_CONFIG}/main.cf";
+	my @deprecated_keys = ("^virus_db_update_enabled", "^virus_db_last_update", "^smtpd_tls_common_name", "^spam_domain_name");
+
+	# make a copy of original
+	copy( "$src",  "$src.$g_source_version.orig" );
+
+	for ( $cnt = 0; $cnt < 3; $cnt++) {
+		my $value = qx( ${GREP} $deprecated_keys[$cnt] $src );
+		if ( !($value eq "") ) {
+			my $dst = "${g_target_root}${POSTFIX_CONFIG}/main.cf.um.tmp";
+			qx( /usr/bin/sed -e "/$deprecated_keys[$cnt]/d" "$src" > "$dst" );
+			move( "$dst", "$src" );
+		}
+	}
+
+	# fix virtual maps
+	my $dst = "${g_target_root}${POSTFIX_CONFIG}/main.cf.um.tmp";
+	my $grep_value = qx( ${GREP} "hash:/etc/postfix/virtual_users" $src );
+	if ( !($grep_value eq "") ) {
+		qx( /usr/bin/sed -e "s/hash:\\/etc\\/postfix\\/virtual_users/hash:\\/Library\\/Server\\/Mail\\/Config\\/postfix\\/virtual_users/" "$src" > "$dst" );
+		move( "$dst", "$src" );
+	}
+
+	# fix virtual maps
+	my $grep_value = qx( ${GREP} "hash:/etc/postfix/virtual_domains" $src );
+	if ( !($grep_value eq "") ) {
+		qx( /usr/bin/sed -e "s/hash:\\/etc\\/postfix\\/virtual_domains/hash:\\/Library\\/Server\\/Mail\\/Config\\/postfix\\/virtual_domains/" "$src" > "$dst" );
+		move( "$dst", "$src" );
+	}
+
+	# fix smtpdreject
+	my $grep_value = qx( ${GREP} "hash:/etc/postfix/smtpdreject" $src );
+	if ( !($grep_value eq "") ) {
+		qx( /usr/bin/sed -e "s/hash:\\/etc\\/postfix\\/smtpdreject/hash:\\/Library\\/Server\\/Mail\\/Config\\/postfix\\/smtpdreject/" "$src" > "$dst" );
+		move( "$dst", "$src" );
+	}
+
+	# fix smtpdreject
+	my $grep_value = qx( ${GREP} "cidr:/etc/postfix/smtpdreject.cidr" $src );
+	if ( !($grep_value eq "") ) {
+		qx( /usr/bin/sed -e "s/cidr:\\/etc\\/postfix\\/smtpdreject.cidr/cidr:\\/Library\\/Server\\/Mail\\/Config\\/postfix\\/smtpdreject.cidr/" "$src" > "$dst" );
+		move( "$dst", "$src" );
+	}
+
+	# clean legacy smtp_fallback
+	$src = "${g_target_root}${POSTFIX_CONFIG}/master.cf";
+	my $value = qx( ${GREP} "o fallback_relay=" $src );
+	if ( !($value eq "") ) {
+		# fix existing master.cf
+		my $dst = "${g_target_root}${POSTFIX_CONFIG}/master.cf.um.tmp";
+		qx( /usr/bin/sed -e "s/o fallback_relay=/o smtp_fallback_relay=/" "$src" > "$dst" );
+		move( "$src",  "$src" . ".$g_source_version" . ".orig" );
+		move( "$dst", "$src" );
+	}
+
+	print LOG_FILE "Updating SMTP configuration\n";
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e data_directory=/Library/Server/Mail/Data/mta );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e config_directory=/Library/Server/Mail/Config/postfix );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e queue_directory=/Library/Server/Mail/Data/spool );
+
+	# setup default relay host sasl directory
+	if (!path_exists("${g_target_root}${POSTFIX_CONFIG}/sasl")) {
+		mkdir "${g_target_root}${POSTFIX_CONFIG}/sasl";
+	}
+
+	# set new smtp_sasl_password_maps if enabled
+	my $smtp_sasl_password_maps = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" smtp_sasl_password_maps );
+	chomp $smtp_sasl_password_maps;
+	if ( $smtp_sasl_password_maps eq "hash:/etc/postfix/sasl/passwd" ) {
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e smtp_sasl_password_maps=hash:/Library/Server/Mail/Config/postfix/sasl/passwd );
+	}
+
+	# aliases is in /etc/postfix but aliases.db is in /etc and needs updating
+	qx( /usr/sbin/postalias "${g_target_root}/private/etc/aliases" >> ${MIGRATION_LOG} 2>> "${MIGRATION_LOG}" );
+
+	# reset $recipient_canonical_maps
+	my $recipient_canonical_maps = 	qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" recipient_canonical_maps );
+	chomp $recipient_canonical_maps;
+	if ( $recipient_canonical_maps eq "hash:/etc/postfix/system_user_maps" ) {
+		print LOG_FILE "resetting SMTP recipient canonical maps: recipient_canonical_maps=hash:/Library/Server/Mail/Config/postfix/system_user_maps\n";
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e recipient_canonical_maps=hash:/Library/Server/Mail/Config/postfix/system_user_maps );
 	}
 
 	# update main.cf
-	if (!qx($GREP "imap_submit_cred_file *=" "${g_target_root}/private/etc/postfix/main.cf" 2>>$MIGRATION_LOG)) {
-		my $mcapp = "${g_target_root}/private/etc/postfix/main.cf";
+	if (!qx($GREP "imap_submit_cred_file *=" "${g_target_root}${POSTFIX_CONFIG}/main.cf" 2>>$MIGRATION_LOG)) {
+		my $mcapp = "${g_target_root}${POSTFIX_CONFIG}/main.cf";
 		if (open(MCAPP, ">>", $mcapp)) {
 			print MCAPP <<'EOT';
 # (APPLE) Credentials for using URLAUTH with IMAP servers.
-imap_submit_cred_file = /private/etc/postfix/submit.cred
+imap_submit_cred_file = /Library/Server/Mail/Config/postfix/submit.cred
 
 EOT
 			close(MCAPP);
 		} else {
 			print LOG_FILE "can't append to $mcapp: $!\n";
 		}
+	} else {
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e imap_submit_cred_file=/Library/Server/Mail/Config/postfix/submit.cred );
 	}
-	if (!qx($GREP sacl-cache "${g_target_root}/private/etc/postfix/main.cf" 2>>$MIGRATION_LOG)) {
-		my $mcapp = "${g_target_root}/private/etc/postfix/main.cf";
+
+	if (!qx($GREP sacl-cache "${g_target_root}${POSTFIX_CONFIG}/main.cf" 2>>$MIGRATION_LOG)) {
+		my $mcapp = "${g_target_root}${POSTFIX_CONFIG}/main.cf";
 		if (open(MCAPP, ">>", $mcapp)) {
 			print MCAPP <<'EOT';
 # (APPLE) The SACL cache caches the results of Mail Service ACL lookups.
@@ -1840,16 +1909,16 @@ EOT
 
 	# Create submit.cred with either the same password dovecot is
 	# configured for, or an unguessable random password.
-	if (!path_exists("${g_target_root}/private/etc/postfix/submit.cred")) {
-		my ($hostname) = qx($GREP "^myhostname *=" "${g_target_root}/private/etc/postfix/main.cf" 2>>$MIGRATION_LOG | sed 's,.*= *,,');
+	if (!path_exists("${g_target_root}${POSTFIX_CONFIG}/submit.cred")) {
+		my ($hostname) = qx($GREP "^myhostname *=" "${g_target_root}${POSTFIX_CONFIG}/main.cf" 2>>$MIGRATION_LOG | sed 's,.*= *,,');
 		chomp $hostname;
 		if (!defined($hostname) || $hostname eq "") {
 			($hostname) = qx(hostname);
 			chomp $hostname;
 		}
 		my $pw;
-		if (path_exists("${g_target_root}/private/etc/dovecot/submit.passdb")) {
-			($pw) = qx($GREP "^submit:" "${g_target_root}/private/etc/dovecot/submit.passdb" 2>>$MIGRATION_LOG | sed 's,.*},,');
+		if (path_exists("${g_target_root}${DOVECOT_CONFIG}/submit.passdb")) {
+			($pw) = qx($GREP "^submit:" "${g_target_root}${DOVECOT_CONFIG}/submit.passdb" 2>>$MIGRATION_LOG | sed 's,.*},,');
 			chomp $pw;
 		}
 		if (!defined($pw) || $pw eq "") {
@@ -1857,7 +1926,7 @@ EOT
 			chomp $pw;
 		}
 		if (defined($pw) && $pw ne "" && defined($hostname) && $hostname ne "") {
-			my $scnew = "${g_target_root}/private/etc/postfix/submit.cred";
+			my $scnew = "${g_target_root}${POSTFIX_CONFIG}/submit.cred";
 			if (open(SCNEW, ">", $scnew)) {
 				print SCNEW "submitcred version 1\n";
 				print SCNEW "$hostname|submit|$pw\n";
@@ -1865,12 +1934,17 @@ EOT
 			} else {
 				print LOG_FILE "can't write $scnew: $!\n";
 			}
-			chmod(0600, "${g_target_root}/private/etc/postfix/submit.cred");
+			chmod(0600, "${g_target_root}${POSTFIX_CONFIG}/submit.cred");
 		}
 	}
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_postfix_config : E\n" ); }
+	# remove mailman from alias_maps
+	my $alias_maps = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" alias_maps );
+	chomp($alias_maps);
+	my $line = $alias_maps;
+	$line =~ s/,hash:\/var\/mailman\/data\/aliases//;
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e alias_maps='$line' );
+
 } # migrate_postfix_config
 
 
@@ -1882,12 +1956,17 @@ sub update_master_cf ()
 	my $has_dovecot = 0;
 	my $has_greylist = 0;
 
+	# validating master.cf
+	print LOG_FILE "Updating ${POSTFIX_CONFIG}/master.cf\n";
+	qx( ${SERVER_ADMIN} command mail:command = validateMasterCf >> ${MIGRATION_LOG} );
+
 	# disable virus scanning to allow for config file update
+	print LOG_FILE "Disabling junk mail & virus scanning\n";
 	qx( ${SERVER_ADMIN} settings mail:postfix:virus_scan_enabled = no >> ${MIGRATION_LOG} );
 	qx( ${SERVER_ADMIN} settings mail:postfix:spam_scan_enabled = no >> ${MIGRATION_LOG} );
 
 	# check to see if dovecot is already defined
-	open( MASTER_CF, "<${g_target_root}" . "/private/etc/postfix/master.cf" ) or die "can't open ${g_target_root}" . "/private/etc/postfix/master.cf: $!";
+	open( MASTER_CF, "<${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf" ) or die "can't open ${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf: $!";
 	while( <MASTER_CF> )
 	{
 		# store $_ value because subsequent operations may change it
@@ -1905,16 +1984,17 @@ sub update_master_cf ()
 	}
 	close(MASTER_CF);
 
-	if ( path_exists( "${g_target_root}" . "/private/etc/postfix/master.cf.out" ) ) {
-		unlink( "${g_target_root}" . "/private/etc/postfix/master.cf.out" );
+	if ( path_exists( "${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf.out" ) ) {
+		unlink( "${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf.out" );
 	}
 
 	my $tlsmgr = 0;
 	my $skip_line = 0;
 	my $skip_comment = 0;
+	my $update_deliver = 0;
 
-	open( MASTER_CF, "<${g_target_root}" . "/private/etc/postfix/master.cf" ) or die "can't open ${g_target_root}" . "/private/etc/postfix/master.cf: $!";
-	open (MASTER_CF_OUT, ">${g_target_root}" . "/private/etc/postfix/master.cf.out" ) or die "can't open ${g_target_root}" . "/private/etc/postfix/master.cf.out: $!";
+	open( MASTER_CF, "<${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf" ) or die "can't open ${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf: $!";
+	open (MASTER_CF_OUT, ">${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf.out" ) or die "can't open ${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf.out: $!";
 	while( <MASTER_CF> )
 	{
 		# store $_ value because subsequent operations may change it
@@ -1975,6 +2055,54 @@ sub update_master_cf ()
 				print MASTER_CF_OUT "\n";
 			}
 		}
+		elsif (substr($a_line, 0, 7) eq "dovecot")
+		{
+			# update deliver to dovecot-lda
+			$update_deliver = 1;
+			print MASTER_CF_OUT "${a_line}";
+			print MASTER_CF_OUT "\n";
+		}
+		elsif ( $update_deliver == 1 )
+		{
+			# skip comments
+			my $line = $a_line;
+			$line =~ s/^\s+//;
+			if (index($line, "#") == 0) {
+				print MASTER_CF_OUT "$a_line\n";
+				next;
+			}
+
+			# remove -n and/or -s options
+			$line = $a_line;
+			$line =~ s/-[ns] //g;
+			$line =~ s/[ \t]-[ns]//g;
+
+			# skip valid settins that are not the deliver path
+			if ((index($line, " ") == 0 || index($line, "\t") == 0) && (index($line, "/dovecot/deliver") == -1)) {
+				print MASTER_CF_OUT "$line\n";
+				next;
+			}
+
+			# this is the line we care about
+			if ((index($line, "/dovecot/deliver")) > 0) {
+				# change deliver to dovecot-lda
+				$line =~ s/deliver/dovecot-lda/;
+
+				print MASTER_CF_OUT "$line\n";
+				next;
+			}
+
+			print MASTER_CF_OUT "$line\n";
+			$update_deliver = 0;
+		}
+		elsif ( (index(${a_line}, "o fallback_relay=")) > 0 )
+		{
+			# change fallback_relay= to o smtp_fallback_relay=
+			my $line = $a_line;
+			$line =~ s/o fallback_relay=/o smtp_fallback_relay=/;
+
+			print MASTER_CF_OUT "$line\n";
+		}
 		elsif ( !("${a_line}" eq "") )
 		{
 			print MASTER_CF_OUT "${a_line}";
@@ -2005,8 +2133,8 @@ sub update_master_cf ()
 	close( MASTER_CF );
 	close( MASTER_CF_OUT );
 
-	unlink("${g_target_root}" . "/private/etc/postfix/master.cf");
-	move( "${g_target_root}" . "/private/etc/postfix/master.cf.out", "${g_target_root}" . "/private/etc/postfix/master.cf");
+	unlink("${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf");
+	move( "${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf.out", "${g_target_root}" . ${CONFIG_ROOT} . "/postfix/master.cf");
 
 } # update_master_cf
 
@@ -2016,8 +2144,7 @@ sub update_master_cf ()
 
 sub migrate_cyrus_data ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_cyrus_data : S\n" ); }
+	log_funct( "migrate_cyrus_data" );
 
 	if ( do_cyrus_config_check( "configuration" ) ) {
 		return;
@@ -2025,9 +2152,6 @@ sub migrate_cyrus_data ()
 	do_xsan_check();
 	do_cyrus_db_cleanup();
 	do_cyrus_dovecot_migration();
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_cyrus_data : E\n" ); }
 } # migrate_cyrus_data
 
 
@@ -2036,19 +2160,23 @@ sub migrate_cyrus_data ()
 
 sub migrate_dovecot_data ()
 {
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_dovecot_data : S\n" ); }
+	log_funct( "migrate_dovecot_data" );
+	print LOG_FILE "Migrating POP/IMAP mail data\n";
 
 	# migrate sieve scripts
-	if ( path_exists( "${g_source_root}/private/var/spool/imap/dovecot/sieve-scripts" ) )
-	{
-		if ( ! path_exists( "${g_target_root}/Library/Server/Mail/Data/rules" ) )
-		{
-			qx( mkdir -p "${g_target_root}/Library/Server/Mail/Data/rules" >> "${MIGRATION_LOG}" );
-		}
-
-		qx( rsync -av "${g_source_root}/private/var/spool/imap/dovecot/sieve-scripts/" "${g_target_root}/Library/Server/Mail/Data/rules/" >> "${MIGRATION_LOG}" );
+	if ( ! path_exists( "${g_target_root}${DATA_ROOT}/rules" ) ) {
+		qx( mkdir -p "${g_target_root}${DATA_ROOT}/rules" >> "${MIGRATION_LOG}" );
 	}
+
+	if ( path_exists( "${g_source_root}/private/var/spool/imap/dovecot/sieve-scripts" ) ) {
+		print LOG_FILE "Migrating custom mail rules from: ${g_source_root}/private/var/spool/imap/dovecot/sieve-scripts\n";
+		qx( rsync -av "${g_source_root}/private/var/spool/imap/dovecot/sieve-scripts/" "${g_target_root}${DATA_ROOT}/rules/" >> "${MIGRATION_LOG}" );
+	} elsif ( path_exists( "${g_source_root}${DATA_ROOT}/rules" ) ) {
+		print LOG_FILE "Migrating custom mail rules from: ${g_source_root}${DATA_ROOT}/rules\n";
+		qx( rsync -av "${g_source_root}${DATA_ROOT}/rules/" "${g_target_root}${DATA_ROOT}/rules/" >> "${MIGRATION_LOG}" );
+	}
+
+	print LOG_FILE "Begin mail message data migration\n";
 
 	# get default path
 	open( PARTITIONS, "<${g_source_root}" . "/private/etc/dovecot/partition_map.conf" );
@@ -2067,10 +2195,25 @@ sub migrate_dovecot_data ()
 			my $a_path = substr( $a_line, $offset + 1 );
 
 			# is it local
-			if ( (substr($a_path, 0, 5) eq "/var/") || (substr($a_path, 0, 5) eq "/etc/") )
-			{
-				if ( path_exists( "${g_source_root}/private" . $a_path) )
-				{
+			if ( ($a_path =~ m,^/var/spool/imap/dovecot/mail,) || ($a_path =~ m,^/private/var/spool/imap/dovecot/mail,)) {
+				print LOG_FILE "Copying mail data from:\n";
+				print LOG_FILE "       source: $a_path\n";
+				print LOG_FILE "  destination: ${DATA_ROOT}/mail\n";
+				print LOG_FILE "           by: ${CP} -rpfv ${g_source_root}${a_path}/* ${g_target_root}$DATA_ROOT/mail\n";
+
+				# create default mail data store destination
+				qx( mkdir -p "${g_target_root}$DATA_ROOT/mail" >> "${MIGRATION_LOG}" );
+
+				# copy the mail
+				qx( ${CP} -rpfv "${g_source_root}${a_path}/"* "${g_target_root}$DATA_ROOT/mail" >> "${MIGRATION_LOG}" );
+
+				push( @g_clean_partitions, "${g_source_root}" . $a_path );
+
+				# reset default path
+				print LOG_FILE "Setting default mail partition to: $DATA_ROOT/mail\n";
+				qx( ${SERVER_ADMIN} settings mail:imap:partition-default = "$DATA_ROOT/mail" >> ${MIGRATION_LOG} );
+			} elsif ( (substr($a_path, 0, 5) eq "/var/") || (substr($a_path, 0, 5) eq "/etc/") ) {
+				if ( path_exists( "${g_source_root}/private" . $a_path) ) {
 					qx( mkdir -p "${g_target_root}/private${a_path}" >> "${MIGRATION_LOG}" );
 					qx( ${CP} -rpfv "${g_source_root}/private${a_path}/"* "${g_target_root}/private${a_path}" >> "${MIGRATION_LOG}" );
 
@@ -2087,13 +2230,14 @@ sub migrate_dovecot_data ()
 	}
 	close( PARTITIONS );
 
+	print LOG_FILE "Mail message data migration complete\n";
+
 	# set ownership on default dovecot mail data store & sive scripts
 	qx( ${CHOWN} -R _dovecot:mail "${g_target_root}/Library/Server/Mail/Data/mail" >> "${MIGRATION_LOG}" );
 	qx( ${CHOWN} -R _dovecot:mail "${g_target_root}/Library/Server/Mail/Data/rules" >> "${MIGRATION_LOG}" );
 
-	if ( ${FUNC_LOG} ) {
-		printf( "::migrate_dovecot_data : E\n" ); }
 } # migrate_dovecot_data
+
 
 #################################################################
 # escape_str ()
@@ -2106,6 +2250,7 @@ sub escape_str
 	$s =~ s/([^a-zA-Z0-9])/sprintf("%%%02x", ord($1))/eg;
 	return $s;
 } # escape_str
+
 
 #################################################################
 # scan_mail_acct ()
@@ -2152,16 +2297,35 @@ sub scan_mail_acct
 } # scan_mail_acct
 
 #################################################################
+# uuidof volume mapping
+
+sub uuidof
+{
+	my $volume = shift;
+
+	my $uuid = "";
+	if (defined($volume) && $volume ne "" && -e $volume) {
+		my @infos = qx(/usr/sbin/diskutil info "$volume");
+		for (@infos) {
+			if (/\s*Volume UUID:\s*([0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12})/) {
+				$uuid = $1;
+				last;
+			}
+		}
+	}
+	return $uuid;
+}
+
+#################################################################
 # create_fts_indexes ()
 #	create fts indexes for all mail accounts
 
 sub create_fts_indexes ()
 {
-	if ($FUNC_LOG){
-		printf("::create_fts_indexes : S\n");}
+	log_funct( "create_fts_indexes" );
 
 	# create indexes for accounts on all partitions
-	open(PARTITIONS, "<$g_target_root" . "/private/etc/dovecot/partition_map.conf");
+	open(PARTITIONS, "<$g_target_root" . ${CONFIG_ROOT} . "/dovecot/partition_map.conf");
 	while(<PARTITIONS>) {
 		my($a_line) = $_;
 		chomp($a_line);
@@ -2186,7 +2350,7 @@ sub create_fts_indexes ()
 				next unless $file =~ /^[A-F0-9-]+$/;
 				if(($file ne ".") && ($file ne "..")) { 
 					# convert GUID to valid user ID
-					my $user_id = qx($CVT_MAIL_DATA -u $file);
+					my $user_id = qx(${CVT_MAIL_DATA} -u $file);
 					if (substr($user_id, 0, 16) ne "No user id found") {
 						chomp($user_id);
 						scan_mail_acct($a_path . "/" . $file, $user_id);
@@ -2196,38 +2360,34 @@ sub create_fts_indexes ()
 		}
 	}
 	close(PARTITIONS);
-
-	if ($FUNC_LOG){
-		printf("::create_fts_indexes : E\n");}
 } # create_fts_indexes
 
 ################################################################################
 # We only want to run this script if the previous system version is greater
-#  than or equal to 10.5 and less than 10.7!
+#  than or equal to 10.6 and less than 10.8!
 
 sub is_valid_version () 
 {
-    if (${FUNC_LOG}) {
-		print( "::is_valid_version : S\n"); }
+	log_funct( "is_valid_version" );
 
 	my ( $valid ) = 0;
 
-	if ( (substr(${g_source_version}, 0, 4) >= ${MIN_VER}) && (substr(${g_source_version}, 0, 4) < ${MAX_VER}) )
-	{
+	if ( (substr(${g_source_version}, 0, 4) >= ${MIN_VER}) && (substr(${g_source_version}, 0, 4) < ${MAX_VER}) ) {
 		$valid = 1;
-    	if (${DEBUG}) {
-			printf( "- valid: ${g_source_version}\n");}
+    	log_debug( "- valid: ${g_source_version}");
 
-		if ( substr(${g_source_version}, 0, 4) eq "10.6" or substr(${g_source_version}, 0, 4) eq "10.7" )
-		{
-			$g_sl_src = 1;
+		if ( substr(${g_source_version}, 0, 4) eq "10.8" ) {
+			$g_mtn_lion_src = 1;
+		} elsif ( substr(${g_source_version}, 0, 4) eq "10.7" ) {
+			$g_lion_src = 1;
+		} elsif ( substr(${g_source_version}, 0, 4) eq "10.6" ) {
+			$g_snow_leopard_src = 1;
+		} elsif ( substr(${g_source_version}, 0, 4) eq "10.5" ) {
+			$g_leopard_src = 1;
 		}
 	} else {
 		printf( "- Version supplied was not valid: %s\n", $g_source_version );
 	}
-
-    if (${FUNC_LOG}) {
-		print( "::is_valid_version : E\n"); }
 
 	return( ${valid} );
 } # is_valid_version
@@ -2238,20 +2398,19 @@ sub is_valid_version ()
 
 sub is_valid_language () 
 {
-    if (${FUNC_LOG}) {
-		print( "::is_valid_language : S\n"); }
+	log_funct( "is_valid_language" );
 
 	my ( $valid ) = 0;
-    my ( $lang ) = $g_language;
 
-	if ( (${lang} eq "en") || (${lang} eq "fr") || (${lang} eq "de") || (${lang} eq "ja") )
-	{
+	if ( (${g_language} eq "en") || (${g_language} eq "fr") ||
+		 (${g_language} eq "de") || (${g_language} eq "ja") ) {
 		$valid = 1;
-    	if (${DEBUG}) {printf( "- valid: ${lang}\n");}
+    	log_debug( "- valid: ${g_language}");
+	} elsif ( ${g_language} eq "" ) {
+		$valid = 1;
+		$g_language = "en";
+    	print LOG_FILE "No language specified.  Defaulting to: ${g_language}\n";
 	}
-
-    if (${FUNC_LOG}) {
-		print( "::is_valid_language : E\n"); }
 
 	return( ${valid} );
 } # is_valid_language
@@ -2269,8 +2428,7 @@ sub parse_options
     my (@optval) = @_;
     my ($opt, @opts, %valFollows, @newargs);
 
-    while (@optval)
-	{
+    while (@optval) {
 		$opt = shift(@optval);
 		push(@opts,$opt);
 		$valFollows{$opt} = shift(@optval);
@@ -2280,15 +2438,11 @@ sub parse_options
     my %opt = ();
 
 	my $arg;
-    arg: while (defined($arg = shift(@ARGV)))
-	{
-		foreach my $opt (@opts)
-		{
-			if ($arg eq $opt)
-			{
+    arg: while (defined($arg = shift(@ARGV))) {
+		foreach my $opt (@opts) {
+			if ($arg eq $opt) {
 				push(@optArgs, $arg);
-				if ($valFollows{$opt})
-				{
+				if ($valFollows{$opt}) {
 					$opt{$opt} = shift(@ARGV);
 					push(@optArgs, $opt{$opt});
 				} else {
@@ -2320,38 +2474,28 @@ sub print_script_args ()
 
 sub path_exists ($)
 {
-    if (${FUNC_LOG}) {
-		print( "::path_exists : S\n"); }
+	log_funct( "path_exists" );
 
 	my $exists = 0;
 	my ($in_path) = @_;
 
-   	if (${DEBUG}) {
-		printf( "- path: %s\n", "${in_path}"); }
-
-	if (-e "${in_path}")
-	{
+	if (-e "${in_path}") {
 		$exists = 1;
-    	if (${DEBUG}) {
-			printf( "-- Exists\n"); }
+    	log_debug( "- path exists: ${in_path}");
 	} else {
-    	if (${DEBUG}) {
-			printf( "-- Does not exist\n"); }
+    	log_debug( "- path does not exist: ${in_path}");
 	}
-
-    if (${FUNC_LOG}) {
-		print( "::path_exists : E\n"); }
 
 	return( $exists );
 } # path_exists
+
 
 ################################################################################
 # check if a path's parent exists
 
 sub parent_exists () 
 {
-    if (${FUNC_LOG}) {
-		print( "::parent_exists : S\n");  }
+    log_funct( "parent_exists" );
 
 	my ($out_val) = 0;
 	my ($in_path) = @_;
@@ -2359,21 +2503,13 @@ sub parent_exists ()
 	my $parent_path = qx( /usr/bin/dirname "${in_path}" );
 	chomp $parent_path;
 
-   	if (${DEBUG}) {
-		printf( "- path: %s\n", "${in_path}"); }
-
 	if ( -e "${parent_path}" )
 	{
 		$out_val = 1;
-    	if ( ${DEBUG} ) {
-			printf( "-- Exists\n"); }
+    	log_debug( " path exists: ${in_path}");
 	} else {
-    	if ( ${DEBUG} ) {
-			printf( "-- Does not exist\n"); }
+		log_debug( " path does not exist: ${in_path}");
 	}
-
-    if (${FUNC_LOG}) {
-		print( "::parent_exists : E\n"); }
 
 	return( $out_val );
 } # parent_exists
@@ -2384,8 +2520,7 @@ sub parent_exists ()
 
 sub create_parent_dir ()
 {
-    if ( ${FUNC_LOG} ) {
-		print( "::create_parent_dir : S\n"); }
+	log_funct( "create_parent_dir" );
 
 	my ($out_val) = 0;
 	my ($in_path) = @_;
@@ -2393,19 +2528,14 @@ sub create_parent_dir ()
 	my $parent_dir = qx(/usr/bin/dirname "${in_path}");
 	chomp($parent_dir);
 
-   	if (${DEBUG}) {
-		printf( "- parent_dir: %s\n", "${parent_dir}"); }
+   	log_debug( "- parent_dir: ${parent_dir}");
 
 	qx( /bin/mkdir -p "${parent_dir}" >> "${MIGRATION_LOG}" );
-
-    if (${FUNC_LOG}) {
-		print("::create_parent_dir : E\n"); }
 
 	if ( -e "${parent_dir}" ) {
 		$out_val = 1; }
 
 	return( ${out_val} );
-
 } # create_parent_dir
 
 
@@ -2414,19 +2544,14 @@ sub create_parent_dir ()
 
 sub do_cleanup ($)
 {
-    if (${FUNC_LOG}) {
-		print( "::do_cleanup : S\n"); }
+	log_funct( "do_cleanup" );
 
 	my ($in_path) = @_;
 
-	if ( path_exists("${in_path}") )
-	{
+	if ( path_exists("${in_path}") ) {
 		print LOG_FILE "Removing source: ${in_path}\n";
 		qx( ${RM} -rf "${in_path}" 2>&1 >> ${MIGRATION_LOG} );
 	}
-
-	if ( ${FUNC_LOG} ) {
-		printf( "::do_cleanup : S\n" ); }
 } # do_cleanup
 
 
@@ -2439,8 +2564,8 @@ sub Usage()
 	print("--sourceRoot <path> The path to the root of the system to migrate" . "\n");
 	print("--sourceType <System | TimeMachine> Gives the type of the migration source, whether it's a runnable system or a " . "\n");
 	print("                  Time Machine backup." . "\n");
-	print("--sourceVersion <ver> The version number of the old system (like 10.5.7 or 10.6). Since we support migration from 10.5, 10.6," . "\n");
-	print("                  and other 10.7 installs." . "\n");
+	print("--sourceVersion <ver> The version number of the old system (like 10.6.7 or 10.7). Since we support migration from 10.6, 10.7," . "\n");
+	print("                  and other 10.8 installs." . "\n");
 	print("--targetRoot <path> The path to the root of the new system." . "\n");
 	print("--language <lang> A language identifier, such as \"en.\" Long running scripts should return a description of what they're doing " . "\n");
 	print("                  (\"Migrating Open Directory users\"), and possibly provide status update messages along the way. These messages " . "\n");
@@ -2457,8 +2582,8 @@ sub Usage()
 sub do_migration()
 {
 	my %script_args = @_;
-	my $state = "SERVICE_DISABLE";
-	my $running_state = "STOPPED";
+	my $enabled_state = "SERVICE_DISABLE";
+	my $service_state = "STOPPED";
 
 	##  Set the globals with the user options
 	$g_purge = $script_args{"--purge"};
@@ -2471,7 +2596,7 @@ sub do_migration()
 	## log migration start time
 	my $start_time = localtime();
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Begin Mail Migration: $start_time" . "\n";
+	print LOG_FILE "Begin Mail Migration: $start_time\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 
 	##  log settings
@@ -2489,25 +2614,11 @@ sub do_migration()
 		Usage();
 	}
 
-	##  verify destination volume
+	##  verify target volume
 	if ( ! path_exists("${g_target_root}") ) {
 		print LOG_FILE "Destination for upgrade/migration: ${g_target_root} does not exist.\n";
 		print( "Destination for upgrade/migration: ${g_target_root} does not exist.\n" );
 		Usage();
-	}
-
-	## temp check ##
-	if ( "${g_source_type}" eq "TimeMachine" ) {
-		print LOG_FILE "Migration from Time Machine backups are not supported at this time.\n";
-		print( "Migration from Time Machine backups are not supported at this time\n" );
-		exit( 1 );
-	}
-
-	## temp check ##
-	if ( !("${g_target_root}" eq "/") ) {
-		print LOG_FILE "Migration to non-boot volumes are not supported at this time.\n";
-		print( "Migration from Time Machine backups are not supported at this time\n" );
-		exit( 1 );
 	}
 
 	##  verify language setting
@@ -2523,8 +2634,12 @@ sub do_migration()
 		Usage();
 	}
 
-	if ( !("${g_source_root}" eq "/Previous System") ) {
-		$g_postfix_root = $g_source_root; }
+	## Parse ServerVersion passed in.
+	get_server_version( $g_source_version );
+
+	if ( !("${g_source_root}" eq "/Library/Server/Previous") ) {
+		$g_source_uuid = uuidof($g_source_root);
+	}
 
 	## set migration plist info
 	if ( path_exists(${g_migration_plist}) ) {
@@ -2537,130 +2652,133 @@ sub do_migration()
 	qx( ${PLIST_BUDDY} -c 'Add :sourceRoot string ${g_source_root}' ${g_migration_plist} );
 	qx( ${PLIST_BUDDY} -c 'Add :targetRoot string ${g_target_root}' ${g_migration_plist} );
 
+	qx( ${PLIST_BUDDY} -c 'Add :sourceUUID string ${g_source_uuid}' ${g_migration_plist} )
+		if $g_source_uuid ne "";
+
 	# enable migration launchd plist
-	qx( ${PLIST_BUDDY} -c 'Set :Disabled bool false' ${g_migration_ld_plist} );
+	qx( ${PLIST_BUDDY} -c 'Set :Disabled bool false' ${MIGRATION_PLIST} );
 
 	## reset local users migration flag
 	qx( ${CVT_MAIL_DATA} -k reset );
 
-	## get mail services state
-	get_services_state();
-
-	## stop any running mail services
-	halt_mail_services();
-
-	## Parse ServerVersion passed in.
-	get_server_version( $g_source_version );
+	## stop postfix
+	unload_postfix();
 
 	######################
 	# General settings
 	######################
 
-	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Migrate General Settings" . "\n";
-	print LOG_FILE "-------------------------------------------------------------\n";
+	# clean up deprecated keys
+	if ( "${g_target_root}" eq "/" ) {
+		print LOG_FILE "Updating postfix desktop config\n";
 
-	# get ssl certificate settings
-	get_ssl_certs();
+		my $cnt = 0;
+		my $src = "/private/etc/postfix/main.cf";
+		my @deprecated_keys = ("^virus_db_update_enabled", "^virus_db_last_update", "^smtpd_tls_common_name", "^spam_domain_name");
 
-	# migrate general settings plist if (src != dst)
-	if ( !("${g_target_root}" eq "${g_source_root}") ) {
-		if ( path_exists("${g_source_root}/private/etc/MailServicesOther.plist") ) {
-			qx( ${CP} "${g_source_root}/private/etc/MailServicesOther.plist" "${g_target_root}/private/etc/" ); }
-		if ( path_exists("${g_source_root}/private/etc/mail") ) {
-			qx( ${CP} -rpf "${g_source_root}/private/etc/mail" "${g_target_root}/private/etc/" ); }
+		# make a copy of original
+		copy( "$src",  "$src.$g_source_version.orig" );
 
-		my $other_settings = "${g_source_root}/private/etc/MailServicesOther.plist";
-		my $other_dict = NSDictionary->dictionaryWithContentsOfFile_( ${other_settings} );
-		if ( $other_dict && $$other_dict ) {
-			my $imap_dict = $other_dict->objectForKey_( "imap" );
-			if ( !$imap_dict || !$$imap_dict ) {
-				my $other_path = "/private/etc/MailServicesOther.plist";
-				my $other_path_str = NSString->stringWithCString_($other_path);
-				my $my_imap_dict = NSMutableDictionary->alloc->init;
-
-				$other_dict->setObject_forKey_($my_imap_dict, "imap");
-				$other_dict->writeToFile_atomically_( $other_path_str, 0 );
+		for ( $cnt = 0; $cnt < 3; $cnt++) {
+			my $value = qx( ${GREP} $deprecated_keys[$cnt] $src );
+			if ( !($value eq "") ) {
+				my $dst = "/private/etc/postfix/main.cf.um.tmp";
+				qx( /usr/bin/sed -e "/$deprecated_keys[$cnt]/d" "$src" > "$dst" );
+				move( "$dst", "$src" );
 			}
 		}
 
-		# set notification service
-		my $notify_state = qx( ${PLIST_BUDDY} -c 'Print :imap:notification_server_enabled' "${g_target_root}/private/etc/MailServicesOther.plist" );
-		chomp(${notify_state});
-		if ( ${notify_state} eq "true" ) {
-			qx( ${SERVER_ADMIN} settings mail:imap:notification_server_enabled = yes >> ${MIGRATION_LOG} );
+		# clean legacy smtp_fallback
+		$src = "/private/etc/postfix/master.cf";
+		my $value = qx( ${GREP} "o fallback_relay=" $src );
+		if ( !($value eq "") ) {
+			# fix existing master.cf
+			my $dst = "/private/etc/postfix/master.cf.um.tmp";
+			qx( /usr/bin/sed -e "s/o fallback_relay=/o smtp_fallback_relay=/" "$src" > "$dst" );
+			move( "$src",  "$src" . ".$g_source_version" . ".orig" );
+			move( "$dst", "$src" );
 		}
 
-		# get current service state
-		$running_state = qx( ${PLIST_BUDDY} -c 'Print :service_state' "${g_target_root}/private/etc/MailServicesOther.plist" );
-		chomp( ${running_state} );
+		# make sure local postfix is up to date
+		qx( ${POSTFIX} upgrade-configuration >> "${MIGRATION_LOG}" );
+		qx( ${POSTFIX} check >> "${MIGRATION_LOG}" );
+		qx( ${POSTFIX} set-permissions >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
 
-		# set migration state
-		$state = qx( ${PLIST_BUDDY} -c 'Print :state' "${g_target_root}/private/etc/MailServicesOther.plist" );
-		chomp( ${state} );
-		qx( ${PLIST_BUDDY} -c 'Add :serviceState string ${state}' ${g_migration_plist} );
+		print LOG_FILE "Updating postfix desktop config complete\n";
 	}
 
-	if ( !path_exists("/private/etc/imapd.conf") ) {
-		if ( path_exists("/private/etc/imapd.conf.default") ) {
-			qx( ${CP} "/private/etc/imapd.conf.default" "/private/etc/imapd.conf" );
+	# if not migrating to root volume
+	if ( "${g_target_root}" ne "/" ) {
+		# need to create and link Mail dir to receive default setup info
+		if ( path_exists( "${MAIL_ROOT}" ) ) {
+			move( "${MAIL_ROOT}",  "${MAIL_ROOT}.um.tmp" );
 		}
+
+		# create dest mail root if it doesn't exist
+		if ( !path_exists( "${g_target_root}${MAIL_ROOT}" ) ) {
+			mkdir( "${g_target_root}${MAIL_ROOT}", 0755 );
+		}
+		qx( /bin/ln -s "${g_target_root}${MAIL_ROOT}" "${MAIL_ROOT}" );
 	}
 
-	# migrate log level settings
-	migrate_log_settings();
-
-	######################
-	# mailman
-	######################
+	## setup config files
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/60-setup_mail_service.sh" >> "${MIGRATION_LOG}" );
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/61-setup_amavisd.sh" >> "${MIGRATION_LOG}" );
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/62-setup_spamassassin.sh" >> "${MIGRATION_LOG}" );
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/63-setup_clamav.sh" >> "${MIGRATION_LOG}" );
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/64-setup_postfix.sh" >> "${MIGRATION_LOG}" );
+	qx( "/Applications/Server.app/Contents/ServerRoot/System/Library/ServerSetup/PromotionExtras/65-setup_dovecot.sh" >> "${MIGRATION_LOG}" );
 
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Migrate Mailing List Settings and Data" . "\n";
+	print LOG_FILE "Migrate Mail Service Settings\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 
-	# migrate mailman data
-	if ( !("${g_target_root}" eq "${g_source_root}") ) {
-		migrate_mailman_data();
+	# migrate general settings plist
+	print LOG_FILE "Migrating cached mail service settings file\n";
+	if ( path_exists("${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist") ) {
+		# save current copy
+		print LOG_FILE "Saving current cached settings file: ${g_target_root}${CONFIG_ROOT}/MailServicesOther.${TARGET_VER}.plist\n";
+		copy("${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist", "${g_target_root}${CONFIG_ROOT}/MailServicesOther.${TARGET_VER}.plist" );
 	}
 
-	# get mailman enabled settigs
-	my $mailman_enabled;
+	# migrate MailServicesOther.plist
+	if ( path_exists("${g_source_root}/private/etc/MailServicesOther.plist") ) {
+		# copy existing other settings plist
+		copy("${g_source_root}/private/etc/MailServicesOther.plist", "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
+	} else {
+		print LOG_FILE "Warning: Missing cached settings file: ${g_source_root}/private/etc/MailServicesOther.plist.  Using defaults\n";
 
-	# get mailman dictionary from general settings
-	my $other_settings = "${g_source_root}/private/etc/MailServicesOther.plist";
-	my $other_dict = NSDictionary->dictionaryWithContentsOfFile_( ${other_settings} );
-	if ( $other_dict && $$other_dict ) {
-		my $mailman_dict = $other_dict->objectForKey_( "mailman");
-		if ( $mailman_dict && $$mailman_dict ) {
-			if ( $mailman_dict->isKindOfClass_( NSDictionary->class ) ) {
-				my $mailman_enabled_key = $mailman_dict->objectForKey_( "mailman_enabled");
-				if ( $mailman_enabled_key && $$mailman_enabled_key) {
-					$mailman_enabled = obj_value( $mailman_enabled_key );
-				}
+		# copy default MailServicesOther.plist from Source Root if needed
+		if ( !path_exists("${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist") ) {
+			if ( path_exists("${SERVER_ROOT}/private/etc/MailServicesOther.plist.default") ) {
+				copy("${SERVER_ROOT}/private/etc/MailServicesOther.plist.default", "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
 			}
 		}
 	}
 
-	if ( ${mailman_enabled} ) {
-		qx( ${SERVER_ADMIN} settings mail:mailman:enable_mailman = yes >> ${MIGRATION_LOG} );
-	}
+	# get current service state
+	$service_state = qx( ${PLIST_BUDDY} -c 'Print :service_state' "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
+	chomp( $service_state );
+	print LOG_FILE "Previous mail services state: $service_state\n";
 
-	# clean up mailman data
-	qx( /usr/share/mailman/bin/check_perms -f >> "${MIGRATION_LOG}" );
+	# set service enabled state
+	$enabled_state = qx( ${PLIST_BUDDY} -c 'Print :state' "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
+	chomp( $enabled_state );
+	print LOG_FILE "Previous mail service enabled state: $enabled_state\n";
+	qx( ${PLIST_BUDDY} -c 'Add :serviceState string $enabled_state' $g_migration_plist );
 
 	######################
 	# amavisd
 	######################
 
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Migrate Junkmail & Virus Settings and Data" . "\n";
+	print LOG_FILE "Migrate Junkmail & Virus Service Settings and Data\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 
 	if ( "${g_target_root}" eq "/" ) {
 		# if boot vol, save spam & virus settings to re-enable later
 		open( AMAVIS_CONF, "<${g_source_root}" . "/private/etc/amavisd.conf" );
-		while( <AMAVIS_CONF> )
-		{
+		while( <AMAVIS_CONF> ) {
 			# store $_ value because subsequent operations may change it
 			my( $a_line ) = $_;
 
@@ -2670,10 +2788,8 @@ sub do_migration()
 			# looking for: #@bypass_spam_checks_maps  = (1);
 			my $a_key = index( ${a_line}, "\@bypass_spam_checks_maps" );
 			my $a_val = index( ${a_line}, "=" );
-			if ( ($a_key != -1) && ($a_val != -1) )
-			{
-				if ( substr( ${a_line}, 0, 1) eq "#" )
-				{
+			if ( ($a_key != -1) && ($a_val != -1) ) {
+				if ( substr( ${a_line}, 0, 1) eq "#" ) {
 					print LOG_FILE "Junk mail scanning enabled in: ${g_source_root} \n";
 					$g_enable_spam = 1;
 				}
@@ -2682,60 +2798,102 @@ sub do_migration()
 			# looking for: #@bypass_virus_checks_maps = (1);
 			$a_key = index( ${a_line}, "\@bypass_virus_checks_maps" );
 			$a_val = index( ${a_line}, "=" );
-			if ( ($a_key != -1) && ($a_val != -1) )
-			{
-				if ( substr( ${a_line}, 0, 1) eq "#" )
-				{
+			if ( ($a_key != -1) && ($a_val != -1) ) {
+				if ( substr( ${a_line}, 0, 1) eq "#" ) {
 					print LOG_FILE "Virus scanning enabled in: ${g_source_root} \n";
 					$g_enable_virus = 1;
 				}
 			}
 
+			# get previous hit level
+			$a_key = index( ${a_line}, "\$sa_tag2_level_deflt" );
+			$a_val = index( ${a_line}, "=" );
+			if ( ($a_key != -1) && ($a_val != -1) ) {
+				$a_line =~ s/^.*\=//;
+				$a_line =~ s/;.*//;
+				$a_line =~ s/^\s+//; #remove leading spaces
+				$a_line =~ s/\s+$//; #remove trailing spaces
+				$g_required_hits = $a_line;
+			}
+
+			# get previous spam subject tag
+			$a_key = index( ${a_line}, "\$sa_spam_subject_tag" );
+			$a_val = index( ${a_line}, "=" );
+			if ( ($a_key != -1) && ($a_val != -1) ) {
+				$g_spam_subj_tag = $a_line;
+				$g_spam_subj_tag =~ s/^.*\=//;
+				$g_spam_subj_tag =~ s/;.*//;
+				$g_spam_subj_tag =~ s/^\s+//; #remove leading spaces
+				$g_spam_subj_tag =~ s/\s+$//; #remove trailing spaces
+				$g_spam_subj_tag =~ s/^\'//; #remove leading '
+				$g_spam_subj_tag =~ s/\'//; #remove trailing '
+			}
 		}
 		close(AMAVIS_CONF);
 	} else {
 		my $src_file = "${g_source_root}/private/etc/MailServicesOther.plist";
 		my $src_dict = NSDictionary->dictionaryWithContentsOfFile_( ${src_file} );
-		if ( $src_dict && $$src_dict )
-		{
-			my $postfix_dict = $src_dict->objectForKey_( "postfix");
-			if ( $postfix_dict && $$postfix_dict)
-			{
-				if ( $postfix_dict->isKindOfClass_( NSDictionary->class ) )
-				{
+		if ( $src_dict && $$src_dict ) {
+			my $postfix_dict = $src_dict->objectForKey_( "postfix" );
+			if ( $postfix_dict && $$postfix_dict) {
+				if ( $postfix_dict->isKindOfClass_( NSDictionary->class ) ) {
 					$g_enable_spam = obj_value( $postfix_dict->objectForKey_( "spam_enabled") );
 				}
 			}
 		}
 	}
 
-	# save old amavisd.conf file
-	if ( path_exists("${g_target_root}/private/etc/amavisd.conf") ) {
-		qx( ${CP} -v "${g_target_root}/private/etc/amavisd.conf" "${g_target_root}/private/etc/amavisd.conf.default" >> "${MIGRATION_LOG}" );
-	}
-	if ( path_exists("${g_source_root}/private/etc/amavisd.conf") ) {
-		qx( ${CP} -v "${g_source_root}/private/etc/amavisd.conf" "${g_target_root}/private/etc/amavisd.conf" >> "${MIGRATION_LOG}" );
-	}
+	# change home directory for amavisd user
+	qx(	${DSCL} localhost change /Local/Default/Users/_amavisd NFSHomeDirectory /var/virusmails /Library/Server/Mail/Data/scanner/amavis );
 
-	# copy amavis var directory
-	if ( !("${g_target_root}" eq "${g_source_root}") )
-	{
-		if ( path_exists("${g_source_root}/private/var/amavis/amavisd.sock") ) {
-			qx( ${RM} -f "${g_source_root}/private/var/amavis/amavisd.sock" >> "${MIGRATION_LOG}" );
+	# get learn junk mail users
+	my $learn_jm_sh = "$g_source_root/private/etc/mail/spamassassin/learn_junk_mail.sh";
+	if ( path_exists( $learn_jm_sh ) ) {
+		my $jm_user = qx( grep "^JUNK_MAIL_USER" $learn_jm_sh );
+		chomp( $jm_user );
+		if ( $jm_user ne "" ) {
+			$jm_user =~ s/^.*\=//;
+			$jm_user =~ s/^\s+//; #remove leading spaces
+			$jm_user =~ s/\s+$//; #remove trailing spaces
+		} else {
+			$jm_user = "junkmail";
 		}
 
-		if ( path_exists("${g_source_root}/private/var/amavis") ) {
-			qx( ${CP} -rfv "${g_source_root}/private/var/amavis" "${g_target_root}/private/var/" >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+		print LOG_FILE "Setting junk mail user account to: $jm_user\n";
+		qx( ${PLIST_BUDDY} -c 'Add junk_mail:junk_mail_userid string $jm_user' "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
+
+		my $not_jm_user = qx( grep "^NOT_JUNK_MAIL_USER" $learn_jm_sh );
+		chomp( $not_jm_user );
+		if ( $not_jm_user ne "" ) {
+			$not_jm_user =~ s/^.*\=//;
+			$not_jm_user =~ s/^\s+//; #remove leading spaces
+			$not_jm_user =~ s/\s+$//; #remove trailing spaces
+		} else {
+			$not_jm_user = "notjunkmail";
 		}
-		qx( ${CHOWN} -R _amavisd:_amavisd "${g_target_root}/private/var/amavis" >>"${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+
+		print LOG_FILE "Setting not junk mail user account to: $not_jm_user\n";
+		qx( ${PLIST_BUDDY} -c 'Add junk_mail:not_junk_mail_userid string notjunkmail' "${g_target_root}${CONFIG_ROOT}/MailServicesOther.plist" );
 	}
+
+	# migrate Spam Assassin config files
+	my $sa_local_cf = "$g_source_root/private/etc/mail/spamassassin/local.cf";
+	if ( path_exists( $sa_local_cf ) ) {
+		copy($sa_local_cf, "${g_target_root}${CONFIG_ROOT}/spamassassin/local.cf" );
+		qx( ${SERVER_ADMIN} settings mail:postfix:bayes_path = "${DATA_ROOT}/scanner/amavis/.spamassassin/bayes" >> ${MIGRATION_LOG} );
+	}
+
+	# set hit level & tag
+	qx( ${SERVER_ADMIN} settings mail:postfix:required_hits = "$g_required_hits" >> ${MIGRATION_LOG} );
+	qx( ${SERVER_ADMIN} settings mail:postfix:spam_subject_tag = "$g_spam_subj_tag" >> ${MIGRATION_LOG} );
+
+	# removed amavisd from launchd overrides.plist
+	qx( ${PLIST_BUDDY} -c "delete :org.amavis.amavisd" /var/db/launchd.db/com.apple.launchd/overrides.plist );
+	qx( ${PLIST_BUDDY} -c "delete :org.amavis.amavisd_cleanup" /var/db/launchd.db/com.apple.launchd/overrides.plist );
 
 	######################
 	# clamav
 	######################
-
-	# Clam AV config will be migrated by 66_clamav_migrator
-	#	in /System/Library/ServerSetup/MigrationExtras
 
 	# migrate database upgrade check times
 	migrate_db_update_times();
@@ -2745,65 +2903,103 @@ sub do_migration()
 	######################
 
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Migrate SMTP Settings and Data" . "\n";
+	print LOG_FILE "Migrate SMTP Service Settings and Data\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 
-	# if not upgrading same volume
-	if ( !("${g_target_root}" eq "${g_source_root}") ) {
-		# migrate postfix config settings
-		migrate_postfix_config();
-	}
+	# migrate postfix config
+	migrate_postfix_config();
+
+	# migrate postfix spool data
+	migrate_postfix_spool();
 
 	# upgrade master.cf settings
 	update_master_cf();
 
 	# set keys in main.cf
-	qx( ${POSTCONF} -e mail_owner=_postfix >> "${MIGRATION_LOG}" );
-	qx( ${POSTCONF} -e setgid_group=_postdrop >> "${MIGRATION_LOG}" );
-	qx( ${POSTCONF} -e mailbox_transport=dovecot >> "${MIGRATION_LOG}" );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e mail_owner=_postfix >> "${MIGRATION_LOG}" );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e setgid_group=_postdrop >> "${MIGRATION_LOG}" );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e mailbox_transport=dovecot >> "${MIGRATION_LOG}" );
 
 	# enable IPv4 & IPv6
-	my @inet_protocols = qx( $POSTCONF -h -c "$g_postfix_root/private/etc/postfix" inet_protocols );
+	my @inet_protocols = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" inet_protocols );
 	chomp(@inet_protocols);
 	# check for custom settings and only change if current settings are IPv4 or misconfigured
 	if ( (@inet_protocols > 0) && (($inet_protocols[0] eq "ipv4") || ($inet_protocols[0] eq "")) ) {
-		qx( $POSTCONF -e inet_protocols=all >> "${MIGRATION_LOG}" );
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e inet_protocols=all >> "${MIGRATION_LOG}" );
 	}
 
-	my $virt_mb = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" virtual_mailbox_domains );
+	my $virt_mb = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" virtual_mailbox_domains );
 	chomp($virt_mb);
-	my $virt_trans = qx( ${POSTCONF} -h -c "${g_postfix_root}/private/etc/postfix" virtual_transport );
+	my $virt_trans = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" virtual_transport );
 	chomp($virt_trans);
-	if ( (index($virt_mb, "hash:/etc/postfix/virtual_domains") != -1) && (index($virt_trans, "lmtp:unix:") != -1) )
+	if ( (index($virt_mb, "hash:/Library/Server/Mail/Config/postfix/virtual_domains") != -1) && (index($virt_trans, "lmtp:unix:") != -1) )
 	{
 		qx( ${SERVER_ADMIN} settings mail:postfix:enable_virtual_domains = yes >> ${MIGRATION_LOG} );
-		qx( ${POSTCONF} -e virtual_transport=virtual >> "${MIGRATION_LOG}" );
-		qx( ${POSTCONF} -e virtual_mailbox_domains=$virt_mb >> "${MIGRATION_LOG}" );
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e virtual_transport=virtual >> "${MIGRATION_LOG}" );
+		qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e virtual_mailbox_domains=$virt_mb >> "${MIGRATION_LOG}" );
 	} else {
 		qx( ${SERVER_ADMIN} settings mail:postfix:enable_virtual_domains = no >> ${MIGRATION_LOG} );
 	}
 
+	# check for system_user_maps
+	if ( !path_exists( "${g_target_root}${POSTFIX_CONFIG}/system_user_maps" ) ) {
+		open( SYS_USER_MAPS, "> ${g_target_root}${POSTFIX_CONFIG}/system_user_maps" );
+		print SYS_USER_MAPS ${g_header_string};
+		close SYS_USER_MAPS;
+	}
+	if ( !path_exists( "${g_target_root}${POSTFIX_CONFIG}/system_user_maps.db" ) ) {
+		qx( ${POSTMAP} "${g_target_root}${POSTFIX_CONFIG}/system_user_maps" );
+	}
+
+	# update using postfix built-in commands
+	qx( ${POSTFIX} -c "${g_target_root}${POSTFIX_CONFIG}" upgrade-configuration >> "${MIGRATION_LOG}" );
+	qx( ${POSTFIX} -c "${g_target_root}${POSTFIX_CONFIG}" check >> "${MIGRATION_LOG}" );
+	qx( ${POSTFIX} -c "${g_target_root}${POSTFIX_CONFIG}" set-permissions >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
+
 	######################
-	# cyrus to dovecot
+	# config settings
 	######################
 
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Migrate Mail Settings and Data" . "\n";
+	print LOG_FILE "Migrate POP/IMAP Service Settings and Data\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 
-	## setup config filse
-	qx( "/System/Library/ServerSetup/CleanInstallExtras/SetupDovecot.sh" >> "${MIGRATION_LOG}" );
-
-	if ( $g_sl_src )
-	{
+	if ( $g_lion_src || $g_mtn_lion_src ) {
 		# copy dovecot config settings
-		migrate_dovecot_config();
+		copy_dovecot_config();
 
-		# copy dovecot mail data
+		# update config paths
+		update_dovecot_config_paths();
+
+		# migrate dovecot mail data
 		migrate_dovecot_data();
 
 		# creat fts indexes
 		create_fts_indexes();
+	}
+	elsif ( $g_snow_leopard_src )
+	{
+		# migrate dovecot config settings
+		migrate_dovecot_config();
+
+		# update config paths
+		update_dovecot_config_paths();
+
+		# migrate dovecot mail data
+		migrate_dovecot_data();
+
+		# creat fts indexes
+		create_fts_indexes();
+
+		# setup gssapi hostname if enabled
+		my $imap_gssapi_auth =  qx( ${SERVER_ADMIN} settings mail:imap:imap_auth_gssapi );
+		chomp($imap_gssapi_auth);
+
+		my $pop3_gssapi_auth =  qx( ${SERVER_ADMIN} settings mail:imap:pop_auth_gssapi );
+		chomp($pop3_gssapi_auth);
+		if ( ($pop3_gssapi_auth eq "mail:imap:pop_auth_gssapi = yes") || ($imap_gssapi_auth eq "mail:imap:imap_auth_gssapi = yes")) {
+			qx( ${SERVER_ADMIN} settings mail:imap:imap_auth_gssapi = yes );
+		}
 	} else {
 		# if dest vol != boot vol, then do not migrate config settings
 		if ( "${g_target_root}" eq "/" ) {
@@ -2815,51 +3011,116 @@ sub do_migration()
 
 		# migrate cyrus mail data
 		migrate_cyrus_data();
+
+		# setup gssapi hostname if enabled
+		my $imap_gssapi_auth =  qx( ${SERVER_ADMIN} settings mail:imap:imap_auth_gssapi );
+		chomp($imap_gssapi_auth);
+
+		my $pop3_gssapi_auth =  qx( ${SERVER_ADMIN} settings mail:imap:pop_auth_gssapi );
+		chomp($pop3_gssapi_auth);
+		if ( ($pop3_gssapi_auth eq "mail:imap:pop_auth_gssapi = yes") || ($imap_gssapi_auth eq "mail:imap:imap_auth_gssapi = yes")) {
+			qx( ${SERVER_ADMIN} settings mail:imap:imap_auth_gssapi = yes );
+		}
 	}
 
+	# set notification service
+	if ( path_exists( "$g_source_root/private/etc/dovecot/dovecot.conf" ) ) {
+		my $aps_topic = qx( grep "^aps_topic " "$g_source_root/private/etc/dovecot/dovecot.conf" );
+		chomp( $aps_topic );
+		print LOG_FILE "Mail notification services aps topic: $aps_topic\n";
+		if ( $aps_topic ne "" ) {
+			qx( ${SERVER_ADMIN} settings mail:imap:notification_server_enabled = yes >> ${MIGRATION_LOG} );
+		} else {
+			qx( ${SERVER_ADMIN} settings mail:imap:notification_server_enabled = no >> ${MIGRATION_LOG} );
+		}
+	} else {
+		print LOG_FILE "Mail notification services not migrated.  Missing: $g_source_root/private/etc/dovecot/dovecot.conf\n";
+	}
+
+	# remove mailman cron job
+	print LOG_FILE "mailman cron cleanup...\n";
+	qx( /usr/bin/crontab -u mailman -l >> ${MIGRATION_LOG} );
+	qx( /usr/bin/crontab -u mailman /dev/null >> ${MIGRATION_LOG} );
+	print LOG_FILE "mailman cron cleanup complete\n";
+
+	############################
+	# migrate log level settings
+	############################
+
+	print LOG_FILE "-------------------------------------------------------------\n";
+	print LOG_FILE "Migrate SSL Certificate Settings\n";
+	print LOG_FILE "-------------------------------------------------------------\n";
+
+	set_ssl_certs();
+
 	# setup migration launchd plist
-	qx( ${PLIST_BUDDY} -c 'Add :Disabled bool true' ${g_migration_ld_plist} );
-	qx( ${PLIST_BUDDY} -c 'Add :RunAtLoad bool true' ${g_migration_ld_plist} );
-	qx( ${PLIST_BUDDY} -c 'Add :Label string com.apple.mail_migration' ${g_migration_ld_plist} );
-	qx( ${PLIST_BUDDY} -c 'Add :Program string /usr/libexec/dovecot/mail_data_migrator.pl' ${g_migration_ld_plist} );
-	qx( ${PLIST_BUDDY} -c 'Add :ProgramArguments string /usr/libexec/dovecot/mail_data_migrator.pl' ${g_migration_ld_plist} );
+	qx( ${PLIST_BUDDY} -c 'Add :Disabled bool true' ${MIGRATION_PLIST} );
+	qx( ${PLIST_BUDDY} -c 'Add :RunAtLoad bool true' ${MIGRATION_PLIST} );
+	qx( ${PLIST_BUDDY} -c 'Add :Label string com.apple.mail_migration' ${MIGRATION_PLIST} );
+	qx( ${PLIST_BUDDY} -c 'Add :Program string /Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/mail_data_migrator.pl' ${MIGRATION_PLIST} );
+	qx( ${PLIST_BUDDY} -c 'Add :ProgramArguments string /Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/mail_data_migrator.pl' ${MIGRATION_PLIST} );
+
+	############################
+	# migrate log level settings
+	############################
+
+	print LOG_FILE "-------------------------------------------------------------\n";
+	print LOG_FILE "Migrate Log Level\n";
+	print LOG_FILE "-------------------------------------------------------------\n";
+
+	# migrate log level settings if later than 10.8
+	#	otherwise set to default "info" setting
+	set_log_defaults();
 
 	######################
 	# enable settings
 	######################
 
-	# only on boot vol
-	if ( "${g_target_root}" eq "/" )
-	{
-		# update master.cf
-		print LOG_FILE "Updating /etc/postfix/master.cf\n";
-		qx( ${SERVER_ADMIN} command mail:command = validateMasterCf >> ${MIGRATION_LOG} );
+	print LOG_FILE "-------------------------------------------------------------\n";
+	print LOG_FILE "Enabling Service Settings\n";
+	print LOG_FILE "-------------------------------------------------------------\n";
 
-		qx( /usr/sbin/postfix upgrade-configuration >> "${MIGRATION_LOG}" );
-		qx( /usr/sbin/postfix check >> "${MIGRATION_LOG}" );
-		qx( /usr/sbin/postfix set-permissions >> "${MIGRATION_LOG}" 2>>"${MIGRATION_LOG}" );
-
-		if ( $g_enable_spam == 1 ) {
-			qx( ${SERVER_ADMIN} settings mail:postfix:smtp_uce_controlls = 1 >> ${MIGRATION_LOG} );
-			qx( ${SERVER_ADMIN} settings mail:postfix:spam_scan_enabled = yes >> ${MIGRATION_LOG} );
-		}
-
-		if ( $g_enable_virus == 1 ) {
-			qx( ${SERVER_ADMIN} settings mail:postfix:virus_scan_enabled = yes >> ${MIGRATION_LOG} );
-		}
+	# set junk mail filtering if enabled
+	if ( $g_enable_spam == 1 ) {
+		qx( ${SERVER_ADMIN} settings mail:postfix:smtp_uce_controlls = 1 >> ${MIGRATION_LOG} );
+		qx( ${SERVER_ADMIN} settings mail:postfix:spam_scan_enabled = yes >> ${MIGRATION_LOG} );
 	}
 
-	qx( /usr/sbin/postconf -e mail_owner=_postfix >> ${MIGRATION_LOG} );
-	qx( /usr/sbin/postconf -e setgid_group=_postdrop >> ${MIGRATION_LOG} );
+	# set virus scanning if enabled
+	if ( $g_enable_virus == 1 ) {
+		qx( ${SERVER_ADMIN} settings mail:postfix:virus_scan_enabled = yes >> ${MIGRATION_LOG} );
+	}
+
+	# set SMTP enabled
+	qx( ${SERVER_ADMIN} settings mail:postfix:enable_smtp = yes >> ${MIGRATION_LOG} );
+
+	# set auto-auth
+	qx( ${SERVER_ADMIN} settings mail:global:auto_auth = yes >> ${MIGRATION_LOG} );
+
+	# set postfix owner & group
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e mail_owner=_postfix >> ${MIGRATION_LOG} );
+	qx( ${POSTCONF} -c "${g_target_root}${POSTFIX_CONFIG}" -e setgid_group=_postdrop >> ${MIGRATION_LOG} );
+
+	# reset host & domain names for all mail services
+	my $host_name = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" myhostname );
+	chomp($host_name);
+	qx( ${SERVER_ADMIN} settings mail:postfix:myhostname = $host_name >> ${MIGRATION_LOG} );
+
+	my $domain_name = qx( ${POSTCONF} -h -c "${g_target_root}${POSTFIX_CONFIG}" mydomain );
+	chomp($domain_name);
+	qx( ${SERVER_ADMIN} settings mail:postfix:mydomain = $domain_name >> ${MIGRATION_LOG} );
 
 	######################
 	# clean up
 	######################
 
 	if ( ($g_purge == 1) && !("${g_target_root}" eq "${g_source_root}") ) {
+		print LOG_FILE "-------------------------------------------------------------\n";
+		print LOG_FILE "Cleaning Up ...\n";
+		print LOG_FILE "-------------------------------------------------------------\n";
+
 		do_cleanup( "${g_source_root}/private/etc/imapd.conf" );
 		do_cleanup( "${g_source_root}/private/etc/cyrus.conf" );
-		do_cleanup( "${g_source_root}/private/var/mailman" );
 		do_cleanup( "${g_source_root}/private/var/spool/postfix" );
 		do_cleanup( "${g_source_root}/private/etc/postfix" );
 		do_cleanup( "${g_source_root}/private/var/amavis" );
@@ -2867,14 +3128,39 @@ sub do_migration()
 		do_cleanup( "${g_source_root}/private/etc/amavisd.conf" );
 	}
 
-	# start mail service after migration is complete
-	if ( ${running_state} eq "RUNNING" ) {
-		print LOG_FILE "Starting mail services\n";
-		qx( ${SERVER_ADMIN} start mail >> ${MIGRATION_LOG} );
+	######################
+	# set service state
+	######################
+
+	print LOG_FILE "-------------------------------------------------------------\n";
+	print LOG_FILE "Setting Mail Service State\n";
+	print LOG_FILE "-------------------------------------------------------------\n";
+
+	# wstart services on boot vol migrations only
+	if ( "${g_target_root}" eq "/" ) {
+		# start mail service after migration is complete
+		if ( ($service_state eq "RUNNING") || ($service_state eq "STARTING") ) {
+			print LOG_FILE "Starting mail services\n";
+			qx( ${SERVER_ADMIN} start mail >> ${MIGRATION_LOG} );
+		} else {
+			# reload postfix in passive mode
+			load_postfix();
+		}
+	} else {
+		# if not migrating to root volume, clean up link
+		if ( path_exists( ${MAIL_ROOT} ) && (-l ${MAIL_ROOT}) ) {
+			unlink( ${MAIL_ROOT} )
+		}
+
+		if ( path_exists( "${MAIL_ROOT}.um.tmp" ) ) {
+			move( "${MAIL_ROOT}.um.tmp",  "${MAIL_ROOT}" );
+		}
+
+		qx( "${SERVER_ROOT}/System/Library/ServerSetup/.UninstallExtras/64-reset_postfix.sh" >> "${MIGRATION_LOG}" );
 	}
 
 	my $end_time = localtime();
 	print LOG_FILE "-------------------------------------------------------------\n";
-	print LOG_FILE "Mail Migration Complete: $end_time" . "\n";
+	print LOG_FILE "Mail Migration Complete: $end_time\n";
 	print LOG_FILE "-------------------------------------------------------------\n";
 } # do_migration

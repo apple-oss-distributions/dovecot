@@ -2370,13 +2370,13 @@ diff -Nur dovecot-1.1.7/src/login-common/ssl-proxy-openssl.c dovecot-patch/src/l
 +		dup2( fd[1], 1 );
 +
 +		/* set up the args list */
-+		args[ 0 ] = "/usr/sbin/certadmin";
++		args[ 0 ] = "/Applications/Server.app/Contents/ServerRoot/usr/sbin/certadmin";
 +		args[ 1 ] = "--get-private-key-passphrase";
 +		args[ 2 ] = cb_data->key;
 +		args[ 3 ] = NULL;
 +
 +		/* get the passphrase */
-+		execv("/usr/sbin/certadmin", args);
++		execv("/Applications/Server.app/Contents/ServerRoot/usr/sbin/certadmin", args);
 +
 +		exit( 0 );
 +	}

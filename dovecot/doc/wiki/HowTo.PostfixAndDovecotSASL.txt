@@ -73,7 +73,7 @@ submission inet n - - - - smtpd
   -o smtpd_sender_login_maps=hash:/etc/postfix/virtual
   -o smtpd_sender_restrictions=reject_sender_login_mismatch
   -o
-smtpd_recipient_restrictions=reject_unknown_recipient_domain,reject_non_fqdn_recipient,permit_sasl_authenticated,reject
+smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
 ---%<-------------------------------------------------------------------------
 
 See also:
@@ -92,4 +92,4 @@ the default, and most clients can work with it, but Outlook Express needs the
 
  * http://archives.neohapsis.com/archives/postfix/2000-11/0881.html
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

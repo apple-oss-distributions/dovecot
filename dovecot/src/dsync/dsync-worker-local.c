@@ -521,6 +521,7 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 	struct local_dsync_mailbox_change *change;
 	struct local_dsync_dir_change *dir_change, change_lookup;
 	struct local_dsync_mailbox *old_lbox;
+	enum mail_error error;
 	const char *const *fields;
 	unsigned int i, field_count;
 
@@ -560,8 +561,17 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 		struct mail_storage *storage = mailbox_get_storage(box);
 
 		i_error("Failed to sync mailbox %s: %s", info->name,
-			mail_storage_get_last_error(storage, NULL));
+			mail_storage_get_last_error(storage, &error));
 		mailbox_free(&box);
+		if (error == MAIL_ERROR_NOTFOUND ||
+		    error == MAIL_ERROR_NOTPOSSIBLE) {
+			/* Mailbox isn't selectable, try the next one. We
+			   should have already caught \Noselect mailboxes, but
+			   check them anyway here. The NOTPOSSIBLE check is
+			   mainly for invalid mbox files. */
+			return local_worker_mailbox_iter_next(_iter,
+							      dsync_box_r);
+		}
 		_iter->failed = TRUE;
 		return -1;
 	}
@@ -1313,15 +1323,24 @@ local_worker_delete_dir(struct dsync_worker *_worker,
 		(struct local_dsync_worker *)_worker;
 	struct mail_namespace *ns;
 	const char *storage_name;
+	enum mail_error error;
 
 	storage_name = dsync_box->name;
 	ns = mail_namespace_find(worker->user->namespaces, &storage_name);
 
 	mailbox_list_set_changelog_timestamp(ns->list, dsync_box->last_change);
 	if (mailbox_list_delete_dir(ns->list, storage_name) < 0) {
-		i_error("Can't delete mailbox directory %s: %s",
-			dsync_box->name,
-			mailbox_list_get_last_error(ns->list, NULL));
+		(void)mailbox_list_get_last_error(ns->list, &error);
+		if (error == MAIL_ERROR_EXISTS) {
+			/* we're probably doing Maildir++ -> FS layout sync,
+			   where a nonexistent Maildir++ mailbox had to be
+			   created as \Noselect FS directory.
+			   just ignore this. */
+		} else {
+			i_error("Can't delete mailbox directory %s: %s",
+				dsync_box->name,
+				mailbox_list_get_last_error(ns->list, NULL));
+		}
 	}
 	mailbox_list_set_changelog_timestamp(ns->list, (time_t)-1);
 }
@@ -1662,10 +1681,14 @@ local_worker_save_msg_continue(struct local_dsync_worker *worker)
 	struct mailbox *dest_box = worker->ext_mail->box;
 	dsync_worker_save_callback_t *callback;
 	ssize_t ret;
+	bool save_failed = FALSE;
 
-	while ((ret = i_stream_read(worker->save_input)) > 0) {
-		if (mailbox_save_continue(worker->save_ctx) < 0)
+	while ((ret = i_stream_read(worker->save_input)) > 0 || ret == -2) {
+		if (mailbox_save_continue(worker->save_ctx) < 0) {
+			save_failed = TRUE;
+			ret = -1;
 			break;
+		}
 	}
 	if (ret == 0) {
 		if (worker->save_io != NULL)
@@ -1684,6 +1707,9 @@ local_worker_save_msg_continue(struct local_dsync_worker *worker)
 	if (worker->save_input->stream_errno != 0) {
 		errno = worker->save_input->stream_errno;
 		i_error("read(msg input) failed: %m");
+		mailbox_save_cancel(&worker->save_ctx);
+		dsync_worker_set_failure(&worker->worker);
+	} else if (save_failed) {
 		mailbox_save_cancel(&worker->save_ctx);
 		dsync_worker_set_failure(&worker->worker);
 	} else {

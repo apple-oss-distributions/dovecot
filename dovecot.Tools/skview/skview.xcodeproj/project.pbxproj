@@ -17,7 +17,7 @@
 		8DD76FAF0486AB0100D96B5E /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = /usr/share/man/man8/;
+			dstPath = "$(SERVER_INSTALL_PATH_PREFIX)/usr/share/man/man8/";
 			dstSubfolderSpec = 0;
 			files = (
 				8DD76FB00486AB0100D96B5E /* skview.8 in CopyFiles */,
@@ -30,6 +30,7 @@
 		08FB7796FE84155DC02AAC07 /* main.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
 		2DF55C23116151AA009A59FE /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		2DF55C25116151AA009A59FE /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
+		8486BEA91423FEFB008FED78 /* ServerBuildVariables.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = ServerBuildVariables.xcconfig; path = /AppleInternal/ServerTools/ServerBuildVariables.xcconfig; sourceTree = "<absolute>"; };
 		8DD76FB20486AB0100D96B5E /* skview */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = skview; sourceTree = BUILT_PRODUCTS_DIR; };
 		C6A0FF2C0290799A04C91782 /* skview.8 */ = {isa = PBXFileReference; lastKnownFileType = text; path = skview.8; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -50,6 +51,7 @@
 		08FB7794FE84155DC02AAC07 /* skadm */ = {
 			isa = PBXGroup;
 			children = (
+				8486BEA91423FEFB008FED78 /* ServerBuildVariables.xcconfig */,
 				08FB7795FE84155DC02AAC07 /* Source */,
 				C6A0FF2B0290797F04C91782 /* Documentation */,
 				1AB674ADFE9D54B511CA2CBB /* Products */,
@@ -111,7 +113,11 @@
 			isa = PBXProject;
 			buildConfigurationList = 1DEB928908733DD80010E9CD /* Build configuration list for PBXProject "skview" */;
 			compatibilityVersion = "Xcode 3.1";
+			developmentRegion = English;
 			hasScannedForEncodings = 1;
+			knownRegions = (
+				en,
+			);
 			mainGroup = 08FB7794FE84155DC02AAC07 /* skadm */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -141,7 +147,7 @@
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_ENABLE_FIX_AND_CONTINUE = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
-				INSTALL_PATH = /usr/libexec/dovecot;
+				INSTALL_PATH = "$(SERVER_INSTALL_PATH_PREFIX)/usr/libexec/dovecot";
 				PRODUCT_NAME = skview;
 			};
 			name = Debug;
@@ -152,13 +158,14 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GCC_MODEL_TUNING = "";
-				INSTALL_PATH = /usr/libexec/dovecot;
+				INSTALL_PATH = "$(SERVER_INSTALL_PATH_PREFIX)/usr/libexec/dovecot";
 				PRODUCT_NAME = skview;
 			};
 			name = Release;
 		};
 		1DEB928A08733DD80010E9CD /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8486BEA91423FEFB008FED78 /* ServerBuildVariables.xcconfig */;
 			buildSettings = {
 				ARCHS = "$(ARCHS_STANDARD_32_64_BIT)";
 				GCC_C_LANGUAGE_STANDARD = gnu99;
@@ -172,6 +179,7 @@
 		};
 		1DEB928B08733DD80010E9CD /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8486BEA91423FEFB008FED78 /* ServerBuildVariables.xcconfig */;
 			buildSettings = {
 				ARCHS = "$(ARCHS_STANDARD_32_64_BIT)";
 				GCC_C_LANGUAGE_STANDARD = gnu99;

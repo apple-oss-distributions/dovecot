@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -39,7 +39,8 @@ const struct sieve_command_def cmd_test_set = {
 	SCT_COMMAND,
 	2, 0, FALSE, FALSE, 
 	NULL, NULL,
-	cmd_test_set_validate, 
+	cmd_test_set_validate,
+	NULL, 
 	cmd_test_set_generate, 
 	NULL 
 };

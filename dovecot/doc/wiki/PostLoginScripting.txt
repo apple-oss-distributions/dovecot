@@ -16,7 +16,7 @@ service imap-postlogin {
   # all post-login scripts are executed via script-login binary
   executable = script-login /usr/local/bin/postlogin.sh
 
-  # the script process runs as the user specified here:
+  # the script process runs as the user specified here (v2.0.14+):
   user = $default_internal_user
   # this UNIX socket listener must use the same name as given to imap
 executable
@@ -60,6 +60,8 @@ It's possible to add/modify userdb fields by adding them to environment and
 adding the field to USERDB_KEYS. For example to change user's mail location:
 
 ---%<-------------------------------------------------------------------------
+#!/bin/sh
+
 export MAIL=maildir:/tmp/test
 export USERDB_KEYS="$USERDB_KEYS mail"
 exec "$@"
@@ -146,4 +148,90 @@ You can also use
  * http://www.linux.org.py/wiki/howto/dovecot_connect_acl
  * TCP wrappers can be used with 'login_access_sockets = tcpwrap'
 
-(This file was created from the wiki on 2011-05-11 04:42)
+Dynamically adding shared mailboxes according to filesystem permissions
+-----------------------------------------------------------------------
+
+Additional namespaces can be dynamically added via environment variables:
+
+---%<-------------------------------------------------------------------------
+use strict;
+
+my $SHAREDDIR= '/var/spool/mail/Shared';
+
+if (! @ARGV) {
+  exit 1;
+}
+
+# for testing...
+#if ($ENV{USER} eq 'lemur') {
+#  #  print "* OK [ALERT] Hello $ENV{'USER'}!\n";
+#  &set_namespaces();
+#  system("env >> /tmp/dovecot-env-$$");
+#}
+
+&set_namespaces();
+
+exec(@ARGV) or die "Unable to exec @ARGV: $!";
+
+sub set_namespaces {
+  my $mailbox;
+  local *D;
+  if (opendir(D, $SHAREDDIR)) {
+    my $dir;
+    my @namespaces = ();
+    while ($mailbox= readdir(D)) {
+      next if ($mailbox =~ /^\./);
+      if (-r "${SHAREDDIR}/${mailbox}") {
+        my $nsname = 'S-'.uc($mailbox);
+        push(@namespaces, lc($nsname));
+        &log("adding NAMESPACE/${nsname}/PREFIX ${SHAREDDIR}/${mailbox}");
+        $ENV{"NAMESPACE/${nsname}/LOCATION"} =
+          "maildir:$SHAREDDIR/$mailbox:INDEX=~/Maildir/index/Shared/$mailbox";
+        $ENV{"NAMESPACE/${nsname}/PREFIX"} = "Shared/$mailbox/";
+        $ENV{"NAMESPACE/${nsname}/TYPE"}= "public";
+        $ENV{"NAMESPACE/${nsname}/SEPARATOR"}= "/";
+        $ENV{"NAMESPACE/${nsname}/LIST"}= "yes";
+        # $ENV{"NAMESPACE/${nsname}/SUBSCRIPTIONS"} = "no"
+      }
+    }
+    closedir D;
+    if (@namespaces) {
+      $ENV{"NAMESPACE"} = join(' ', @namespaces);
+      my @userdb_keys;
+      if ($ENV{'USERDB_KEYS'}) {
+        push(@userdb_keys, $ENV{'USERDB_KEYS'});
+      }
+      push(@userdb_keys, grep(/^NAMESPACE/, keys(%ENV)));
+      $ENV{'USERDB_KEYS'} = join(' ', @userdb_keys);
+    }
+  }
+}
+
+sub log {
+  print STDERR "@_\n";
+}
+---%<-------------------------------------------------------------------------
+
+This adds environment variables like that:
+
+---%<-------------------------------------------------------------------------
+NAMESPACE/S-SPAMREP/LIST=yes
+NAMESPACE/S-SPAMREP/LOCATION=maildir:/var/spool/mail/Shared/spamrep:INDEX=~/Maildir/index/Shared/spamrep
+NAMESPACE/S-SPAMREP/PREFIX=Shared/spamrep/
+NAMESPACE/S-SPAMREP/SEPARATOR=/
+NAMESPACE/S-SPAMREP/TYPE=public
+NAMESPACE/S-TESTSHARED/LIST=yes
+NAMESPACE/S-TESTSHARED/LOCATION=maildir:/var/spool/mail/Shared/testshared:INDEX=~/Maildir/index/Shared/testshared
+NAMESPACE/S-TESTSHARED/PREFIX=Shared/testshared/
+NAMESPACE/S-TESTSHARED/SEPARATOR=/
+NAMESPACE/S-TESTSHARED/TYPE=public
+NAMESPACE=s-testshared s-spamrep
+USERDB_KEYS=SYSTEM_GROUPS_USER UID GID HOME  NAMESPACE/S-SPAMREP/LIST NAMESPACE
+NAMESPACE/S-TESTSHARED/SEPARATOR NAMESPACE/S-TESTSHARED/TYPE
+NAMESPACE/S-TESTSHARED/PREFIX NAMESPACE/S-TESTSHARED/LIST
+NAMESPACE/S-TESTSHARED/LOCATION NAMESPACE/S-SPAMREP/SEPARATOR
+NAMESPACE/S-SPAMREP/TYPE NAMESPACE/S-SPAMREP/PREFIX
+NAMESPACE/S-SPAMREP/LOCATION
+---%<-------------------------------------------------------------------------
+
+(This file was created from the wiki on 2012-03-15 16:40)

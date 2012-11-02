@@ -69,6 +69,39 @@ struct od_cram_auth_request {
 	unsigned long maxbuf;
 };
 
+enum od_qop_option {
+	QOP_AUTH		= 0x01,	/* authenticate */
+	QOP_AUTH_INT	= 0x02, /* + integrity protection, not supported yet */
+	QOP_AUTH_CONF	= 0x04, /* + encryption, not supported yet */
+
+	QOP_COUNT		= 3
+};
+
+struct od_digest_auth_request {
+	struct auth_request auth_request;
+
+	pool_t pool;
+	unsigned int authenticated:1;
+
+	/* requested: */
+	char *nonce;
+	enum od_qop_option qop;
+
+	/* received: */
+	char *username;
+	char *cnonce;
+	char *nonce_count;
+	char *qop_value;
+	char *digest_uri; /* may be NULL */
+	char *authzid; /* may be NULL, authorization ID */
+	unsigned char response[32];
+	unsigned long maxbuf;
+	unsigned int nonce_found:1;
+
+	/* final reply: */
+	char *rspauth;
+};
+
 struct od_apop_auth_request {
 	struct auth_request auth_request;
 
@@ -92,10 +125,9 @@ static int validate_response ( struct auth_request *in_request,
 							   const char *in_resp,
 							   const char *in_auth_type )
 {
-	struct passdb_module	*_module		= in_request->passdb->passdb;
-	struct od_passdb_module	*module			= (struct od_passdb_module *)_module;
-	struct db_od			*user_info		= module->od_data;
-	CFErrorRef				cf_err_ref		= NULL;
+	struct passdb_module	 *_module		= in_request->passdb->passdb;
+	struct od_passdb_module *module		= (struct od_passdb_module *)_module;
+	struct db_od			 *user_info		= module->od_data;
 
 	/* look up the user */
 	struct od_user *db_user_info = db_od_user_lookup( in_request, module->od_data, in_request->user, TRUE );
@@ -119,6 +151,7 @@ static int validate_response ( struct auth_request *in_request,
 		return( PASSDB_RESULT_INTERNAL_FAILURE );
 	}
 
+	CFErrorRef cf_err_ref = NULL;
 	CFTypeRef cf_type_val[] = { CFSTR(kDSAttributesStandardAll) };
 	CFArrayRef cf_arry_attr = CFArrayCreate( NULL, cf_type_val, 1, &kCFTypeArrayCallBacks );
 	ODRecordRef od_rec_ref = ODNodeCopyRecord( user_info->od_node_ref, CFSTR(kDSStdRecordTypeUsers), cf_str_user, cf_arry_attr, &cf_err_ref );
@@ -134,6 +167,8 @@ static int validate_response ( struct auth_request *in_request,
 	ODAuthenticationType od_auth_type;
 	if ( strcmp( in_auth_type, "CRAM-MD5" ) == 0 )
 		od_auth_type = kODAuthenticationTypeCRAM_MD5;
+	else if ( strcmp( in_auth_type, "DIGEST-MD5" ) == 0 )
+		od_auth_type = kODAuthenticationTypeDIGEST_MD5;
 	else if ( strcmp( in_auth_type, "APOP" ) == 0 )
 		od_auth_type = kODAuthenticationTypeAPOP;
 	else {
@@ -146,62 +181,106 @@ static int validate_response ( struct auth_request *in_request,
 	}
 
 	/* add user to auth buffer */
-	CFMutableArrayRef cf_arry_buf = CFArrayCreateMutable( NULL, 3, &kCFTypeArrayCallBacks );
-	CFArrayAppendValue( cf_arry_buf, cf_str_user );
+	CFMutableArrayRef auth_arry = CFArrayCreateMutable( NULL, 4, &kCFTypeArrayCallBacks );
+	CFArrayInsertValueAtIndex( auth_arry, 0, cf_str_user );
 	CFRelease( cf_str_user );
 
 	/* add challenge to auth buffer */
+	auth_request_log_debug(in_request, "od", "challenge: %s", in_chal);
 	CFStringRef cf_str_chal = CFStringCreateWithCString( NULL, in_chal, kCFStringEncodingUTF8 );
 	if ( !cf_str_chal ) {
 		CFRelease( od_rec_ref );
-		CFRelease( cf_arry_buf );
+		CFRelease( auth_arry );
 		auth_request_log_debug(in_request, "od", "validate response: failed to create auth challenge CF string" );
 		send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
 		return( PASSDB_RESULT_INTERNAL_FAILURE );
 	}
-	CFArrayAppendValue( cf_arry_buf, cf_str_chal );
+	CFArrayInsertValueAtIndex( auth_arry, 1, cf_str_chal );
 	CFRelease( cf_str_chal );
 
 	/* add response to auth buffer */
+	auth_request_log_debug(in_request, "od", "response: %s", in_resp);
 	CFStringRef cf_str_resp = CFStringCreateWithCString( NULL, in_resp, kCFStringEncodingUTF8 );
 	if ( !cf_str_resp ) {
 		CFRelease( od_rec_ref );
-		CFRelease( cf_arry_buf );
+		CFRelease( auth_arry );
 		auth_request_log_debug(in_request, "od", "validate response: failed to create auth response CF string" );
 		send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
 		return( PASSDB_RESULT_INTERNAL_FAILURE );
 	}
-	CFArrayAppendValue( cf_arry_buf, cf_str_resp );
+	CFArrayInsertValueAtIndex( auth_arry, 2, cf_str_resp );
 	CFRelease( cf_str_resp );
+
+	/* add http method to auth buffer */
+	if ( strcmp( in_auth_type, "DIGEST-MD5" ) == 0 ) {
+		auth_request_log_debug(in_request, "od", "method: AUTHENTICATE");
+		CFStringRef cf_str_uri = CFStringCreateWithCString( NULL, "AUTHENTICATE", kCFStringEncodingUTF8 );
+		if ( !cf_str_uri ) {
+			CFRelease( od_rec_ref );
+			CFRelease( auth_arry );
+			auth_request_log_debug(in_request, "od", "validate response: failed to create auth response CF string" );
+			send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
+			return( PASSDB_RESULT_INTERNAL_FAILURE );
+		}
+		CFArrayInsertValueAtIndex( auth_arry, 3, cf_str_uri );
+		CFRelease( cf_str_uri );
+	}
 
 	/* make the "3 AM" call */
 	CFArrayRef cf_arry_resp	= NULL;
 	ODContextRef od_context_ref	= NULL;
-	bool out_result = ODRecordVerifyPasswordExtended( od_rec_ref, od_auth_type, cf_arry_buf,
+	bool auth_result = ODRecordVerifyPasswordExtended( od_rec_ref, od_auth_type, auth_arry,
 														&cf_arry_resp, &od_context_ref, &cf_err_ref );
+
 	CFRelease( od_rec_ref );
-	CFRelease( cf_arry_buf );
-	if ( cf_arry_resp != NULL )
+	CFRelease( auth_arry );
+
+	if ( !auth_result ) {
+		/* print any OD error */
+		if ( cf_err_ref ) {
+			db_od_print_cf_error( in_request, cf_err_ref, "validate response: authentication error" );
+			CFRelease( cf_err_ref );
+		}
+		db_od_user_unref( &db_user_info );
+		auth_request_log_error(in_request, "od", "authentication failed for user=%s, method=%s", in_user, in_auth_type );
+		return( PASSDB_RESULT_PASSWORD_MISMATCH );
+	}
+
+	/* if digest-md5 auth, get server response */
+	if ( strcmp( in_auth_type, "DIGEST-MD5" ) == 0 ) {
+		if ( !cf_arry_resp ) {
+			db_od_user_unref( &db_user_info );
+			auth_request_log_error(in_request, "od", "DIGEST-MD5 authentication error: missing server response" );
+			return( PASSDB_RESULT_INTERNAL_FAILURE );
+		}
+
+		CFDataRef cf_data = CFArrayGetValueAtIndex(cf_arry_resp, 0);
+		if ( !cf_data || !CFDataGetLength(cf_data) ) {
+			db_od_user_unref( &db_user_info );
+			auth_request_log_error(in_request, "od", "DIGEST-MD5 authentication error: missing server response" );
+			return( PASSDB_RESULT_INTERNAL_FAILURE );
+		}
+
+		struct od_digest_auth_request *digest_auth = (struct od_digest_auth_request *)in_request;
+		digest_auth->rspauth = p_strconcat(digest_auth->pool, "", CFDataGetBytePtr(cf_data), NULL);
+	} else if ( cf_arry_resp )
 		CFRelease( cf_arry_resp );
 
 	/* check sacl settings */
-	if ( out_result ) {
-		if ( !(db_user_info->acct_state & account_enabled) )
-			out_result = FALSE;
-		else
-			push_notify_init( db_user_info );
-	}
+	if ( !(db_user_info->acct_state & account_enabled) ) {
+		db_od_user_unref( &db_user_info );
+		auth_request_log_error(in_request, "od", "mail is not enabled for user=%s (method=%s)", in_user, in_auth_type );
+		return( PASSDB_RESULT_USER_DISABLED );
+	} else
+		push_notify_init( db_user_info );
 
 	/* memory clenup */
 	db_od_user_unref( &db_user_info );
 
-	if ( out_result == TRUE ) {
-		send_server_event( in_request, OD_AUTH_SUCCESS, in_request->user, net_ip2addr(&in_request->remote_ip) );
-		return( PASSDB_RESULT_OK );
-	}
-
-	send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
-	return( PASSDB_RESULT_PASSWORD_MISMATCH );
+	/* all is right with the world */
+	auth_request_log_info(in_request, "od", "password verification succeeded for user=%s (method=%s)", in_user, in_auth_type );
+	send_server_event( in_request, OD_AUTH_SUCCESS, in_request->user, net_ip2addr(&in_request->remote_ip) );
+	return( PASSDB_RESULT_OK );
 } /* validate_response */
 
 
@@ -319,7 +398,6 @@ static void od_lookup_credentials ( struct auth_request *in_request, lookup_cred
 	}
 
 	auth_request_log_debug(in_request, "od", "lookup credentials: auth mech=%s", in_request->mech->mech_name);
-
 	if ( strcmp( in_request->mech->mech_name, "CRAM-MD5" ) == 0 ) {
 		struct od_cram_auth_request *md5_auth = (struct od_cram_auth_request *)in_request;
 
@@ -332,6 +410,28 @@ static void od_lookup_credentials ( struct auth_request *in_request, lookup_cred
 		} else {
 			send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
 			callback( auth_response, (const unsigned char *)kCRAM_MD5_AuthFailed, strlen( kCRAM_MD5_AuthFailed ), in_request );
+		}
+		return;
+	} else if ( strcmp( in_request->mech->mech_name, "DIGEST-MD5" ) == 0 ) {
+		struct od_digest_auth_request *digest_auth = (struct od_digest_auth_request *)in_request;
+
+		/* recreate challange & response */
+		const char *chal = t_strconcat( "realm=\"", digest_auth->auth_request.realm, "\",nonce=\"", digest_auth->nonce, "\",qop=\"auth\",algorithm=md5-sess,charset=utf-8", NULL );
+		const char *resp = t_strconcat( "charset=utf-8,username=\"", digest_auth->username, "\",realm=\"", digest_auth->auth_request.realm, "\",nonce=\"",
+									   		digest_auth->nonce, "\",cnonce=\"", digest_auth->cnonce, "\",nc=", digest_auth->nonce_count, ",qop=", digest_auth->qop_value,
+									   		",digest-uri=\"", digest_auth->digest_uri, "\",response=", digest_auth->response, ",algorithm=md5-sess", NULL );
+
+		auth_request_log_debug(in_request, "od", "lookup credentials: user name: %s", digest_auth->username );
+		auth_request_log_debug(in_request, "od", "lookup credentials: challenge: %s", chal );
+		auth_request_log_debug(in_request, "od", "lookup credentials:  response: %s", resp );
+
+		auth_response = validate_response( in_request, digest_auth->username, chal, resp, in_request->mech->mech_name );
+		if ( auth_response == PASSDB_RESULT_OK ) {
+			send_server_event( in_request, OD_AUTH_SUCCESS, in_request->user, net_ip2addr(&in_request->remote_ip) );
+			callback( PASSDB_RESULT_OK, (const unsigned char *)kDIGEST_MD5_AuthSuccess, strlen( kDIGEST_MD5_AuthSuccess ), in_request );
+		} else {
+			send_server_event( in_request, OD_AUTH_FAILURE, in_request->user, net_ip2addr(&in_request->remote_ip) );
+			callback( auth_response, (const unsigned char *)kDIGEST_MD5_AuthFailed, strlen( kDIGEST_MD5_AuthFailed ), in_request );
 		}
 		return;
 	} else if ( strcmp( in_request->mech->mech_name, "APOP" ) == 0 ) {

@@ -244,6 +244,9 @@ void auth_request_handler_reply(struct auth_request *request,
 		   anything but abort this request */
 		request->internal_failure = TRUE;
 		result = AUTH_CLIENT_RESULT_FAILURE;
+		/* make sure this request is set to finished state
+		   (it's not with result=continue) */
+		auth_request_set_state(request, AUTH_REQUEST_STATE_FINISHED);
 	}
 
 	reply = auth_stream_reply_init(pool_datastack_create());
@@ -425,7 +428,7 @@ bool auth_request_handler_auth_begin(struct auth_request_handler *handler,
 			arg++;
 		}
 
-		if (auth_request_import(request, name, arg))
+		if (auth_request_import_auth(request, name, arg))
 			;
 		else if (strcmp(name, "resp") == 0) {
 			initial_resp = arg;
@@ -585,7 +588,9 @@ static void userdb_callback(enum userdb_result result,
 	case USERDB_RESULT_OK:
 		auth_stream_reply_add(reply, "USER", NULL);
 		auth_stream_reply_add(reply, NULL, dec2str(request->id));
-		if (request->master_user != NULL) {
+		if (request->master_user != NULL &&
+		    auth_stream_reply_find(request->userdb_reply,
+					   "master_user") == NULL) {
 			auth_stream_reply_add(request->userdb_reply,
 					      "master_user",
 					      request->master_user);
@@ -601,7 +606,9 @@ static void userdb_callback(enum userdb_result result,
 		}
 
 		/* APPLE - urlauth */
-		if (request->submit_user != NULL) {
+		if (request->submit_user != NULL &&
+		    auth_stream_reply_find(request->userdb_reply,
+					   "submit_user") == NULL) {
 			auth_stream_reply_add(request->userdb_reply,
 					      "submit_user",
 					      request->submit_user);

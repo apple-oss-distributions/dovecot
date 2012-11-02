@@ -1,20 +1,37 @@
-#!/bin/sh
-#
-# Configure mail services
-#
+
+################
+# Do nothing on re-promotion
+
+server_inited=`/usr/libexec/PlistBuddy -c "print service_initialized" /Library/Server/Mail/Config/MailServicesOther.plist`
+if [ "$server_inited" == "true" ]; then
+  exit 0
+fi
 
 ################
 # Mail directories
 
+_dovecot_db_dir=/Library/Server/Mail/Data/db
 _dovecot_mail_dir=/Library/Server/Mail/Data/mail
 _dovecot_sieve_dir=/Library/Server/Mail/Data/rules
-_mailaccess_log=/var/log/mailaccess.log
+_dovecot_config_dir=/Library/Server/Mail/Config
+_mail_logs_path=/Library/Logs/Mail
+_mailaccess_log=/Library/Logs/Mail/mailaccess.log
+
+################
+# Move config files into /Library/Server
+if [ ! -d $_dovecot_config_dir ]; then
+  mkdir -p $_dovecot_config_dir
+fi
+
+if [ -d $_server_root/private/etc/dovecot ]; then
+  cp -rpf "$_server_root/private/etc/dovecot" "$_dovecot_config_dir/"
+fi
 
 ################
 # Create dovecot.conf file on clean install
 
 (
-	cd /etc/dovecot/default
+	cd $_dovecot_config_dir/dovecot/default
 	find -s * -type f -print | while read f
 	do
 		if [ ! -e ../"$f" ]
@@ -25,7 +42,7 @@ _mailaccess_log=/var/log/mailaccess.log
 	done
 )
 
-hostname=`grep "^myhostname *=" /etc/postfix/main.cf | sed 's,.*= *,,'`
+hostname=`grep "^myhostname *=" /Library/Server/Mail/Config/postfix/main.cf | sed 's,.*= *,,'`
 if [ ! "$hostname" ] ; then
   hostname=`hostname`
 fi
@@ -33,27 +50,31 @@ if [ "$hostname" ] ; then
   perl -p -i -e '
 	s/^(\s*)#\s*postmaster_address\s*=.*/$1postmaster_address = postmaster\@'"$hostname"'/;
 	s/^(\s*)postmaster_address\s*=\s*postmaster\@example\.com/$1postmaster_address = postmaster\@'"$hostname"'/;
-  ' /etc/dovecot/*.conf /etc/dovecot/conf.d/*.conf
+  ' $_dovecot_config_dir/dovecot/*.conf $_dovecot_config_dir/dovecot/conf.d/*.conf
 fi
 
 # Create submit.passdb with either the same password postfix is configured for,
 # or an unguessable random password on clean install.
-if [ ! -e /etc/dovecot/submit.passdb ] ; then
-  if [ "$hostname" -a -s /etc/postfix/submit.cred ] ; then
-    pw=`grep "^$hostname|submit|" /etc/postfix/submit.cred | sed 's,.*|,,'`
+if [ ! -e $_dovecot_config_dir/dovecot/submit.passdb ] ; then
+  if [ "$hostname" -a -s /Library/Server/Mail/Config/postfix/submit.cred ] ; then
+    pw=`grep "^$hostname|submit|" /Library/Server/Mail/Config/postfix/submit.cred | sed 's,.*|,,'`
   fi
   if [ ! "$pw" ] ; then
     pw=`dd if=/dev/urandom bs=256 count=1 | env LANG=C tr -dc a-zA-Z0-9 | cut -b 1-22`
   fi
   if [ "$pw" ] ; then
-    echo "submit:{PLAIN}$pw" > /etc/dovecot/submit.passdb
-    chown :mail /etc/dovecot/submit.passdb
-    chmod 640 /etc/dovecot/submit.passdb
+    echo "submit:{PLAIN}$pw" > $_dovecot_config_dir/dovecot/submit.passdb
+    chown :mail $_dovecot_config_dir/dovecot/submit.passdb
+    chmod 640 $_dovecot_config_dir/dovecot/submit.passdb
   fi
 fi
 
 ###############
 # Verify dovecot default directories
+
+if [ ! -d $_dovecot_db_dir ]; then
+  mkdir -p $_dovecot_db_dir
+fi
 
 if [ ! -d $_dovecot_mail_dir ]; then
   mkdir -p $_dovecot_mail_dir
@@ -71,6 +92,10 @@ fi
 if [ -d $_dovecot_sieve_dir ]; then
   chmod 775 $_dovecot_sieve_dir
   chown _dovecot:mail $_dovecot_sieve_dir
+fi
+
+if [ ! -d $_mail_logs_path ]; then
+  mkdir -p $_mail_logs_path
 fi
 
 if [ ! -e $_mailaccess_log ]; then

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -51,7 +51,7 @@ struct service_settings managesieve_login_settings_service_settings = {
 	.client_limit = 0,
 	.service_count = 1,
 	.idle_kill = 0,
-	.vsz_limit = 64*1024*1024,
+	.vsz_limit = (uoff_t)-1,
 
 	.unix_listeners = ARRAY_INIT,
 	.fifo_listeners = ARRAY_INIT,

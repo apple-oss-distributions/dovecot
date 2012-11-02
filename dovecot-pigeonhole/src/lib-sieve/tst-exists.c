@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -31,7 +31,8 @@ const struct sieve_command_def tst_exists = {
 	1, 0, FALSE, FALSE,
 	NULL, 
 	NULL,
-	tst_exists_validate, 
+	tst_exists_validate,
+	NULL,
 	tst_exists_generate, 
 	NULL 
 };

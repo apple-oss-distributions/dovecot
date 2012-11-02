@@ -41,6 +41,13 @@ files directly into '/etc/dovecot/'.
  It's a good idea to read through all the files and see what settings you might
 want to change.
 
+The default configuration starts from 'dovecot.conf', which contains an
+'!include conf.d/*.conf' statement to read the rest of the configuration. This
+split of configuration files isn't a requirement to use, and it doesn't really
+matter which .conf file you add any particular setting, just as long as it
+isn't overridden in another file. You can verify with 'doveconf -n' that
+everything looks as you intended.
+
 Authentication
 --------------
 
@@ -113,4 +120,4 @@ Running
 
 See <RunningDovecot.txt> and <Logging.txt>.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

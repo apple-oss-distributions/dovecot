@@ -20,7 +20,9 @@ Contents
 
      5. Prefetching
 
-     6. Example
+     6. High availability
+
+     7. Example
 
 Password database lookups
 -------------------------
@@ -113,6 +115,13 @@ still need to have the 'user_query' working.
 
 See <UserDatabase.Prefetch.txt> for example configuration
 
+High availability
+-----------------
+
+You can add multiple "host" parameters to the SQL connect string. Dovecot will
+do round robin load balancing between them. If one of them goes down, the
+others will handle the traffic.
+
 Example
 -------
 
@@ -194,4 +203,4 @@ user_query = SELECT home, uid, gid FROM users WHERE userid = '%n' AND domain =
 iterate_query = SELECT userid AS username, domain FROM users
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

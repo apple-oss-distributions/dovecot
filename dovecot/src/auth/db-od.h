@@ -1,5 +1,10 @@
 /*
- * Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2012 Apple Inc. All rights reserved.
+ * 
+ * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+ * computers and is subject to the terms and conditions of the Apple Software
+ * License Agreement accompanying the package this file is a part of.
+ * You may not port this file to another platform without Apple's written consent.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -44,6 +49,8 @@
 
 #define	kCRAM_MD5_AuthSuccess			"k-cram-md5-auth-success"
 #define	kCRAM_MD5_AuthFailed			"k-cram-md5-auth-failed"
+#define kDIGEST_MD5_AuthSuccess			"k-digest-md5-auth-success"
+#define kDIGEST_MD5_AuthFailed			"k-digest-md5-auth-failed"
 #define	kCRAM_APOP_AuthSuccess			"k-apop-auth-success"
 #define	kCRAM_APOP_AuthFailed			"k-apop-auth-failed"
 
@@ -100,9 +107,7 @@ typedef enum {
 	imap_enabled			= 0x00000004,
 	pop_enabled				= 0x00000008,
 	auto_fwd_enabled		= 0x00000010,
-	sacl_enabled			= 0x00000020,
-	sacl_not_member			= 0x00000040,
-	acct_migrated			= 0x00000080
+	acct_migrated			= 0x00000020
 } od_acct_state;
 
 typedef enum {
@@ -133,16 +138,6 @@ struct db_od {
 	bool				use_getpwnam_ext;
 	struct hash_table  *users_table;
 };
-
-typedef struct msg_data_s {
-	unsigned long msg;
-	unsigned long pid;
-
-	char d1[128];
-	char d2[512];
-	char d3[512];
-	char d4[512];
-} msg_data_t;
 
 void			send_server_event	( struct auth_request *in_request, const od_auth_event_t in_event_code, const char *in_user, const char *in_addr );
 void			close_server_event_port ( void );

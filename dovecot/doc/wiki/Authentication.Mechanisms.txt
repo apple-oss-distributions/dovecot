@@ -51,7 +51,9 @@ Dovecot supports the following non-plaintext mechanisms:
    and supported by their clients.
     * Optionally supported <using Samba's winbind>
       [Authentication.Mechanisms.Winbind.txt].
- * <GSS-SPNEGO> [Authentication.Mechanisms.Winbind.txt]: Similar to NTLM.
+ * GSS-SPNEGO: A wrapper mechanism defined by RFC 4178
+   [http://tools.ietf.org/html/rfc4178]. Can be accessed via either GSSAPI or
+   <Winbind> [Authentication.Mechanisms.Winbind.txt].
  * <GSSAPI> [Authentication.Kerberos.txt]: Kerberos v5 support.
  * RPA: Compuserve RPA authentication mechanism. Similar to DIGEST-MD5, but
    client support is rare.
@@ -59,6 +61,8 @@ Dovecot supports the following non-plaintext mechanisms:
    intending to provide publically accessible IMAP archive.
  * OTP and SKEY: One time password mechanisms.
  * EXTERNAL: EXTERNAL SASL mechanism.
+ * SCRAM-SHA-1: Salted Challenge Response Authentication Mechanism (SCRAM) SASL
+   and GSS-API Mechanisms
 
 Configuration
 -------------
@@ -69,4 +73,4 @@ By default only PLAIN mechanism is enabled. To use more, set:
 auth_mechanisms = plain login cram-md5
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

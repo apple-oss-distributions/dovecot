@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -43,7 +43,8 @@ const struct sieve_command_def spamtest_test = {
 	1, 0, FALSE, FALSE,
 	tst_spamvirustest_registered,
 	NULL, 
-	tst_spamvirustest_validate, 
+	tst_spamvirustest_validate,
+	NULL,
 	tst_spamvirustest_generate, 
 	NULL 
 };
@@ -60,7 +61,8 @@ const struct sieve_command_def virustest_test = {
 	1, 0, FALSE, FALSE,
 	tst_spamvirustest_registered,
 	NULL, 
-	tst_spamvirustest_validate, 
+	tst_spamvirustest_validate,
+	NULL, 
 	tst_spamvirustest_generate, 
 	NULL 
 };
@@ -76,7 +78,7 @@ static bool tst_spamtest_validate_percent_tag
 static const struct sieve_argument_def spamtest_percent_tag = {
  	"percent",
 	NULL, 
-	tst_spamtest_validate_percent_tag, 
+	tst_spamtest_validate_percent_tag,
 	NULL, NULL, NULL
 };
 

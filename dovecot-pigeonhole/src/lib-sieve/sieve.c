@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file 
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file 
  */
 
 #include "lib.h"
@@ -438,8 +438,9 @@ int sieve_test
 	}
 	
 	/* Cleanup */
-	sieve_result_unref(&result);
-	
+	if ( result != NULL )
+		sieve_result_unref(&result);
+
 	return ret;
 }
 
@@ -476,9 +477,10 @@ int sieve_execute
 			if ( keep != NULL ) *keep = TRUE;
 		}
 	}
-	
+
 	/* Cleanup */
-	sieve_result_unref(&result);
+	if ( result != NULL )
+		sieve_result_unref(&result);
 
 	return ret;
 }
@@ -759,7 +761,7 @@ const char *sieve_directory_get_scriptfile(struct sieve_directory *sdir)
 				return NULL;
 			}
 
-			if ( !sieve_script_file_has_extension(dp->d_name) )
+			if ( !sieve_scriptfile_has_extension(dp->d_name) )
 				continue;
 
 			if ( sdir->path[strlen(sdir->path)-1] == '/' )

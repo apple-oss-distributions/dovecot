@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -88,7 +88,8 @@ struct sieve_script *sieve_storage_script_init
 	}
 
 	T_BEGIN {
-		path = t_strconcat( storage->dir, "/", scriptname, ".sieve", NULL );
+		path = t_strconcat
+			( storage->dir, "/", sieve_scriptfile_from_name(scriptname), NULL );
 
 		script = sieve_storage_script_init_from_path(storage, path, NULL);
 	} T_END;
@@ -109,19 +110,6 @@ static struct sieve_script *sieve_storage_script_init_from_file
 	} T_END;
 
 	return script;
-}
-
-const char *sieve_storage_file_get_scriptname
-(const struct sieve_storage *storage ATTR_UNUSED, const char *filename)
-{
-	const char *ext;
-
-	ext = strrchr(filename, '.');
-
-	if ( ext == NULL || ext == filename || strcmp(ext,".sieve") != 0 ) 
-		return NULL;
-	
-	return t_strdup_until(filename, ext);
 }
 
 static int sieve_storage_read_active_link
@@ -179,7 +167,7 @@ static const char *sieve_storage_parse_link
 	}
 
 	/* Check the script name */
-	scriptname = sieve_storage_file_get_scriptname(storage, fname);
+	scriptname = sieve_scriptfile_get_script_name(fname);
 
 	/* Warn if link is deemed to be invalid */
 	if ( scriptname == NULL ) {
@@ -351,7 +339,7 @@ static bool sieve_storage_rescue_regular_file(struct sieve_storage *storage)
  		T_BEGIN {
 
 			dstpath = t_strconcat
-				( storage->dir, "/dovecot.orig.sieve", NULL );
+				( storage->dir, "/", sieve_scriptfile_from_name("dovecot.orig"), NULL );
 			if ( file_copy(storage->active_path, dstpath, 1) < 1 ) {
 				sieve_storage_set_critical(storage, 
 					"Active sieve script file '%s' is a regular file and copying it to "
@@ -408,7 +396,7 @@ static int sieve_storage_replace_active_link
 	for (;;) {	
 		/* First the new symlink is created with a different filename */
 		active_path_new = t_strdup_printf
-			("%s-new.%s.P%sM%s.%s.sieve",
+			("%s-new.%s.P%sM%s.%s",
 				storage->active_path,
 				dec2str(tv->tv_sec), my_pid,
 				dec2str(tv->tv_usec), my_hostname);
@@ -543,7 +531,7 @@ int sieve_storage_script_rename
 	}
 
 	T_BEGIN {
-		newfile = t_strconcat( newname, ".sieve", NULL );
+		newfile = sieve_scriptfile_from_name(newname);
 		newpath = t_strconcat( storage->dir, "/", newfile, NULL );
 
 		/* The normal rename() system call overwrites the existing file without

@@ -1,3 +1,93 @@
+v2.0.19 2012-03-15  Timo Sirainen <tss@iki.fi>
+
+	- IMAP: ENABLE CONDSTORE/QRESYNC + STATUS for a mailbox might not
+	  have seen latest external changes to it, like new mails.
+	- imap_id_* settings were ignored before login.
+	- doveadm altmove did too much work sometimes, retrying moves
+	  it had already done.
+	- mbox: Fixed accessing Dovecot v1.x mbox index files without errors.
+
+v2.0.18 2012-02-12  Timo Sirainen <tss@iki.fi>
+
+	+ DIGEST-MD5 authentication supports authorization id now.
+	  Patch by Yubao Liu
+	+ Added instance_name setting which is used to prefix Dovecot
+	  processes in ps output.
+	- LDA/LMTP: Sending a large mail via submission_host or via LMTP proxy
+	  may have caused a hang.
+	- Fixed dbox + mail_attachment_dir + zlib problems.
+	- Login processes weren't logging all intended messages with
+	  auth_verbose=yes
+	- IMAP: THREAD REFS sometimes returned invalid (0) nodes.
+	- IMAP: CONTEXT search return option wasn't handled at all.
+	- dbox: Various error handling fixes.
+	- snarf plugin: Keep the mailbox locked during snarfing to avoid
+	  duplicates.
+
+v2.0.17 2012-01-06  Timo Sirainen <tss@iki.fi>
+
+	+ Proxying now supports sending SSL client certificate to server with
+	  ssl_client_cert/key settings.
+	+ doveadm dump: Added support for dumping dbox headers/metadata.
+	- Fixed memory leaks in login processes with SSL connections
+	- vpopmail support was broken in v2.0.16
+
+v2.0.16 2011-11-17  Timo Sirainen <tss@iki.fi>
+
+	* VSZ limits weren't being enforced for any processes. On server with
+	  large mailboxes you may now see errors about it if the limits aren't
+	  high enough. To fix them, either increase individual service {
+	  vsz_limit } values or simply increase the default_vsz_limit setting.
+	* Proxying: If using ssl=yes or starttls=yes with a hostname (not IP)
+	  as proxy destination, require that the certificate matches the given
+	  hostname.
+	* LMTP: Changed default client_limit to 1. This should improve LMTP
+	  throughput with default settings.
+	* dsync: Quota is no longer enforced (i.e. dsync can't fail because
+	  user is over quota).
+
+	+ Added "auto" mail storage driver, which can be used to autodetect
+	  mailbox location and format. This behavior is already the default
+	  for empty mail_location setting, so this change is mainly useful for
+	  shared namespace's location setting.
+	+ checkpassword: Export all auth %variables to AUTH_* environment.
+
+v2.0.15 2011-09-16  Timo Sirainen <tss@iki.fi>
+
+	+ doveadm altmove: Added -r parameter to move mails back to primary
+	  storage.
+	- v2.0.14: Index reading could have eaten a lot of memory in some
+	  situations
+	- doveadm index no longer affects future caching decisions
+	- mbox: Fixed crash during mail delivery when mailbox didn't yet have
+	  GUID assigned to it.
+	- zlib+mbox: Fetching last message from compressed mailboxes crashed.
+	- lib-sql: Fixed load balancing and error handling when multiple hosts
+	  are used.
+
+v2.0.14 2011-08-29  Timo Sirainen <tss@iki.fi>
+
+	+ doveadm: Added support for running mail commands by proxying to
+	  another doveadm server.
+	+ Added "doveadm proxy list" and "doveadm proxy kick" commands to
+	  list/kick proxy connections (via a new "ipc" service).
+	+ Added "doveadm director move" to assign user from one server to
+	  another, killing any existing connections.
+	+ Added "doveadm director ring status" command.
+	+ userdb extra fields can now return name+=value to append to an
+	  existing name, e.g. "mail_plugins+= quota".
+	- script-login attempted an unnecessary config lookup, which usually
+	  failed with "Permission denied".
+	- lmtp: Fixed parsing quoted strings with spaces as local-part for
+	  MAIL FROM and RCPT TO.
+	- imap: FETCH BODY[HEADER.FIELDS (..)] may have crashed or not
+	  returned all data sometimes.
+	- ldap: Fixed random assert-crashing with with sasl_bind=yes.
+	- Fixes to handling mail chroots
+	- Fixed renaming mailboxes under different parent with FS layout when
+	  using separate ALT, INDEX or CONTROL paths.
+	- zlib: Fixed reading concatenated .gz files.
+
 v2.0.13 2011-05-11  Timo Sirainen <tss@iki.fi>
 
 	+ Added "doveadm index" command to add unindexed messages into

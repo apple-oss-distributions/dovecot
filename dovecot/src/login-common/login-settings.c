@@ -35,13 +35,15 @@ static const struct setting_define login_setting_defines[] = {
 	DEF(SET_STR, ssl_key_password),
 	DEF(SET_STR, ssl_cipher_list),
 	DEF(SET_STR, ssl_cert_username_field),
+	DEF(SET_STR, ssl_client_cert),
+	DEF(SET_STR, ssl_client_key),
 	DEF(SET_BOOL, ssl_verify_client_cert),
 	DEF(SET_BOOL, auth_ssl_require_client_cert),
 	DEF(SET_BOOL, auth_ssl_username_from_cert),
 	DEF(SET_BOOL, verbose_ssl),
 
 	DEF(SET_BOOL, disable_plaintext_auth),
-	DEF(SET_BOOL, verbose_auth),
+	DEF(SET_BOOL, auth_verbose),
 	DEF(SET_BOOL, auth_debug),
 	DEF(SET_BOOL, verbose_proctitle),
 
@@ -67,13 +69,15 @@ static const struct login_settings login_default_settings = {
 	.ssl_key_password = "",
 	.ssl_cipher_list = "ALL:!LOW:!SSLv2:!EXP:!aNULL",
 	.ssl_cert_username_field = "commonName",
+	.ssl_client_cert = "",
+	.ssl_client_key = "",
 	.ssl_verify_client_cert = FALSE,
 	.auth_ssl_require_client_cert = FALSE,
 	.auth_ssl_username_from_cert = FALSE,
 	.verbose_ssl = FALSE,
 
 	.disable_plaintext_auth = TRUE,
-	.verbose_auth = FALSE,
+	.auth_verbose = FALSE,
 	.auth_debug = FALSE,
 	.verbose_proctitle = FALSE,
 
@@ -140,6 +144,11 @@ static bool login_settings_check(void *_set, pool_t pool, const char **error_r)
 		/* if we require valid cert, make sure we also ask for it */
 		set->ssl_verify_client_cert = TRUE;
 	}
+
+	if (set->auth_debug_passwords)
+		set->auth_debug = TRUE;
+	if (set->auth_debug)
+		set->auth_verbose = TRUE;
 
 	if (strcmp(set->ssl, "no") == 0) {
 		/* disabled */

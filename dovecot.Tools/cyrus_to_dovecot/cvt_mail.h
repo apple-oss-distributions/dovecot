@@ -33,9 +33,9 @@
      "\t--Jim Morris on Andrew\n")
 
 #define	DEFAULT_DATA_LOCATION		@"/Library/Server/Mail/Data/mail"
-#define	DOVECOT_PARTITION_MAPS		@"/etc/dovecot/partition_map.conf"
-#define	MAIL_MIGRATION_PLIST		@"/var/db/.mailmigration.plist"
-#define	MAIL_USER_SETTINGS_PLIST	@"/var/db/.mailusersettings.plist"
+#define	DOVECOT_PARTITION_MAPS		@"/Library/Server/Mail/Config/dovecot/partition_map.conf"
+#define	MAIL_MIGRATION_PLIST		@"/Library/Server/Mail/Data/db/.mailmigration.plist"
+#define	MAIL_USER_SETTINGS_PLIST	@"/Library/Server/Mail/Data/db/.mailusersettings.plist"
 
 /* Migration key/values */
 #define	kXMLKeyMigrationFlag			@"kMigrationFlag"

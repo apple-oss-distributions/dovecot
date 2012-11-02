@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -84,7 +84,7 @@ static struct sieve_storage *client_get_storage
 	const char *home;
 
 	if ( mail_user_get_home(user, &home) <= 0 )
-	home = NULL;
+		home = NULL;
 
 	storage = sieve_storage_create
 		(svinst, user->username, home, set->mail_debug);

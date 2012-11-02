@@ -215,7 +215,7 @@ password_generate(plaintext, user):
 
 You can create a new password scheme by simply creating a 'struct
 password_scheme' named '<module_name>_scheme', compiling a shared object and
-placing it to '$moduledir/auth/password' directory.
+placing it to '$moduledir/auth/' directory.
 
 Password databases
 ------------------
@@ -362,4 +362,4 @@ auth_stream_reply_add(reply, "home", pw->pw_dir);
 callback(USERDB_RESULT_OK, reply, auth_request);
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

@@ -57,26 +57,31 @@ queries/templates):
 These variables work only in Dovecot-auth:
 
  *
-+------------+----------+-----------------------------------------------------+
-| *Variable* | *Long    | *Description*                                       |
-|            | name*    |                                                     |
-+------------+----------+-----------------------------------------------------+
-| %w         | password | plaintext password from plaintext authentication    |
-|            |          | mechanism                                           |
-+------------+----------+-----------------------------------------------------+
-| %m         | mech     | <authentication mechanism>                          |
-|            |          | [Authentication.Mechanisms.txt], e.g. PLAIN         |
-+------------+----------+-----------------------------------------------------+
-| %a         | lport    | Local port                                          |
-+------------+----------+-----------------------------------------------------+
-| %b         | rport    | Remote port                                         |
-+------------+----------+-----------------------------------------------------+
-| %c         | secured  | "secured" string with SSL, TLS and localhost        |
-|            |          | connections. Otherwise empty.                       |
-+------------+----------+-----------------------------------------------------+
-| %k         | cert     | "valid" if client had sent a valid client           |
-|            |          | certificate, otherwise empty.                       |
-+------------+----------+-----------------------------------------------------+
++------------+----------------+-----------------------------------------------+
+| *Variable* | *Long name*    | *Description*                                 |
++------------+----------------+-----------------------------------------------+
+| %w         | password       | plaintext password from plaintext             |
+|            |                | authentication mechanism                      |
++------------+----------------+-----------------------------------------------+
+| %m         | mech           | <authentication mechanism>                    |
+|            |                | [Authentication.Mechanisms.txt], e.g. PLAIN   |
++------------+----------------+-----------------------------------------------+
+| %a         | lport          | Local port                                    |
++------------+----------------+-----------------------------------------------+
+| %b         | rport          | Remote port                                   |
++------------+----------------+-----------------------------------------------+
+| %c         | secured        | "secured" string with SSL, TLS and localhost  |
+|            |                | connections. Otherwise empty.                 |
++------------+----------------+-----------------------------------------------+
+| %k         | cert           | "valid" if client had sent a valid client     |
+|            |                | certificate, otherwise empty.                 |
++------------+----------------+-----------------------------------------------+
+|            | login_user     | For master user logins: Logged in user@domain |
++------------+----------------+-----------------------------------------------+
+|            | login_username | For master user logins: Logged in user        |
++------------+----------------+-----------------------------------------------+
+|            | login_domain   | For master user logins: Logged in domain      |
++------------+----------------+-----------------------------------------------+
 
 These variables work only in 'login_log_format_elements' setting:
 
@@ -147,4 +152,4 @@ with '0' character if the string is shorter. For example %04i may return
 The modifiers are applied from left-to-right order, except the substring is
 always taken from the final string.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:41)

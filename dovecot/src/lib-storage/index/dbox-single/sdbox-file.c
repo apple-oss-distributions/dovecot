@@ -13,6 +13,7 @@
 #include "sdbox-file.h"
 
 #include <stdio.h>
+#include <utime.h>
 
 static void sdbox_file_init_paths(struct sdbox_file *file, const char *fname)
 {
@@ -145,6 +146,7 @@ static int sdbox_file_rename_attachments(struct sdbox_file *file)
 int sdbox_file_assign_uid(struct sdbox_file *file, uint32_t uid)
 {
 	const char *old_path, *new_fname, *new_path;
+	struct stat st;
 
 	i_assert(file->uid == 0);
 	i_assert(uid != 0);
@@ -153,6 +155,13 @@ int sdbox_file_assign_uid(struct sdbox_file *file, uint32_t uid)
 	new_fname = t_strdup_printf(SDBOX_MAIL_FILE_FORMAT, uid);
 	new_path = t_strdup_printf("%s/%s", file->mbox->box.path,
 				   new_fname);
+
+	if (stat(new_path, &st) == 0) {
+		mail_storage_set_critical(&file->file.storage->storage,
+			"sdbox: %s already exists, rebuilding index", new_path);
+		sdbox_set_mailbox_corrupted(&file->mbox->box);
+		return -1;
+	}
 	if (rename(old_path, new_path) < 0) {
 		mail_storage_set_critical(&file->file.storage->storage,
 					  "rename(%s, %s) failed: %m",
@@ -270,6 +279,7 @@ int sdbox_file_move(struct dbox_file *file, bool alt_path)
 	struct ostream *output;
 	const char *dest_dir, *temp_path, *dest_path, *p;
 	struct stat st;
+	struct utimbuf ut;
 	bool deleted;
 	int out_fd, ret = 0;
 
@@ -333,6 +343,14 @@ int sdbox_file_move(struct dbox_file *file, bool alt_path)
 	if (ret < 0) {
 		(void)unlink(temp_path);
 		return -1;
+	}
+	/* preserve the original atime/mtime. this isn't necessary for Dovecot,
+	   but could be useful for external reasons. */
+	ut.actime = st.st_atime;
+	ut.modtime = st.st_mtime;
+	if (utime(temp_path, &ut) < 0) {
+		mail_storage_set_critical(storage,
+			"utime(%s) failed: %m", temp_path);
 	}
 
 	/* the temp file was successfully written. rename it now to the

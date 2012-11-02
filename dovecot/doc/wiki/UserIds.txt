@@ -15,7 +15,7 @@ Dovecot typically requires 3 or more system users:
 Using multiple users allows privilege separation, which makes it harder for
 attackers to compromise the whole system if a security hole is found from one
 component. However, if you really want to run everything under a single user,
-<it's possible> [Rootless.txt].
+<it's possible> [HowTo.Rootless.txt].
 
 Dovenull user
 =============
@@ -47,12 +47,17 @@ configurations can be placed to two categories:
 
  1. <System users> [SystemUsers.txt] where each Dovecot user has their own
     system user in '/etc/passwd'. For system user setups you generally don't
-    have to worry about UIDs or GIDs.
+    have to worry about UIDs or GIDs, they are returned by the <userdb passwd>
+    [AuthDatabase.Passwd.txt] lookup.
  2. <Virtual users> [VirtualUsers.txt] where all Dovecot users run under a
-    single system user, for example 'vmail'.
+    single system user. Typically you'd set this with 'mail_uid' setting (e.g.
+    'mail_uid=vmail'). Note that you most likely don't want the <userdb lookup>
+    [UserDatabase.txt] to return any UID/GID, as they override the 'mail_uid'
+    setting.
 
 However it's possible to use a setup that is anything between these two. For
-example use a separate system user for each domain.
+example use a separate system user for each domain. See below for more
+information about how UIDs can be used.
 
 UIDs
 ----
@@ -64,9 +69,10 @@ UIDs. There are a few things you should know about them:
    it's anyway possible to use names as UID values and let Dovecot do the
    lookup (eg. uid=vmail). However depending on where you used it, it may slow
    down the authentication.
- * The UIDs don't really have to exist in '/etc/passwd'. For example you could
-   decide to use UIDs 10000-59999 for 50000 virtual Dovecot users. You'll then
-   just have to be careful that the UIDs aren't used unintentionally elsewhere.
+ * The UIDs don't really have to exist in '/etc/passwd' (the kernel doesn't
+   care about that). For example you could decide to use UIDs 10000-59999 for
+   50000 virtual Dovecot users. You'll then just have to be careful that the
+   UIDs aren't used unintentionally elsewhere.
  * The important thing to consider with your UID allocation policy is that if
    Dovecot has a security hole in its IMAP or POP3 implementation, the attacker
    can read mails of other people who are using the same UID. So clearly the
@@ -138,4 +144,4 @@ service auth-worker {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:41)

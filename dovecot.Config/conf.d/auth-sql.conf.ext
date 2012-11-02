@@ -6,7 +6,7 @@ passdb {
   driver = sql
 
   # Path for SQL configuration file, see example-config/dovecot-sql.conf.ext
-  args = /etc/dovecot/dovecot-sql.conf.ext
+  args = /Library/Server/Mail/Config/dovecot/dovecot-sql.conf.ext
 }
 
 # "prefetch" user database means that the passdb already provided the
@@ -18,7 +18,7 @@ passdb {
 
 userdb {
   driver = sql
-  args = /etc/dovecot/dovecot-sql.conf.ext
+  args = /Library/Server/Mail/Config/dovecot/dovecot-sql.conf.ext
 }
 
 # If you don't have any user-specific settings, you can avoid the user_query

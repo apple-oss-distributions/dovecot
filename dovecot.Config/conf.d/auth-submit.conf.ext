@@ -4,6 +4,6 @@
 passdb {
   driver = passwd-file
   submit = yes
-  args = /etc/dovecot/submit.passdb
+  args = /Library/Server/Mail/Config/dovecot/submit.passdb
   pass = yes
 }

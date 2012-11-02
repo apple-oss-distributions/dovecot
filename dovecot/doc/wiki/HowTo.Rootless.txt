@@ -47,12 +47,11 @@ Configuration
 
 The important settings to change for rootless installation are:
 
- * Remove default usernames. By setting them empty, Dovecot uses the same user
-   as what master is running as:
+ * Set usernames to the user which dovecot will be run under:
 
    ---%<----------------------------------------------------------------------
-   default_internal_user =
-   default_login_user =
+   default_internal_user = user
+   default_login_user = user
    ---%<----------------------------------------------------------------------
 
  * Remove default chrooting from all services:
@@ -100,10 +99,12 @@ The important settings to change for rootless installation are:
    <passwd-file> [AuthDatabase.PasswdFile.txt]:
 
    ---%<----------------------------------------------------------------------
-   passdb passwd-file {
+   passdb {
+     driver = passwd-file
      args = /home/user/dovecot/etc/passwd
    }
-   userdb passwd {
+   userdb {
+     driver = passwd
    }
    ---%<----------------------------------------------------------------------
 
@@ -114,4 +115,4 @@ The important settings to change for rootless installation are:
    user:{PLAIN}pass
    ---%<----------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

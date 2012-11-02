@@ -1,7 +1,12 @@
 #!/usr/bin/perl -Tw
 
-# Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+# Copyright (c) 2010-2012 Apple Inc. All rights reserved.
 # 
+# IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+# computers and is subject to the terms and conditions of the Apple Software
+# License Agreement accompanying the package this file is a part of.
+# You may not port this file to another platform without Apple's written consent.
+#
 # Redistribution and use in source and binary forms, with or without  
 # modification, are permitted provided that the following conditions  
 # are met:
@@ -78,7 +83,9 @@ if ($> != 0) {
 	myfatal("must run as root");
 }
 
-$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin";
+my $queue_dir = "/private/var/db/dovecot.fts.update";
+
+$ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Server.app/Contents/ServerRoot/usr/bin:/Applications/Server.app/Contents/ServerRoot/usr/sbin";
 delete $ENV{CDPATH};
 
 my $imappid;
@@ -86,21 +93,37 @@ my $to_imap;
 my $from_imap;
 local $SIG{__DIE__} = \&imap_cleanup;
 
-my %work;
-my @order;
+# if fts is disabled, don't bother doing anything
+my $conf = `/Applications/Server.app/Contents/ServerRoot/usr/bin/doveconf -h mail_plugins`;
+chomp $conf;
+my $noop = 0;
+unless (grep { $_ eq "fts" } split(/\s+/, $conf)) {
+	myinfo("Full-text search capability disabled; not doing anything.")
+		if $opts{verbose};
+
+	# Need to remove the queue files if applicable, which involves
+	# untainting and sanity-checking the file names.
+	$noop = 1;
+}
+
+my $ok = 1;
 if (defined($opts{queued})) {
-	my $queue_dir = "/var/db/dovecot.fts.update";
+	# apply hysteresis:  allow a few queuefiles to accumulate so launchd
+	# doesn't run us too-too often
+	sleep(10);
 
 	opendir(DIR, $queue_dir) or myfatal("$queue_dir: $!");
 	my @entries = readdir(DIR);
 	closedir(DIR);
 
 	# slurp and unescape the list of files in the directory
+	my %work;
 	for (@entries) {
-		next if /^\./;
+		next if $_ eq "." or $_ eq "..";
 
 		# untaint: fts creates files with only alpha, num, %, and .
-		if (!/^(([a-zA-Z0-9%]+)\.([a-zA-Z0-9%]+))$/) {
+		# we rename files to .files during processing
+		if (!/^(\.?([a-zA-Z0-9%]+)\.([a-zA-Z0-9%]+))$/) {
 			mywarn("$queue_dir/$_: malformed or unsafe name");
 			next;
 		}
@@ -108,87 +131,119 @@ if (defined($opts{queued})) {
 		my $user = $2;
 		my $mailbox = $3;
 
-		if (!unlink("$queue_dir/$name")) {
-			# maybe another process got it first
-			mywarn("$queue_dir/$name: $!") unless $!{ENOENT};
-			next;
-		}
-
 		next unless defined $user and defined $mailbox;
 		$user =~ s/%([a-fA-F0-9]{2})/chr(hex($1))/ge;
 		$mailbox =~ s/%([a-fA-F0-9]{2})/chr(hex($1))/ge;
 
 		push @{$work{$user}->{mailboxes}}, $mailbox;
+		$work{$user}->{queuefiles}->{$mailbox} = $name;
 		$work{$user}->{order} = rand;
 	}
 
 	# process the users in random order so nobody gets preference
-	@order = sort { $work{$a}->{order} <=> $work{$b}->{order} } keys %work;
-} else {
+	my @order = sort { $work{$a}->{order} <=> $work{$b}->{order} }
+			 keys %work;
+	for my $user (@order) {
+		if ($noop ||
+		    update_fts_with_retries($user, \&preserve_queuefile_for,
+					    \&delete_queuefile_for,
+					    $work{$user},
+					    @{$work{$user}->{mailboxes}}) <= 0) {
+			$ok = 0;
+
+			# delete all queuefiles on error or FTS disabled
+			for (keys %{$work{$user}->{queuefiles}}) {
+				my $queuefile = $work{$user}->{queuefiles}->{$_};
+				if (!unlink("$queue_dir/$queuefile")) {
+					mywarn("$queue_dir/$queuefile: $!")
+					    unless $!{ENOENT};
+				}
+			}
+		}
+	}
+}
+
+if ($noop) {
+	exit 0;
+}
+
+if (!defined($opts{queued})) {
 	for (@ARGV) {
+		my @mailboxes;
 		if (defined($opts{mailbox})) {
-			@{$work{$_}->{mailboxes}} = @{$opts{mailbox}};
+			@mailboxes = @{$opts{mailbox}};
 		} else {
-			@{$work{$_}->{mailboxes}} = ();
+			@mailboxes = ();
 		}
 
 		# untaint all usernames on command line
 		/(.+)/;
-		push @order, $1;
+		my $user = $1;
+
+		if (update_fts($user, undef, undef, undef, @mailboxes) <= 0) {
+			$ok = 0;
+		}
 	}
 }
 
-# rewrite specified mailboxes with LITERAL+ so they're safe
-for (keys %work) {
-	for (@{$work{$_}->{mailboxes}}) {
-		my $size = length;
-		$_ = "{$size+}\r\n$_";
-	}
-}
-
-# if fts is disabled, don't bother doing anything
-my $conf = `/usr/bin/doveconf -h mail_plugins`;
-chomp $conf;
-unless (grep { $_ eq "fts" } split(/\s+/, $conf)) {
-	myinfo("Full-text search capability disabled; not doing anything.")
-		if $opts{verbose};
-	exit 0;
-}
-
-my $ok = 1;
-for my $user (@order) {
-	if (!update_fts($user, @{$work{$user}->{mailboxes}})) {
-		$ok = 0;
-	}
-}
 if (!$opts{quiet}) {
 	my $disp = $ok ? "Done" : "Failed";
 	myinfo($disp);
 }
 exit !$ok;
 
+sub update_fts_with_retries
+{
+	my @args = @_;
+
+	for (my $tries = 3; --$tries >= 0; ) {
+		my $r = update_fts(@args);
+		return $r if $r >= 0;
+
+		if ($tries > 0) {
+			# maybe dovecot isn't running yet (during boot)
+			myinfo("Will retry in a minute");
+			sleep(60);
+		} else {
+			myinfo("Giving up");
+		}
+	}
+
+	return 0;
+}
+
 sub update_fts
 {
 	my $user = shift;
+	my $preupdate_func = shift;
+	my $postupdate_func = shift;
+	my $func_context = shift;
 	my @mailboxes = @_;
+
+	# rewrite specified mailboxes with LITERAL+ so they're safe
+	my @literal_mailboxes = @mailboxes;
+	for (@literal_mailboxes) {
+		my $size = length;
+		$_ = "{$size+}\r\n$_";
+	}
 
 	if (!$opts{quiet}) {
 		myinfo("Updating search indexes for user $user");
 	}
 
 	# start dovecot imap as the user
-	my @imapargv = ("/usr/libexec/dovecot/imap", "-u", $user);
+	my @imapargv = ("/Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/imap", "-u", $user);
 	$imappid = open3(\*TO_IMAP, \*FROM_IMAP, \*FROM_IMAP, @imapargv);
 	if (!defined($imappid)) {
 		mywarn("$imapargv[0]: $!");
-		return 0;
+		return -1;
 	}
 	$to_imap = IO::Handle->new_from_fd(*TO_IMAP, "w");
 	$from_imap = IO::Handle->new_from_fd(*FROM_IMAP, "r");
 	if (!defined($to_imap) || !defined($from_imap)) {
 		mywarn("IO::Handle.new_from_fd: $!");
 		imap_cleanup();
-		return 0;
+		return -1;
 	}
 	$to_imap->autoflush(1);
 
@@ -204,14 +259,16 @@ sub update_fts
 		} else {
 			mywarn("bad greeting from IMAP server: $reply");
 			imap_cleanup();
-			return 0;
+			return -1;
 		}
 	}
 	if (read_error($reply)) {
 		imap_cleanup();
-		return 0;
+		return -1;
 	}
 	my $capability = $reply;
+
+	# at this point we're logged in so failures should return 0 not -1
 
 	my $tag = "a";
 	my $cmd;
@@ -256,6 +313,7 @@ sub update_fts
 			imap_cleanup();
 			return 0;
 		}
+		@literal_mailboxes = @mailboxes;
 	}
 
 	# rebuild index in every mailbox
@@ -267,10 +325,14 @@ sub update_fts
 			        " in IMAP process $imappid");
 		}
 		my $mailbox = $mailboxes[$boxi];
+		my $literal_mailbox = $literal_mailboxes[$boxi];
 
-		# EXAMINE don't SELECT the mailbox so we don't reset RECENT
+		&$preupdate_func($func_context, $mailbox)
+		    if defined $preupdate_func;
+
+		# EXAMINE don't SELECT the mailbox so we don't reset \Recent
 		++$tag;
-		$cmd = qq($tag EXAMINE $mailbox\r\n);
+		$cmd = qq($tag EXAMINE $literal_mailbox\r\n);
 		printC($cmd) if $opts{verbose};
 		$to_imap->print($cmd);
 		while ($reply = $from_imap->getline()) {
@@ -279,6 +341,9 @@ sub update_fts
 			if ($reply =~ /^$tag /) {
 				if ($reply !~ /$tag OK (\[.*\])?/) {
 					mywarn("EXAMINE failed: <$reply>");
+					&$postupdate_func($func_context,
+							  $mailbox)
+					    if defined $postupdate_func;
 					next BOX;
 				}
 				last;
@@ -286,6 +351,8 @@ sub update_fts
 		}
 		if (read_error($reply)) {
 			imap_cleanup();
+			&$postupdate_func($func_context, $mailbox)
+			    if defined $postupdate_func;
 			return 0;
 		}
 
@@ -317,6 +384,8 @@ sub update_fts
 		}
 		if (read_error($reply)) {
 			imap_cleanup();
+			&$postupdate_func($func_context, $mailbox)
+			    if defined $postupdate_func;
 			return 0;
 		}
 
@@ -344,8 +413,13 @@ sub update_fts
 		}
 		if (read_error($reply)) {
 			imap_cleanup();
+			&$postupdate_func($func_context, $mailbox)
+			    if defined $postupdate_func;
 			return 0;
 		}
+
+		&$postupdate_func($func_context, $mailbox)
+		    if defined $postupdate_func;
 	}
 
 	# log out
@@ -379,6 +453,38 @@ sub update_fts
 	undef $imappid;
 
 	return 1;
+}
+
+# rename queuefile to .queuefile before updating a mailbox's index so that:
+# - if the system reboots in the middle we will resume
+# - if another update request comes in during indexing (queuefile is recreated)
+#   we will be run again
+sub preserve_queuefile_for
+{
+	my $userref = shift;
+	my $mailbox = shift;
+
+	my $queuefile = $userref->{queuefiles}->{$mailbox};
+	if (defined($queuefile) && $queuefile !~ /^\./ &&
+	    !rename("$queue_dir/$queuefile", "$queue_dir/.$queuefile")) {
+		# maybe another process got it first
+		mywarn("rename $queue_dir/$queuefile -> $queue_dir/.$queuefile: $!")
+		    unless $!{ENOENT};
+	}
+}
+			
+# delete .queuefile after updating a mailbox's index
+sub delete_queuefile_for
+{
+	my $userref = shift;
+	my $mailbox = shift;
+
+	my $queuefile = $userref->{queuefiles}->{$mailbox};
+	$queuefile = ".$queuefile" unless $queuefile =~ /^\./;
+	if (defined($queuefile) && !unlink("$queue_dir/$queuefile")) {
+		# maybe another process got it first
+		mywarn("$queue_dir/$queuefile: $!") unless $!{ENOENT};
+	}
 }
 
 sub printC

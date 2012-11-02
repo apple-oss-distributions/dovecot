@@ -76,16 +76,6 @@ see other people'sconnections. This can however be disabled
 ('login_process_per_connection=no'), in which case the security of the design
 suffers greatly.
 
-A newly thought out idea to balance security and performance is to use a
-separate process for each connection, but instead of destroying the process
-after the login is finished, it could be reused for the next connection. To
-avoid leaving sensitive information into memory (such as usernames and
-passwords), most of the memory is allocated using 'system_clean_pool', which
-causes the memory frees and reallocations to clear the memory before freeing
-it. Also the connection to the authentication process is reopened to make sure
-the previous connection's authentication attempt can't be reused in any way.
-This cleaning isn't done in Dovecot v1.0.
-
 The login processes handle SSL/TLS connections themselves completely. They keep
 proxying the connection to mail processes for the entire lifetime ofthe
 connection. This way if a security hole is found from the SSL library,an
@@ -144,4 +134,4 @@ it's usually more trouble than worth.
 See <mail process design> [Design.MailProcess.txt] for their internal design
 documentation.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

@@ -59,6 +59,12 @@ client_find_namespace(struct client_command_context *cmd, const char *mailbox,
 		storage_name = t_strndup(storage_name, storage_name_len-1);
 	}
 
+	if (strlen(mailbox) == ns->prefix_len) {
+		/* trying to open "ns prefix/" */
+		client_send_tagline(cmd, "NO Invalid mailbox name.");
+		return NULL;
+	}
+
 	if (ns->real_sep != ns->sep && ns->prefix_len < strlen(mailbox)) {
 		/* make sure there are no real separators used in the mailbox
 		   name. */
@@ -75,8 +81,8 @@ client_find_namespace(struct client_command_context *cmd, const char *mailbox,
 	}
 
 	/* make sure two hierarchy separators aren't next to each others */
-	for (p = storage_name+1; *p != '\0'; p++) {
-		if (p[0] == ns->real_sep && p[-1] == ns->real_sep) {
+	for (p = storage_name; *p != '\0'; p++) {
+		if (p[0] == ns->real_sep && p[1] == ns->real_sep) {
 			client_send_tagline(cmd, "NO Invalid mailbox name.");
 			return NULL;
 		}

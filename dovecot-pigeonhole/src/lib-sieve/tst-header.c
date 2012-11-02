@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -38,7 +38,8 @@ const struct sieve_command_def tst_header = {
 	2, 0, FALSE, FALSE,
 	tst_header_registered, 
 	NULL,
-	tst_header_validate, 
+	tst_header_validate,
+	NULL,
 	tst_header_generate, 
 	NULL 
 };

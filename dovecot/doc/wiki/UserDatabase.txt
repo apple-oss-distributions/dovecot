@@ -7,12 +7,15 @@ to deliver mails for the user.
 
 The user database lookup returns these fields:
 
- * *uid*: User's <UID> [UserIds.txt] (UNIX user ID)
- * *gid*: User's <GID> [UserIds.txt] (UNIX group ID)
- * *home*: <Home directory> [VirtualUsers.txt]. Although not required, it's
-   highly recommended even for virtual users (see the link).
- * *mail*: <Mail location> [MailLocation.txt] (if needed to override the
-   default 'mail_location' setting)
+ * *uid*: User's <UID> [UserIds.txt] (UNIX user ID), overrides the global
+   'mail_uid' setting.
+ * *gid*: User's <GID> [UserIds.txt] (UNIX group ID), overrides the global
+   'mail_gid' setting.
+ * *home*: User's <home directory> [VirtualUsers.Home.txt], overrides the
+   global 'mail_home' setting. Although not required, it's <highly recommended
+   even for virtual users> [VirtualUsers.Home.txt].
+ * *mail*: <Mail location> [MailLocation.txt], overrides the global
+   'mail_location' setting.
  * Optional <extra fields> [UserDatabase.ExtraFields.txt] which are passed to
    the IMAP/POP3 process in environment variables.
 
@@ -36,4 +39,4 @@ Currently supported user databases are:
  * <Prefetch> [UserDatabase.Prefetch.txt]: This assumes that the passdb already
    returned also all the required user database information
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:41)

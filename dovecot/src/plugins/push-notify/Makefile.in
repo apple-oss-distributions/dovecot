@@ -275,7 +275,6 @@ AM_CPPFLAGS = \
 
 lib20_push_notify_plugin_la_LDFLAGS = -module -avoid-version \
 	-F/System/Library/PrivateFrameworks \
-	-framework XMPP \
 	-framework CoreFoundation
 
 module_LTLIBRARIES = \

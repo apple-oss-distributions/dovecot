@@ -690,7 +690,7 @@ int verify_path ( const char *in_path )
 {
 	DIR	*dir	= NULL;
 	
-	if ( dir = opendir( in_path ) ) {
+	if ( (dir = opendir( in_path )) ) {
 		closedir( dir );
 		return( 0 );
 	}
@@ -854,7 +854,7 @@ int scan_account ( char *in_cy_spool_dir, char *in_dst_root, char *in_acct_dir )
 
 		// Scan mailboxes
 		if ( chdir( in_acct_dir ) == 0 ) {
-			if ( p_dir = opendir( "." ) ) {
+			if ( (p_dir = opendir( "." )) ) {
 				// Recursively scan across all mailboxes 
 				while( (dir_entry = readdir(p_dir)) ) {
 					// Skip the '.' & '..' directories
@@ -865,11 +865,11 @@ int scan_account ( char *in_cy_spool_dir, char *in_dst_root, char *in_acct_dir )
 			}
 
 			// Backing out, terminate source mailbox path
-			if ( cc = strrchr( src_path, '/' ) )
+			if ( (cc = strrchr( src_path, '/' )) )
 				*cc = '\0';
 
 			// Backing out, terminate destination mailbox path
-			if ( cc = strrchr( dst_path, '.') )
+			if ( (cc = strrchr( dst_path, '.')) )
 				*cc='\0';
 
 			chdir( ".." );
@@ -1117,7 +1117,7 @@ int migrate_mail ( char *in_src_path, char *in_dest_path, int is_root )
 	snprintf( cy_header_path, PATH_MAX, "%s/cyrus.header", in_src_path );
 
 	// Get the cyrus index version
-	if ( hdr_file = fopen( cy_index_path, "r") ) {
+	if ( (hdr_file = fopen( cy_index_path, "r")) ) {
 		unsigned long	uidvalidity = 0;
 
 		// get the version number for the cyrus minor_version in header
@@ -1261,7 +1261,7 @@ int migrate_mail ( char *in_src_path, char *in_dest_path, int is_root )
 		//	For now, check for mail and log that there may be un-migrated messages
 
 		// Checking if there may be mail here
-		if ( p_dir = opendir(in_src_path) ) {
+		if ( (p_dir = opendir(in_src_path)) ) {
 			while ( (dir_entry = readdir(p_dir)) ) {
 				if ( (dir_entry->d_name[strlen( dir_entry->d_name ) - 1] == '.') && (dir_entry->d_name[0] != '.') ) {
 					// There may be messages here
@@ -1445,7 +1445,7 @@ int parse_seen_file ( const char *in_mailbox, const unsigned long in_uidvalidity
 	}
 
 	if ( (g_seen_file->uid_flag) >= 0 && (g_seen_file->seen_count != -1) ) {
-		if ( tuple_str = cpy_str( g_seen_file->seen_array[ g_seen_file->uid_flag ].seen_uids ) ) {
+		if ( (tuple_str = cpy_str( g_seen_file->seen_array[ g_seen_file->uid_flag ].seen_uids )) ) {
 			// Scan across seen string parsing out seen uid's
 			//	ie. 3:4,8:9,11:12,15:16,20  or 1,3,5,7,9,11
 
@@ -1672,7 +1672,7 @@ void rename_mailboxes ( const char *g_dest_dir )
 	DIR				*p_dir		= NULL;
 	struct dirent	*dir_entry;
 
-	if ( p_dir = opendir( g_dest_dir ) ) {
+	if ( (p_dir = opendir( g_dest_dir )) ) {
 		// Recursively scan across all mailboxes 
 		while( (dir_entry = readdir(p_dir)) ) {
 			// Skip the '.' & '..' directories
@@ -1731,7 +1731,7 @@ void fix_mailboxes ( const char *g_dest_dir )
 	NSString		*nsStr_path	= nil;
 	struct dirent	*dir_entry;
 
-	if ( p_dir = opendir( g_dest_dir ) ) {
+	if ( (p_dir = opendir( g_dest_dir )) ) {
 		// Recursively scan across all mailboxes 
 		while ( (dir_entry = readdir(p_dir)) ) {
 			// Skip the '.' & '..' directories
@@ -2176,7 +2176,7 @@ NSDictionary *get_alt_data_stores ( int in_print )
 		printf("---------------------------------------\n" );
 	}
 
-	NSString *file_data = [NSMutableString stringWithContentsOfFile: @"/etc/dovecot/partition_map.conf" encoding: NSUTF8StringEncoding error: &ns_err];
+	NSString *file_data = [NSMutableString stringWithContentsOfFile: @"/Library/Server/Mail/Config/dovecot/partition_map.conf" encoding: NSUTF8StringEncoding error: &ns_err];
 	if ( file_data && [file_data length] ) {
 		NSString *map_str = nil;
 		file_data = [file_data stringByTrimmingCharactersInSet: [NSCharacterSet whitespaceAndNewlineCharacterSet]];

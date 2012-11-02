@@ -48,9 +48,7 @@
 #define	APS_VERSION		"1"
 
 typedef struct msg_data_s {
-	unsigned long msg;
-	unsigned long pid;
-
+	char msg[16];
 	char d1[128];
 	char d2[512];
 	char d3[512];
@@ -68,10 +66,9 @@ static void do_notify(const char *username, const char *aps_acct_id,
 		      const char *aps_dev_token, const char *aps_sub_topic)
 {
 	const char *push_notify_path = "/var/dovecot/push_notify";
-
 	msg_data_t msg_data;
 	memset(&msg_data, 0, sizeof(struct msg_data_s));
-	msg_data.msg = 2;
+	msg_data.msg[0] = '2';
 
 	strlcpy(msg_data.d1, username, sizeof(msg_data.d1));
 	strlcpy(msg_data.d2, aps_acct_id, sizeof(msg_data.d2));

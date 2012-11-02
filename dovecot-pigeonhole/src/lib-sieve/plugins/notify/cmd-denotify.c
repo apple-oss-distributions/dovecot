@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -44,7 +44,8 @@ const struct sieve_command_def cmd_denotify = {
 	0, 0, FALSE, FALSE,
 	cmd_denotify_registered,
 	cmd_denotify_pre_validate,
-	cmd_denotify_validate, 
+	cmd_denotify_validate,
+	NULL,
 	cmd_denotify_generate, 
 	NULL
 };

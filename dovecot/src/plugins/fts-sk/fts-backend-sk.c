@@ -241,11 +241,12 @@ struct sk_fts_backend_build_context {
 
 	pid_t indexer_pid;
 	struct ostream *to_indexer;
-	struct istream *from_indexer;
+	struct istream *from_indexer, *errs_from_indexer;
 	int from_indexer_fd;
+	int errs_from_indexer_fd;
 	char *indexer_tag;
 	struct ioloop *indexer_ioloop;
-	struct io *indexer_io;
+	struct io *indexer_io, *indexer_ie;
 	struct timeout *indexer_timeout;
 	const char *indexer_reply;
 
@@ -1246,17 +1247,32 @@ static void sk_indexer_end_dirty(struct sk_fts_backend_build_context *ctx)
 	(void) waitpid(ctx->indexer_pid, NULL, 0);
 }
 
+static void sk_indexer_error_input(struct sk_fts_backend_build_context *ctx)
+{
+	int ret;
+	char *line;
+
+	while ((ret = i_stream_read(ctx->errs_from_indexer)) > 0) {
+		while ((line =
+			i_stream_next_line(ctx->errs_from_indexer)) != NULL)
+			i_info("fts_sk: indexer process %d stderr: %s",
+			       ctx->indexer_pid, line);
+	}
+}
+
 static void sk_indexer_end(struct sk_fts_backend_build_context *ctx)
 {
 	struct sk_fts_backend *backend =
 		(struct sk_fts_backend *) ctx->ctx.backend;
-	struct io *io;
+	struct io *io, *ie;
 	struct timeout *timeout;
 
 	if (ctx->indexer_pid < 0)
 		return;
 
 	ctx->indexer_synchronous = TRUE;
+	if (ctx->indexer_ie != NULL)
+		io_remove(&ctx->indexer_ie);
 	if (ctx->indexer_io != NULL)
 		io_remove(&ctx->indexer_io);
 	if (ctx->indexer_timeout != NULL)
@@ -1272,10 +1288,13 @@ static void sk_indexer_end(struct sk_fts_backend_build_context *ctx)
 		ctx->indexer_ioloop = io_loop_create();
 		io = io_add(ctx->from_indexer_fd, IO_READ, sk_indexer_end_clean,
 			    ctx);
+		ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
+			    sk_indexer_error_input, ctx);
 		timeout = timeout_add(backend->indexer_timeout_secs * 1000,
 				      sk_indexer_end_dirty, ctx);
 		io_loop_run(ctx->indexer_ioloop);
 		timeout_remove(&timeout);
+		io_remove(&ie);
 		io_remove(&io);
 		io_loop_destroy(&ctx->indexer_ioloop);
 	}
@@ -1283,7 +1302,9 @@ static void sk_indexer_end(struct sk_fts_backend_build_context *ctx)
 	ctx->indexer_pid = -1;
 	o_stream_destroy(&ctx->to_indexer);
 	i_stream_destroy(&ctx->from_indexer);
+	i_stream_destroy(&ctx->errs_from_indexer);
 	ctx->from_indexer_fd = -1;
+	ctx->errs_from_indexer_fd = -1;
 
 	if (ctx->indexer_tag != NULL)
 		i_free_and_null(ctx->indexer_tag);
@@ -1419,7 +1440,7 @@ static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx);
 static int sk_indexer_start(struct sk_fts_backend_build_context *ctx)
 {
 	pid_t pid;
-	int parent_to_child[2], child_to_parent[2];
+	int parent_to_child[2], child_to_parent[2], errors_to_parent[2];
 
 	if (ctx->indexer_pid > 0)
 		return 1;
@@ -1434,6 +1455,14 @@ static int sk_indexer_start(struct sk_fts_backend_build_context *ctx)
 		(void) close(parent_to_child[1]);
 		return -1;
 	}
+	if (pipe(errors_to_parent) < 0) {
+		i_error("fts_sk: pipe() failed: %m");
+		(void) close(parent_to_child[0]);
+		(void) close(parent_to_child[1]);
+		(void) close(child_to_parent[0]);
+		(void) close(child_to_parent[1]);
+		return -1;
+	}
 
 	pid = fork();
 	if (pid < 0) {
@@ -1442,18 +1471,21 @@ static int sk_indexer_start(struct sk_fts_backend_build_context *ctx)
 		(void) close(parent_to_child[1]);
 		(void) close(child_to_parent[0]);
 		(void) close(child_to_parent[1]);
+		(void) close(errors_to_parent[0]);
+		(void) close(errors_to_parent[1]);
 		return -1;
 	}
 
 	if (pid == 0) {
 		(void) close(parent_to_child[1]);
 		(void) close(child_to_parent[0]);
+		(void) close(errors_to_parent[0]);
 
 		if (dup2(parent_to_child[0], 0) < 0)
 			i_fatal("fts_sk: dup2(stdin) failed: %m");
 		if (dup2(child_to_parent[1], 1) < 0)
 			i_fatal("fts_sk: dup2(stdout) failed: %m");
-		if (dup2(child_to_parent[1], 2) < 0)
+		if (dup2(errors_to_parent[1], 2) < 0)
 			i_fatal("fts_sk: dup2(stderr) failed: %m");
 
 		sk_indexer_child_exec(ctx);
@@ -1463,12 +1495,17 @@ static int sk_indexer_start(struct sk_fts_backend_build_context *ctx)
 	fd_set_nonblock(parent_to_child[1], TRUE);
 	fd_set_nonblock(child_to_parent[0], TRUE);
 	(void) close(child_to_parent[1]);
+	fd_set_nonblock(errors_to_parent[0], TRUE);
+	(void) close(errors_to_parent[1]);
 
 	ctx->use_indexer_forever = TRUE;
 	ctx->indexer_pid = pid;
 	ctx->to_indexer = o_stream_create_fd(parent_to_child[1], 8192, TRUE);
 	ctx->from_indexer = i_stream_create_fd(child_to_parent[0], 8192, TRUE);
+	ctx->errs_from_indexer = i_stream_create_fd(errors_to_parent[0], 8192,
+						    TRUE);
 	ctx->from_indexer_fd = child_to_parent[0];
+	ctx->errs_from_indexer_fd = errors_to_parent[0];
 
 	if (o_stream_send_str(ctx->to_indexer,
 			      "version\t"PACKAGE_VERSION"\n") <= 0) {
@@ -1595,6 +1632,8 @@ static void sk_indexer_resume_build(struct sk_fts_backend_build_context *ctx)
 	/* client_add_missing_io() restores cmd->client->io for us */
 	cmd->client->ignore = FALSE;
 
+	if (ctx->indexer_ie != NULL)
+		io_remove(&ctx->indexer_ie);
 	if (ctx->indexer_io != NULL)
 		io_remove(&ctx->indexer_io);
 	if (ctx->indexer_timeout != NULL)
@@ -1657,7 +1696,7 @@ static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx)
 		ctx->indexer_synchronous = TRUE;
 
 	if (ctx->indexer_synchronous) {
-		struct io *io;
+		struct io *io, *ie;
 		struct timeout *timeout;
 
 		/* wait right here for the reply from the indexer */
@@ -1665,11 +1704,14 @@ static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx)
 		ctx->indexer_ioloop = io_loop_create();
 		io = io_add(ctx->from_indexer_fd, IO_READ,
 			    sk_indexer_input, ctx);
+		ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
+			    sk_indexer_error_input, ctx);
 		timeout =
 		       timeout_add(backend->indexer_timeout_secs * 1000,
 				   sk_indexer_timeout, ctx);
 		io_loop_run(ctx->indexer_ioloop);
 		timeout_remove(&timeout);
+		io_remove(&ie);
 		io_remove(&io);
 		io_loop_destroy(&ctx->indexer_ioloop);
 
@@ -1686,6 +1728,8 @@ static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx)
 
 		ctx->indexer_io = io_add(ctx->from_indexer_fd, IO_READ,
 					 sk_indexer_input, ctx);
+		ctx->indexer_ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
+					 sk_indexer_error_input, ctx);
 		ctx->indexer_timeout =
 		       timeout_add(backend->indexer_timeout_secs * 1000,
 				   sk_indexer_timeout, ctx);
@@ -1783,6 +1827,8 @@ static int sk_indexer_do(struct sk_fts_backend_build_context *ctx,
 
 	ctx->indexer_reply = NULL;
 	i_free_and_null(ctx->indexer_tag);
+	if (ctx->indexer_ie != NULL)
+		io_remove(&ctx->indexer_ie);
 	if (ctx->indexer_io != NULL)
 		io_remove(&ctx->indexer_io);
 	if (ctx->indexer_timeout != NULL)
@@ -2679,6 +2725,7 @@ static int fts_backend_sk_build_init(struct fts_backend *_backend,
 	ctx->spill_fd = -1;
 	ctx->indexer_pid = -1;
 	ctx->from_indexer_fd = -1;
+	ctx->errs_from_indexer_fd = -1;
 
 	*ctx_r = &ctx->ctx;
 	return 0;

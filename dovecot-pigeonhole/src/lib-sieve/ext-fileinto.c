@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension fileinto
@@ -77,7 +77,8 @@ static const struct sieve_command_def fileinto_command = {
 	SCT_COMMAND,
 	1, 0, FALSE, FALSE, 
 	NULL, NULL,
-	cmd_fileinto_validate, 
+	cmd_fileinto_validate,
+	NULL,
 	cmd_fileinto_generate, 
 	NULL 
 };

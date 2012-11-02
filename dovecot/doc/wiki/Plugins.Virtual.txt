@@ -92,7 +92,7 @@ mailbox.
 Examples
 --------
 
-List all messages with \Deleted flag in all mailboxes:
+ * List all messages with \Deleted flag in all mailboxes:
 
 ---%<-------------------------------------------------------------------------
 # ~/Maildir/virtual/Trash/dovecot-virtual
@@ -100,7 +100,7 @@ List all messages with \Deleted flag in all mailboxes:
   deleted
 ---%<-------------------------------------------------------------------------
 
-List all unseen INBOX and work/* messages:
+ * List all unseen INBOX and work/* messages:
 
 ---%<-------------------------------------------------------------------------
 # ~/Maildir/virtual/unseen/dovecot-virtual
@@ -109,9 +109,9 @@ work/*
   unseen
 ---%<-------------------------------------------------------------------------
 
-Create a GMail-style "conversation view" for INBOX which shows all threads that
-have messages in INBOX, but shows all messages in the thread regardless of in
-what mailbox they physically exist in:
+ * Create a GMail-style "conversation view" for INBOX which shows all threads
+   that have messages in INBOX, but shows all messages in the thread regardless
+   of in what mailbox they physically exist in:
 
 ---%<-------------------------------------------------------------------------
 # ~/Maildir/virtual/all/dovecot-virtual
@@ -125,8 +125,8 @@ virtual/all
   inthread refs x-mailbox INBOX
 ---%<-------------------------------------------------------------------------
 
-Create a mailbox containing messages from all mailboxes except Trash and its
-children:
+ * Create a mailbox containing messages from all mailboxes except Trash and its
+   children:
 
 ---%<-------------------------------------------------------------------------
 # ~/Maildir/virtual/all/dovecot-virtual
@@ -136,12 +136,21 @@ children:
   all
 ---%<-------------------------------------------------------------------------
 
-Create a virtual Sentmail folder that includes Sent*:
+ * Create a virtual Sentmail folder that includes Sent*:
 
 ---%<-------------------------------------------------------------------------
 # ~/Maildir/virtual/Sentmail/dovecot-virtual
 Sent*
   all
+---%<-------------------------------------------------------------------------
+
+ * List messages from past 48 hours (syntax is in seconds):
+
+---%<-------------------------------------------------------------------------
+# ~/Maildir/virtual/recent/dovecot-virtual
+INBOX
+work/*
+  all younger 172800
 ---%<-------------------------------------------------------------------------
 
 Virtual POP3 INBOX
@@ -216,4 +225,4 @@ IMAP UIDs. Instead use for GUIDs (with maildir the same as base filename):
 pop3_uidl_format = %g
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

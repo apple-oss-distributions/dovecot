@@ -21,6 +21,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -203,7 +204,7 @@ static int apple_password_callback (char *in_buf, int in_size, int in_rwflag ATT
 	struct apple_password_ctx *ctx;
 	struct io *io;
 	struct timeout *timeout;
-	char *certadmin = "/usr/sbin/certadmin";
+	char *certadmin = "/Applications/Server.app/Contents/ServerRoot/usr/sbin/certadmin";
 
 	if (cb_data == NULL || strlen(cb_data->key) == 0 ||
 	    cb_data->len >= FILENAME_MAX || cb_data->len == 0 ||
@@ -808,6 +809,87 @@ bool ssl_proxy_has_broken_client_cert(struct ssl_proxy *proxy)
 	return proxy->cert_received && proxy->cert_broken;
 }
 
+static const char *asn1_string_to_c(ASN1_STRING *asn_str)
+{
+	const char *cstr;
+	unsigned int len;
+
+	len = ASN1_STRING_length(asn_str);
+	cstr = t_strndup(ASN1_STRING_data(asn_str), len);
+	if (strlen(cstr) != len) {
+		/* NULs in the name - could be some MITM attack.
+		   never allow. */
+		return "";
+	}
+	return cstr;
+}
+
+static const char *get_general_dns_name(const GENERAL_NAME *name)
+{
+	if (ASN1_STRING_type(name->d.ia5) != V_ASN1_IA5STRING)
+		return "";
+
+	return asn1_string_to_c(name->d.ia5);
+}
+
+static const char *get_cname(X509 *cert)
+{
+	X509_NAME *name;
+	X509_NAME_ENTRY *entry;
+	ASN1_STRING *str;
+	int cn_idx;
+
+	name = X509_get_subject_name(cert);
+	if (name == NULL)
+		return "";
+	cn_idx = X509_NAME_get_index_by_NID(name, NID_commonName, -1);
+	if (cn_idx == -1)
+		return "";
+	entry = X509_NAME_get_entry(name, cn_idx);
+	i_assert(entry != NULL);
+	str = X509_NAME_ENTRY_get_data(entry);
+	i_assert(str != NULL);
+	return asn1_string_to_c(str);
+}
+
+static int openssl_cert_match_name(SSL *ssl, const char *verify_name)
+{
+	X509 *cert;
+	STACK_OF(GENERAL_NAME) *gnames;
+	const GENERAL_NAME *gn;
+	const char *dnsname;
+	bool dns_names = FALSE;
+	unsigned int i, count;
+
+	cert = SSL_get_peer_certificate(ssl);
+	i_assert(cert != NULL);
+
+	/* verify against SubjectAltNames */
+	gnames = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
+	count = gnames == NULL ? 0 : sk_GENERAL_NAME_num(gnames);
+	for (i = 0; i < count; i++) {
+		gn = sk_GENERAL_NAME_value(gnames, i);
+		if (gn->type == GEN_DNS) {
+			dns_names = TRUE;
+			dnsname = get_general_dns_name(gn);
+			if (strcmp(dnsname, verify_name) == 0)
+				break;
+		}
+	}
+	sk_GENERAL_NAME_pop_free(gnames, GENERAL_NAME_free);
+	/* verify against CommonName only when there wasn't any DNS
+	   SubjectAltNames */
+	if (dns_names)
+		return i < count ? 0 : -1;
+
+	return strcmp(get_cname(cert), verify_name) == 0 ? 0 : -1;
+}
+
+int ssl_proxy_cert_match_name(struct ssl_proxy *proxy, const char *verify_name)
+{
+	return openssl_cert_match_name(proxy->ssl, verify_name);
+}
+
 const char *ssl_proxy_get_peer_name(struct ssl_proxy *proxy)
 {
 	X509 *x509;
@@ -898,12 +980,9 @@ static void ssl_proxy_unref(struct ssl_proxy *proxy)
 
 	SSL_free(proxy->ssl);
 
-	/* APPLE fixed memory leak */
-	if (proxy->last_error != NULL)
-		i_free(proxy->last_error);
-
 	if (proxy->client != NULL)
 		client_unref(&proxy->client);
+	i_free(proxy->last_error);
 	i_free(proxy);
 }
 
@@ -986,7 +1065,7 @@ static int ssl_verify_client_cert(int preverify_ok, X509_STORE_CTX *ctx)
 	proxy->cert_received = TRUE;
 
 	if (proxy->set->verbose_ssl ||
-	    (proxy->set->verbose_auth && !preverify_ok)) {
+	    (proxy->set->auth_verbose && !preverify_ok)) {
 		char buf[1024];
 		X509_NAME *subject;
 
@@ -997,6 +1076,10 @@ static int ssl_verify_client_cert(int preverify_ok, X509_STORE_CTX *ctx)
 			i_info("Invalid certificate: %s: %s", X509_verify_cert_error_string(ctx->error),buf);
 		else
 			i_info("Valid certificate: %s", buf);
+	}
+	if (ctx->error == X509_V_ERR_UNABLE_TO_GET_CRL && proxy->client_proxy) {
+		/* no CRL given with the CA list. don't worry about it. */
+		preverify_ok = 1;
 	}
 	if (!preverify_ok)
 		proxy->cert_broken = TRUE;
@@ -1075,7 +1158,13 @@ ssl_proxy_ctx_init(SSL_CTX *ssl_ctx, const struct login_settings *set)
 	X509_STORE *store;
 	STACK_OF(X509_NAME) *xnames = NULL;
 
-	SSL_CTX_set_options(ssl_ctx, SSL_OP_ALL | SSL_OP_NO_SSLv2);
+	/* enable all SSL workarounds, except empty fragments as it
+	   makes SSL more vulnerable against attacks */
+	SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 |
+			    (SSL_OP_ALL & ~SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS));
+#ifdef SSL_MODE_RELEASE_BUFFERS
+    SSL_CTX_set_mode(ssl_ctx, SSL_MODE_RELEASE_BUFFERS);
+#endif
 	if (*set->ssl_ca != '\0') {
 		/* set trusted CA certs */
 		store = SSL_CTX_get_cert_store(ssl_ctx);
@@ -1123,51 +1212,46 @@ static const char *ssl_proxy_get_use_certificate_error(const char *cert)
 	}
 }
 
-static EVP_PKEY *ssl_proxy_load_key(const struct login_settings *set)
+static EVP_PKEY *
+#ifdef APPLE_OS_X_SERVER
+ssl_proxy_load_key(const char *key, const char *password, const char *path)
+#else
+ssl_proxy_load_key(const char *key, const char *password)
+#endif
 {
 	EVP_PKEY *pkey;
 	BIO *bio;
-	const char *password;
 	char *dup_password;
 
-	bio = BIO_new_mem_buf(t_strdup_noconst(set->ssl_key),
-			      strlen(set->ssl_key));
+	bio = BIO_new_mem_buf(t_strdup_noconst(key), strlen(key));
 	if (bio == NULL)
 		i_fatal("BIO_new_mem_buf() failed");
 
-	password = *set->ssl_key_password != '\0' ? set->ssl_key_password :
-		getenv(MASTER_SSL_KEY_PASSWORD_ENV);
 	dup_password = t_strdup_noconst(password);
 
 #ifdef APPLE_OS_X_SERVER
 	pkey = NULL;
-	if ( strlen( set->ssl_key_path ) < FILENAME_MAX )
-	{
-		if ( s_user_data == NULL )
-		{
+	if (path == NULL)
+		/* ignore it */ ;
+	else if ( strlen( path ) < FILENAME_MAX ) {
+		if ( s_user_data == NULL ) {
 			s_user_data = malloc( sizeof(CallbackUserData) );
-			if ( s_user_data != NULL )
-			{
+			if ( s_user_data != NULL ) {
 				memset( s_user_data, 0, sizeof(CallbackUserData) );
 			}
 		}
 
-		if ( s_user_data != NULL )
-		{
-			i_snprintf( s_user_data->key, FILENAME_MAX, "%s", set->ssl_key_path );
+		if ( s_user_data != NULL ) {
+			i_snprintf( s_user_data->key, FILENAME_MAX, "%s", path );
 			s_user_data->len = strlen( s_user_data->key );
 
 			pkey = PEM_read_bio_PrivateKey(bio, NULL,
 			    apple_password_callback, s_user_data);
+		} else {
+			i_info( "Could not set custom callback for: %s", path );
 		}
-		else
-		{
-			i_info( "Could not set custom callback for: %s", set->ssl_key_path );
-		}
-	}
-	else
-	{
-		i_info( "Key file path too big for custom callback for: %s", set->ssl_key_path );
+	} else {
+		i_info( "Key file path too big for custom callback for: %s", path );
 	}
 
 	if (pkey == NULL)
@@ -1194,8 +1278,15 @@ static const char *ssl_key_load_error(void)
 static void ssl_proxy_ctx_use_key(SSL_CTX *ctx, const struct login_settings *set)
 {
 	EVP_PKEY *pkey;
+	const char *password;
 
-	pkey = ssl_proxy_load_key(set);
+	password = *set->ssl_key_password != '\0' ? set->ssl_key_password :
+		getenv(MASTER_SSL_KEY_PASSWORD_ENV);
+#ifdef APPLE_OS_X_SERVER
+	pkey = ssl_proxy_load_key(set->ssl_key, password, set->ssl_key_path);
+#else
+	pkey = ssl_proxy_load_key(set->ssl_key, password);
+#endif
 	if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1)
 		i_fatal("Can't load private ssl_key: %s", ssl_key_load_error());
 	EVP_PKEY_free(pkey);
@@ -1268,9 +1359,13 @@ static void ssl_servername_callback(SSL *ssl, int *al ATTR_UNUSED,
 	host = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
 
 	client = proxy->client;
-	client->set = login_settings_read(client->pool,
-					  &client->local_ip, &client->ip, host,
-					  &other_sets);
+	if (!client->ssl_servername_settings_read) {
+		client->ssl_servername_settings_read = TRUE;
+		client->set = login_settings_read(client->pool,
+						  &client->local_ip,
+						  &client->ip, host,
+						  &other_sets);
+	}
 	ctx = ssl_server_context_get(client->set);
 	SSL_set_SSL_CTX(ssl, ctx->ctx);
 }
@@ -1334,6 +1429,32 @@ static void ssl_server_context_deinit(struct ssl_server_context **_ctx)
 	pool_unref(&ctx->pool);
 }
 
+static void
+ssl_proxy_client_ctx_set_client_cert(SSL_CTX *ctx,
+				     const struct login_settings *set)
+{
+	EVP_PKEY *pkey;
+
+	if (*set->ssl_client_cert == '\0')
+		return;
+
+	if (ssl_proxy_ctx_use_certificate_chain(ctx, set->ssl_client_cert) != 1) {
+		i_fatal("Can't load ssl_client_cert: %s",
+			ssl_proxy_get_use_certificate_error(set->ssl_client_cert));
+	}
+
+#ifdef APPLE_OS_X_SERVER
+	pkey = ssl_proxy_load_key(set->ssl_client_key, NULL, NULL);
+#else
+	pkey = ssl_proxy_load_key(set->ssl_client_key, NULL);
+#endif
+	if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
+		i_fatal("Can't load private ssl_client_key: %s",
+			ssl_key_load_error());
+	}
+	EVP_PKEY_free(pkey);
+}
+
 static void ssl_proxy_init_client(const struct login_settings *set)
 {
 	STACK_OF(X509_NAME) *xnames;
@@ -1342,6 +1463,8 @@ static void ssl_proxy_init_client(const struct login_settings *set)
 		i_fatal("SSL_CTX_new() failed");
 	xnames = ssl_proxy_ctx_init(ssl_client_ctx, set);
 	ssl_proxy_ctx_verify_client(ssl_client_ctx, xnames);
+
+	ssl_proxy_client_ctx_set_client_cert(ssl_client_ctx, set);
 }
 
 void ssl_proxy_init(void)

@@ -60,8 +60,8 @@ int				od_pos_cache_ttl	= 3600;
 int				od_neg_cache_ttl	= 60;
 bool			od_use_getpwnam_ext	= TRUE;
 const char		*def_path			= "/Library/Server/Mail/Data/mail";
-const char		*users_path			= "/var/db/.mailusersettings.plist";
-const char		*notify_path		= "/etc/dovecot/notify/notify.plist";
+const char		*users_path			= "/Library/Server/Mail/Data/db/.mailusersettings.plist";
+const char		*notify_path		= "/Library/Server/Mail/Config/dovecot/notify/notify.plist";
 static bool		mail_sacl_enabled	= FALSE;
 static time_t	sacl_check_delta	= 0;
 
@@ -111,7 +111,7 @@ void send_server_event ( struct auth_request *in_request, const od_auth_event_t 
 			cfstr_event = CFStringCreateWithCString(NULL, "auth.failure", kCFStringEncodingMacRoman);
 			break;
 		default:
-			auth_request_log_debug(in_request, "od", "unknown sever event: %d", in_event_code);
+			auth_request_log_debug(in_request, "od[send server event]", "unknown sever event: %d", in_event_code);
 			return;
 	}
 
@@ -204,13 +204,13 @@ static void od_add_user ( struct auth_request *in_request, struct db_od *in_od_i
 							struct od_user *in_od_user, const char *in_user_name )
 {
 	if ( (in_od_user == NULL) || (in_user_name == NULL) ) {
-		auth_request_log_error(in_request, "od", "unable to add user to table: Null user id" );
+		auth_request_log_error(in_request, "od", "unable to add user to table: NULL user id" );
 		return;
 	}
 
 	i_assert(hash_table_lookup(in_od_info->users_table, in_user_name) == NULL);
 
-	auth_request_log_debug(in_request, "od", "caching user %s as %s", in_od_user->record_name, in_user_name );
+	auth_request_log_debug(in_request, "od[cache user]", "caching user %s as %s", in_od_user->record_name, in_user_name );
 
 	++in_od_user->refcount;
 	hash_table_insert( in_od_info->users_table, i_strdup(in_user_name), in_od_user );
@@ -618,7 +618,11 @@ static CFStringRef od_get_attr_from_record ( struct auth_request *in_request, OD
 
 /* Begin DS SPI Glue */
 #include <kvbuf.h>
-#include <DSlibinfoMIG.h>
+#include <mach/mach_vm.h>
+#include <mach/mach_port.h>
+#include <mach/mig_errors.h>
+#include <opendirectory/DSlibinfoMIG.h>
+#include <opendirectory/DSlibinfoMIG_types.h>
 #include <DirectoryService/DirectoryService.h>
 
 extern mach_port_t _ds_port;
@@ -1098,7 +1102,7 @@ static struct od_user *od_get_user ( struct auth_request *in_request, struct db_
 
 	cf_str_ref = CFStringCreateWithCString( NULL, in_user_name, kCFStringEncodingUTF8 );
 	if ( !cf_str_ref ) {
-		auth_request_log_error(in_request, "od", "unable to create user name CFStringRef");
+		auth_request_log_error(in_request, "od[get usr]", "unable to create user name CFStringRef");
 		return( NULL );
 	}
 
@@ -1124,9 +1128,9 @@ static struct od_user *od_get_user ( struct auth_request *in_request, struct db_
 				CFRetain(od_rec_ref);
 			} else {
 				if ( CFArrayGetCount( cf_arry_result ) == 0 )
-					auth_request_log_error(in_request, "od", "no user record found for: %s", in_user_name);
+					auth_request_log_error(in_request, "od[get usr]", "no user record found for: %s", in_user_name);
 				else
-					auth_request_log_error(in_request, "od", "multiple user records (%ld) found for: %s", CFArrayGetCount( cf_arry_result ), in_user_name);
+					auth_request_log_error(in_request, "od[get usr]", "multiple user records (%ld) found for: %s", CFArrayGetCount( cf_arry_result ), in_user_name);
 			}
 			CFRelease(cf_arry_result);
 		}
@@ -1181,7 +1185,7 @@ static struct od_user *od_get_user ( struct auth_request *in_request, struct db_
 	out_user_rec->acct_state |= imap_enabled;
 	out_user_rec->acct_state |= pop_enabled;
 	if ( !od_get_attributes_local(in_request, out_user_rec, out_user_rec->user_guid) ) {
-		auth_request_log_debug(in_request, "od", "no local settings found for guid: %s (%s)", out_user_rec->user_guid, out_user_rec->record_name);
+		auth_request_log_debug(in_request, "od[get usr]", "no local settings found for guid: %s (%s)", out_user_rec->user_guid, out_user_rec->record_name);
 		cf_str_value = od_get_attr_from_record( in_request, od_rec_ref, CFSTR(kDS1AttrMailAttribute) );
 		if ( cf_str_value ) {
 			char *c_str = (char*)CFStringGetCStringPtr( cf_str_value, kCFStringEncodingMacRoman );
@@ -1206,100 +1210,92 @@ static struct od_user *od_get_user ( struct auth_request *in_request, struct db_
 
 void db_od_sacl_check ( struct auth_request *in_request, struct od_user *in_od_user, const char *in_group )
 {
-	int		err		= 0;
-	int		result	= 0;
-	uuid_t	guid;
+	/* enable account by default */
+	in_od_user->acct_state |= account_enabled;
+	in_od_user->acct_state |= imap_enabled;
+	in_od_user->acct_state |= pop_enabled;
 
 	/* quick migration check */
 	struct stat st;
 	if (stat("/var/db/.mailmigration.plist", &st) == 0) {
+		auth_request_log_debug(in_request, "od[sacl check]", "migration file exists: /var/db/.mailmigration.plist");
 		if ( !(in_od_user->acct_state & acct_migrated) ) {
 			in_od_user->acct_state &= ~account_enabled;
 			in_od_user->acct_state &= ~imap_enabled;
 			in_od_user->acct_state &= ~pop_enabled;
+
+			auth_request_log_debug(in_request, "od[sacl check]", "account: %s not yet migrated", in_od_user->record_name);
 			return;
 		}
+		auth_request_log_debug(in_request, "od[sacl check]", "account: %s successfully migrated", in_od_user->record_name);
 	}
 
-	if ( mail_sacl_enabled == FALSE ) {
-		if ( sacl_check_delta > time(NULL) ) {
-			in_od_user->acct_state |= account_enabled;
-			in_od_user->acct_state |= imap_enabled;
-			in_od_user->acct_state |= pop_enabled;
+	/* performance: check every 30 seconds if last check found no SACL enabled */
+	if ( !mail_sacl_enabled ) {
+		if ( sacl_check_delta > time(NULL) )
 			return;
-		}
 		sacl_check_delta = time(NULL) + 30;
 	}
 
 	DTRACE_OD_SACL_START(in_od_user, (char *) in_group);
 
-	/* we should already have this from previous user lookup */
-	if ( in_od_user->user_guid != NULL )
-		err = mbr_string_to_uuid( (const char *)in_od_user->user_guid, guid );
-	else if ( in_od_user->record_name != NULL ) /* get the uuid for user */
-		err = mbr_user_name_to_uuid( in_od_user->record_name, guid );
-	else {
-		in_od_user->acct_state |= sacl_not_member;
+	/* get guid uuid from user ID */
+	uuid_t guid;
+	int mbr_err = mbr_user_name_to_uuid( in_od_user->record_name, guid );
+	if ( mbr_err != 0 ) {
 		in_od_user->acct_state &= ~account_enabled;
 		in_od_user->acct_state &= ~imap_enabled;
 		in_od_user->acct_state &= ~pop_enabled;
 
-		auth_request_log_error(in_request, "od", "no user record name or user uuid for SACL checks");
-		DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, -1);
-		return;
-	}
-
-	/* bail fi we couldn't turn user into uuid settings form user record */
-	if ( err != 0 ) {
-		in_od_user->acct_state |= sacl_not_member;
-		in_od_user->acct_state &= ~account_enabled;
-		in_od_user->acct_state &= ~imap_enabled;
-		in_od_user->acct_state &= ~pop_enabled;
-
-		auth_request_log_error(in_request, "od", "mbr_user_name_to_uuid failed for user: %s (%s)", in_od_user->record_name, strerror(err));
+		auth_request_log_error(in_request, "od[sacl check]",
+			"mbr_user_name_to_uuid(%s, guid) failed: (%d) %s",
+			in_od_user->record_name, mbr_err, strerror(mbr_err));
 		DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, -2);
 		return;
 	}
 
 	/* check the mail SACL */
-	err = mbr_check_service_membership( guid, in_group, &result );
-
-	/* service ACL is enabled */
-	if ( err == 0 ) {
+	int is_member;
+	mbr_err = mbr_check_service_membership( guid, in_group, &is_member );
+	if ( !mbr_err ) {
 		mail_sacl_enabled = TRUE;
-
-		auth_request_log_debug(in_request, "od", "mail SACL is enabled; overriding settings in user record");
-
-		/* set SACL enabled flag */
-		in_od_user->acct_state |= sacl_enabled;
+		auth_request_log_info(in_request, "od[sacl check]", "mail SACL is enabled");
 
 		/* check membership */
-		if ( result != 0 ) {
-			/* we are a member, enable all mail services */
-			in_od_user->acct_state |= account_enabled;
-			in_od_user->acct_state |= imap_enabled;
-			in_od_user->acct_state |= pop_enabled;
+		if ( is_member ) {
+			/* user is member of mail SACL */
+			auth_request_log_info(in_request, "od[sacl check]",
+				"user: %s is member of mail SACL", in_od_user->record_name);
 
 			DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, 1);
 		} else {
-			/* we are not a member override any settings form user record */
-			in_od_user->acct_state |= sacl_not_member;
+			/* user is member of mail SACL */
+			auth_request_log_error(in_request, "od[sacl check]",
+				"user: %s is not a member of mail SACL", in_od_user->record_name);
+
+			/* disable mail access */
 			in_od_user->acct_state &= ~account_enabled;
 			in_od_user->acct_state &= ~imap_enabled;
 			in_od_user->acct_state &= ~pop_enabled;
 
 			DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, 0);
 		}
+	} else if ( mbr_err != ENOENT ) {
+			/* mbr check service membership failed */
+			auth_request_log_error(in_request, "od[sacl check]",
+				"mbr_check_service_membership(%s, mail) failed (%d) %s",
+				in_od_user->record_name, mbr_err, strerror(mbr_err));
+
+			/* disable mail access */
+			in_od_user->acct_state &= ~account_enabled;
+			in_od_user->acct_state &= ~imap_enabled;
+			in_od_user->acct_state &= ~pop_enabled;
+
+			DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, 2);
 	} else {
-		/* set SACL -not- enabled flag */
-		in_od_user->acct_state |= account_enabled;
-		in_od_user->acct_state |= imap_enabled;
-		in_od_user->acct_state |= pop_enabled;
-
+		/* mail SACL not enabled */
 		mail_sacl_enabled = FALSE;
-
-		auth_request_log_debug(in_request, "od", "mail SACL is not enabled; error=%d", err);
-
+		auth_request_log_debug(in_request, "od[sacl check]", "mail SACL is not enabled");
 		DTRACE_OD_SACL_FINISH(in_od_user, (char *) in_group, -3);
 	}
 } /* db_od_sacl_check */
@@ -1314,12 +1310,12 @@ void db_od_sacl_check ( struct auth_request *in_request, struct od_user *in_od_u
 struct od_user *db_od_user_lookup ( struct auth_request *in_request, struct db_od *in_od_info, const char *in_user_name, bool in_is_auth )
 {
 	char *key = NULL;
-	struct od_user	   *out_user		= NULL;
+	struct od_user *out_user = NULL;
 
 	/* TODO: use auth_cache */
 
 	/* does user exist in hash table */
-	auth_request_log_debug(in_request, "od", "cache lookup for user %s", in_user_name);
+	auth_request_log_debug(in_request, "od[usr lookup]", "cache lookup for user %s", in_user_name);
 	if (hash_table_lookup_full(in_od_info->users_table, in_user_name, (void **) &key, (void **) &out_user)) {
 		/* is the cached entry fresh or stale? */
 		time_t now = time(NULL);
@@ -1338,19 +1334,23 @@ struct od_user *db_od_user_lookup ( struct auth_request *in_request, struct db_o
 			if (in_is_auth || (in_request->mech_name && (strcmp(in_request->mech_name, "GSSAPI") == 0)))
 				db_od_sacl_check( in_request, out_user, "mail" );
 
-			auth_request_log_debug(in_request, "od", "found user %s in cache as %s", out_user->record_name, in_user_name );
+			auth_request_log_debug(in_request, "od[usr lookup]",
+				"found user %s in cache as %s", out_user->record_name, in_user_name );
 			return( out_user );
 		} else {
-			auth_request_log_debug(in_request, "od", "discarding cache entry for user %s as %s (age=%ld)", out_user->record_name, in_user_name, now - out_user->create_time );
+			auth_request_log_debug(in_request, "od[usr lookup]",
+				"discarding cache entry for user %s as %s (age=%ld)",
+				out_user->record_name, in_user_name, now - out_user->create_time );
 			hash_table_remove(in_od_info->users_table, in_user_name);
 			i_free(key);
 			db_od_user_unref(&out_user);
 		}
 	} else
-		auth_request_log_debug(in_request, "od", "user %s not cached (%d)", in_user_name, hash_table_count(in_od_info->users_table) );
+		auth_request_log_debug(in_request, "od[usr lookup]",
+			"user %s not cached (%d)", in_user_name, hash_table_count(in_od_info->users_table) );
 
 	/* lookup user in OD */
-	auth_request_log_debug(in_request, "od", "directory lookup for user %s", in_user_name );
+	auth_request_log_debug(in_request, "od[usr lookup]", "directory lookup for user %s", in_user_name );
 	out_user = in_od_info->use_getpwnam_ext ?
 		ds_get_user(in_request, in_od_info, in_user_name) :
 		od_get_user(in_request, in_od_info, in_user_name);
@@ -1408,7 +1408,6 @@ void push_notify_init ( struct od_user *in_user_info )
 	int notify_enabled = 0;
 	struct sockaddr_un sock_addr;
 	socklen_t sock_len=0;
-    msg_data_t message_data;
 	int soc;
 	int rc;
 	const char *socket_path = "/var/dovecot/push_notify";
@@ -1462,16 +1461,6 @@ void push_notify_init ( struct od_user *in_user_info )
 			  socket_path);
 		close(soc);
 		return;
-	}
-
-	/* set message data */
-	memset(&message_data, 0, sizeof(struct msg_data_s));
-	message_data.msg = 1; /* create node */
-	strlcpy( message_data.d1, in_user_info->record_name, sizeof(message_data.d1) );
-
-	rc = send(soc, (void *)&message_data, sizeof(message_data), 0);
-	if ( rc < 0 ) {
-		i_warning( "send to notify socket %s failed: %m", socket_path);
 	}
 
 	close(soc);

@@ -1,5 +1,11 @@
-.\" Copyright (c) 2008-2011 Apple Computer, Inc., all rights reserved.
-.\" Distributed only as part of Mac OS X Server
+.\" Copyright (c) 2008-2012 Apple Computer, Inc., all rights reserved.
+.\""
+.\"" IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+.\"" computers and is subject to the terms and conditions of the Apple Software
+.\"" License Agreement accompanying the package this file is a part of.
+.\"" You may not port this file to another platform without Apple's written consent.
+.\""
+.\"
 .TH set_user_mail_opts "8" "April 23, 2008" "Mac OS X Server"
 .SH NAME
 \fBset_user_mail_opts \fP- set user local email options
@@ -28,7 +34,7 @@
 .fi
 .SH DESCRIPTION
 .Nm
-OS X Server tool used to set individual user options for alternate mail store location and enabling/disabling auto-forwarding.  User settings are stored in /var/db/.mailusersettings.plist.  Deleting this file will reset all custom local user settings.
+OS X Server tool used to set individual user options for alternate mail store location and enabling/disabling auto-forwarding.  User settings are stored in /Library/Server/Mail/Data/db/.mailusersettings.plist.  Deleting this file will reset all custom local user settings.
 .SH OPTIONS
 .TP
 \fB-a --alt_store\fP \fBlist\fP
@@ -70,6 +76,6 @@ Remove auto-forward email setings for the user-id
 \fB-f --auto_fwd\fP \fBreset\fP \fB-u --user_guid\fP \fIuser_guid\fP
 Remove auto-forward email setings for the user-guid
 .SH FILES
-/var/db/.mailusersettings.plist
+i/Library/Server/Mail/Data/db/.mailusersettings.plist
 
-/etc/dovecot/partition_map.conf
+/Library/Server/Mail/Config/dovecot/partition_map.conf

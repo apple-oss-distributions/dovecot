@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "sieve-common.h"
@@ -34,7 +34,7 @@ const struct sieve_command_def tst_test_script_run = {
 	SCT_TEST, 
 	0, 0, FALSE, FALSE,
 	tst_test_script_run_registered, 
-	NULL, NULL,
+	NULL, NULL, NULL,
 	tst_test_script_run_generate, 
 	NULL 
 };

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -43,7 +43,8 @@ const struct sieve_command_def tst_address = {
 	2, 0, FALSE, FALSE,
 	tst_address_registered,
 	NULL, 
-	tst_address_validate, 
+	tst_address_validate,
+	NULL, 
 	tst_address_generate, 
 	NULL 
 };

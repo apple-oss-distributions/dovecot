@@ -54,6 +54,9 @@ HOWTOs / Examples / Tutorials
     * PostgreSQL, Postfix (Dovecot LDA and Dovecot SASL), Dovecot and vmm
       (command line tool) [http://vmm.localdomain.org/] (also available in
       German [http://de.vmm.localdomain.org/])
+ * SQLite
+    * Postfix+Dovecot with SQLite3 backend [http://rob0.nodns4.us/howto/] (also
+      implements system users)
 
 Others:
 
@@ -62,7 +65,8 @@ Others:
     * <With Exim> [HowTo.EximAndDovecotSASL.txt]
  * <Default Debian stable setup with Exim, modified to use Maildir>
    [HowTo.DebianStable.txt]
- * <IMAP and POP3 session proxying> [HowTo.ImapProxy.txt]
+ * <IMAPC: Configuring Dovecot as an IMAP Proxy in front of Exchange (Dovecot
+   >= 2.1)> [HowTo.ImapcProxy.txt]
  * <CRAM-MD5 authentication HOWTO> [HowTo.CRAM-MD5.txt]
  * <Rootless installation> [HowTo.Rootless.txt]
  * <POP-before-SMTP> [HowTo.PopBSMTPAndDovecot.txt]
@@ -77,5 +81,7 @@ Others:
  * <Postfix and Dovecot LMTP> [HowTo.PostfixDovecotLMTP.txt]
  * Apple Discussion Forum: Mail Services in Mac OS X Server v10.6 Snow Leopard
    [http://discussions.apple.com/forum.jspa?forumID=1350]
+ * <Postfix + Dspam + Dovecot via LTMP>
+   [HowTo.Virtual+Postfix+Dspam+Dovecot.txt]
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __TESTSUITE_MESSAGE_H
@@ -25,6 +25,8 @@ void testsuite_message_set_mail
 void testsuite_envelope_set_sender
 	(const struct sieve_runtime_env *renv, const char *value);
 void testsuite_envelope_set_recipient
+	(const struct sieve_runtime_env *renv, const char *value);
+void testsuite_envelope_set_orig_recipient
 	(const struct sieve_runtime_env *renv, const char *value);
 void testsuite_envelope_set_auth_user
 	(const struct sieve_runtime_env *renv, const char *value);

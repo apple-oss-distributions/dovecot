@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "sieve-common.h"
@@ -25,7 +25,8 @@ const struct sieve_command_def cmd_stop = {
 	SCT_COMMAND, 
 	0, 0, FALSE, FALSE,
 	NULL, NULL,  
-	cmd_stop_validate, 
+	cmd_stop_validate,
+	NULL, 
 	cmd_stop_generate, 
 	NULL 
 };

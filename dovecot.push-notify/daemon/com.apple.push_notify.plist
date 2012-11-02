@@ -14,5 +14,7 @@
 	<array>
 		<string>push_notify</string>
 	</array>
+	<key>PreventsSleep</key>
+	<true/>
 </dict>
 </plist>

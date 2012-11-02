@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_STORAGE_SCRIPT_H
@@ -10,9 +10,6 @@
 
 struct sieve_script *sieve_storage_script_init
 	(struct sieve_storage *storage, const char *scriptname);
-
-const char *sieve_storage_file_get_scriptname
-	(const struct sieve_storage *storage, const char *filename);
 
 int sieve_storage_get_active_scriptfile
 	(struct sieve_storage *storage, const char **file_r);

@@ -36,7 +36,7 @@ $PLISTBUDDY = "/usr/libexec/PlistBuddy";
 $TAR = "/usr/bin/tar";
 
 ################################## Consts ###################################
-$DOVECOT_CONF="/etc/dovecot/dovecot.conf";
+$DOVECOT_CONF="/Library/Server/Mail/Config/dovecot/dovecot.conf";
 $MIGRATION_LOG= "/Library/Logs/MailDataMigration.log";
 
 ################################## Globals ##################################

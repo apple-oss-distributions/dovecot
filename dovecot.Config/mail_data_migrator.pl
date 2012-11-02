@@ -1,7 +1,12 @@
 #!/usr/bin/perl
 #
-# Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+# Copyright (c) 2010-2012 Apple Inc. All rights reserved.
 # 
+# IMPORTANT NOTE: This file is licensed only for use on Apple-branded
+# computers and is subject to the terms and conditions of the Apple Software
+# License Agreement accompanying the package this file is a part of.
+# You may not port this file to another platform without Apple's written consent.
+#
 # Redistribution and use in source and binary forms, with or without  
 # modification, are permitted provided that the following conditions  
 # are met:
@@ -55,7 +60,7 @@ my $CVT_MAIL_DATA = "/usr/bin/cvt_mail_data";
 my $TAR = "/usr/bin/tar";
 
 ################################## Consts ###################################
-my $MIGRATION_LOG= "/Library/Logs/MailMigration.log";
+my $MIGRATION_LOG= "/Library/Logs/Migration/mailmigrator.log";
 
 ################################## Globals ##################################
 my @g_clean_partitions	= ();
@@ -309,9 +314,31 @@ sub do_data_migration()
 
 	$g_source_root = qx(${PLIST_BUDDY} -c 'Print :sourceRoot' ${g_migration_plist});
 	chomp(${g_source_root});
+	my $orig_source_root = $g_source_root;
 	my $tries = 0;
 	while (!path_exists("${g_source_root}")) {
 		print LOG_FILE "Missing or invalid source path: ${g_source_root}\n";
+
+		# maybe the volume was renamed; go look for it by UUID
+		my $source_uuid = qx(${PLIST_BUDDY} -c 'Print :sourceUUID' ${g_migration_plist});
+		chomp $source_uuid;
+		if ($source_uuid =~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/) {
+			my @infos = qx(/usr/sbin/diskutil info "$source_uuid");
+			my $vol;
+			for (@infos) {
+				# don't match "/"
+				if (/\s*Mount Point:\s*(\/.+)/) {
+					$vol = $1;
+					last;
+				}
+			}
+			if (defined($vol) && $vol ne $g_source_root && path_exists($vol)) {
+				print LOG_FILE "Found volume $vol for source UUID $source_uuid.  Trying that.\n";
+				$g_source_root = $vol;
+				next;
+			}
+		}
+
 		return if ++$tries >= 15;
 		sleep 60;
 	}
@@ -336,6 +363,10 @@ sub do_data_migration()
 
 	my $db_path = qx(${PLIST_BUDDY} -c 'Print :config_directory' ${g_migration_plist});
 	chomp($db_path);
+	if ($g_source_root ne $orig_source_root) {
+		# if source root changed name, so might the config dir
+		$db_path =~ s,^$orig_source_root/,$g_source_root/,;
+	}
 	if (!defined($db_path) || $db_path eq "") {
 		$g_db_path = "$g_source_root/private/var/imap";
 	} elsif ($g_source_root eq "/Previous System" && $db_path eq "/var/imap") {

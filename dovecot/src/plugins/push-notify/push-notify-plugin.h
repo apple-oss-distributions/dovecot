@@ -8,9 +8,7 @@ void push_notify_plugin_init(struct module *module);
 void push_notify_plugin_deinit(void);
 
 typedef struct msg_data_s {
-	unsigned long msg;
-	unsigned long pid;
-
+	char msg[16];
 	char d1[128];
 	char d2[512];
 	char d3[512];

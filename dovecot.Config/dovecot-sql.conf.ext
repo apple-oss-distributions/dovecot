@@ -61,7 +61,7 @@
 # Examples:
 #   connect = host=192.168.1.1 dbname=users
 #   connect = host=sql.example.com dbname=virtual user=virtual password=blarg
-#   connect = /etc/dovecot/authdb.sqlite
+#   connect = /Library/Server/Mail/Config/dovecot/authdb.sqlite
 #
 #connect =
 

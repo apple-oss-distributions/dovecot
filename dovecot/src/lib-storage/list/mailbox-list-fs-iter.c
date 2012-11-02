@@ -36,6 +36,7 @@ struct fs_list_iterate_context {
 	struct mailbox_list_iterate_context ctx;
 
 	ARRAY_DEFINE(valid_patterns, char *);
+	bool *patterns_used;
 	struct imap_match_glob *glob;
 	struct mailbox_tree_context *subs_tree;
 	struct mailbox_tree_iterate_context *tree_iter;
@@ -250,6 +251,7 @@ fs_list_iter_init(struct mailbox_list *_list, const char *const *patterns,
 		}
 	}
 	(void)array_append_space(&ctx->valid_patterns); /* NULL-terminate */
+	ctx->patterns_used = i_new(bool, array_count(&ctx->valid_patterns));
 
 	if (array_count(&ctx->valid_patterns) == 1) {
 		/* we've only invalid patterns (or INBOX) */
@@ -337,6 +339,7 @@ int fs_list_iter_deinit(struct mailbox_list_iterate_context *_ctx)
 		pool_unref(&ctx->info_pool);
 	if (ctx->glob != NULL)
 		imap_match_deinit(&ctx->glob);
+	i_free(ctx->patterns_used);
 	i_free(ctx);
 
 	return ret;
@@ -560,7 +563,9 @@ list_file(struct fs_list_iterate_context *ctx,
 	struct mail_namespace *ns = ctx->ctx.list->ns;
 	const char *fname = entry->fname;
 	const char *list_path, *root_dir;
+	char *const *valid_patterns;
 	enum imap_match_result match;
+	unsigned int i;
 	struct stat st;
 	int ret;
 
@@ -597,6 +602,17 @@ list_file(struct fs_list_iterate_context *ctx,
 				  entry->type, &st, &ctx->info.flags);
 	if (ret <= 0)
 		return ret;
+
+	/* ugly workaround to avoid duplicates with: a list "" (foo foo/bar)
+	   this is fixed properly in v2.1 listing code */
+	valid_patterns = array_idx(&ctx->valid_patterns, 0);
+	for (i = 0; valid_patterns[i] != NULL; i++) {
+		if (!ctx->patterns_used[i] &&
+		    strcmp(valid_patterns[i], list_path) == 0) {
+			ctx->patterns_used[i] = TRUE;
+			break;
+		}
+	}
 
 	if (ctx->dir->delayed_send) {
 		/* send the parent directory first, then handle this
@@ -725,12 +741,14 @@ fs_list_dir_next(struct fs_list_iterate_context *ctx)
 	}
 
 	for (;;) {
-		patterns = array_idx(&ctx->valid_patterns, 0);
-		if (patterns[dir->pattern_pos] == NULL)
-			return NULL;
+		do {
+			patterns = array_idx(&ctx->valid_patterns, 0);
+			if (patterns[dir->pattern_pos] == NULL)
+				return NULL;
 
-		patterns += dir->pattern_pos;
-		dir->pattern_pos++;
+			patterns += dir->pattern_pos;
+			dir->pattern_pos++;
+		} while (ctx->patterns_used[dir->pattern_pos-1]);
 
 		ret = pattern_get_path_pos(ctx, *patterns, dir->virtual_path,
 					   &pos);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -57,6 +57,7 @@ const struct sieve_command_def cmd_notify_old = {
 	cmd_notify_registered,
 	cmd_notify_pre_validate,
 	cmd_notify_validate,
+	NULL,
 	cmd_notify_generate, 
 	NULL,
 };

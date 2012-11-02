@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "sieve-common.h"
@@ -35,7 +35,8 @@ const struct sieve_command_def cmd_test_binary_load = {
 	1, 0, FALSE, FALSE,
 	NULL, 
 	NULL,
-	cmd_test_binary_validate, 
+	cmd_test_binary_validate,
+	NULL,
 	cmd_test_binary_generate, 
 	NULL 
 };
@@ -52,7 +53,8 @@ const struct sieve_command_def cmd_test_binary_save = {
 	1, 0, FALSE, FALSE,
 	NULL, 
 	NULL,
-	cmd_test_binary_validate, 
+	cmd_test_binary_validate,
+	NULL,
 	cmd_test_binary_generate, 
 	NULL 
 };

@@ -3,6 +3,8 @@
 
 struct imap_login_settings {
 	const char *imap_capability;
+	const char *imap_id_send;
+	const char *imap_id_log;
 #ifdef APPLE_OS_X_SERVER
 	const char *aps_topic;
 #endif

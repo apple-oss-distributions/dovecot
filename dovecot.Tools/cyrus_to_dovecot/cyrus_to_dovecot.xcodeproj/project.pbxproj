@@ -19,7 +19,7 @@
 		613B007D0A558E2300056B7F /* Copy Man Page */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
-			dstPath = /usr/share/man/man8/;
+			dstPath = "$(SERVER_INSTALL_PATH_PREFIX)/usr/share/man/man8/";
 			dstSubfolderSpec = 0;
 			files = (
 				61505594132AA372005F0C9C /* set_user_mail_opts.8 in Copy Man Page */,
@@ -39,6 +39,7 @@
 		61CAF80D0A0A5F0E00B7CD82 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = /System/Library/Frameworks/CoreFoundation.framework; sourceTree = "<absolute>"; };
 		61CAF8140A0A5F2B00B7CD82 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = /System/Library/Frameworks/Foundation.framework; sourceTree = "<absolute>"; };
 		61FD409D0A0A4FCA0098F485 /* cvt_mail_data */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = cvt_mail_data; sourceTree = BUILT_PRODUCTS_DIR; };
+		8486BEB31427C590008FED78 /* ServerBuildVariables.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = ServerBuildVariables.xcconfig; path = /AppleInternal/ServerTools/ServerBuildVariables.xcconfig; sourceTree = "<absolute>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,6 +59,7 @@
 		08FB7794FE84155DC02AAC07 /* cvt_mail_data */ = {
 			isa = PBXGroup;
 			children = (
+				8486BEB31427C590008FED78 /* ServerBuildVariables.xcconfig */,
 				61505593132AA36D005F0C9C /* set_user_mail_opts.8 */,
 				613AC9330A0A4E7C00100B43 /* Source */,
 				08FB7795FE84155DC02AAC07 /* Common */,
@@ -168,12 +170,14 @@
 /* Begin XCBuildConfiguration section */
 		61E39EFC0A50A796006A171E /* Development */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8486BEB31427C590008FED78 /* ServerBuildVariables.xcconfig */;
 			buildSettings = {
 			};
 			name = Development;
 		};
 		61E39EFE0A50A796006A171E /* Default */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8486BEB31427C590008FED78 /* ServerBuildVariables.xcconfig */;
 			buildSettings = {
 			};
 			name = Default;
@@ -185,7 +189,7 @@
 				GCC_ENABLE_FIX_AND_CONTINUE = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
-				INSTALL_PATH = /usr/bin;
+				INSTALL_PATH = "$(SERVER_INSTALL_PATH_PREFIX)/usr/bin";
 				PRODUCT_NAME = cvt_mail_data;
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -199,7 +203,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
-				INSTALL_PATH = /usr/bin;
+				INSTALL_PATH = "$(SERVER_INSTALL_PATH_PREFIX)/usr/bin";
 				PRODUCT_NAME = cvt_mail_data;
 				WARNING_CFLAGS = (
 					"-Wmost",

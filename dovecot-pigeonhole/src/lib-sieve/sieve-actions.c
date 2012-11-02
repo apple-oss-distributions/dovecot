@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file 
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file 
  */
 
 #include "lib.h"
@@ -256,7 +256,7 @@ void sieve_act_store_add_flags
 
 			const char *kw_error;
 
-			if ( trans->box != NULL ) {
+			if ( trans->box != NULL && trans->error_code == MAIL_ERROR_NONE ) {
 				if ( mailbox_keyword_is_valid(trans->box, *kw, &kw_error) )
 					array_append(&trans->keywords, kw, 1);
 				else {

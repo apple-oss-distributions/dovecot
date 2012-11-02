@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
  
 #include "lib.h"
@@ -73,7 +73,8 @@ bool ext_variables_code_dump
 	struct ext_variables_dump_context *dctx;
 	struct sieve_variable_scope *local_scope;
 
-	local_scope = sieve_variable_scope_binary_dump(NULL, denv, address);
+	local_scope = sieve_variable_scope_binary_dump
+		(ext->svinst, NULL, denv, address);
 		
 	dctx = ext_variables_dump_get_context(ext, denv);
 	dctx->local_scope = local_scope;

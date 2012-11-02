@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "sieve-common.h"
@@ -33,7 +33,8 @@ const struct sieve_command_def tst_test_multiscript = {
 	SCT_TEST, 
 	1, 0, FALSE, FALSE,
 	NULL, NULL,
-	tst_test_multiscript_validate, 
+	tst_test_multiscript_validate,
+	NULL, 
 	tst_test_multiscript_generate, 
 	NULL 
 };

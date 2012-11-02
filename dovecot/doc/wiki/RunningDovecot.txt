@@ -90,7 +90,9 @@ multiple instances of Dovecot, you must:
      1. Change 'base_dir' to the new run directory
      2. Change services' inet_listener port numbers to new, unused values (in
         '10-master.conf').
-     3. If you're using authentication sockets (for SMTP AUTH or deliver),
+     3. Optionally change 'instance_name' to show a different "dovecot/" prefix
+        in ps output. (v2.0.18+)
+     4. If you're using authentication sockets (for SMTP AUTH or deliver),
         you'll need to change them as well.'auth_socket_path' specifies the
         socket path for deliver.
          * Alternatively if all the instances have identical authentication
@@ -98,6 +100,11 @@ multiple instances of Dovecot, you must:
            auth sockets and have the other instances use them.
  2. Invoke 'dovecot' (and 'dovecot-lda') with the '-c' parameter and the
     modified configuration file, e.g.:'dovecot -c /usr/local/etc/dovecot2.conf'
+
+ 3. In order to tell the logs apart, you can set different log facilities for
+    the instances, e.g.'syslog_facility=local6', then configure syslogd to
+    write local6 into "dovecot-otherinstance.log". Alternatively specify the
+    log paths directly in 'log_path' and related settings.
 
 Rotating Log Files
 ------------------
@@ -130,4 +137,4 @@ If it simply quits without giving any error, then it wrote the error to a log
 file and you just didn't find it. Try specifying the log file manually and make
 sure you're really looking at the correct file.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

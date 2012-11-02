@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
  
 #include "lib.h"
@@ -39,7 +39,8 @@ const struct sieve_command_def tst_hasflag = {
 	0, FALSE, FALSE, 
 	tst_hasflag_registered, 
 	NULL,
-	tst_hasflag_validate, 
+	tst_hasflag_validate,
+	NULL, 
 	tst_hasflag_generate, 
 	NULL 
 };

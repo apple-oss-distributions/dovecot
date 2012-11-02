@@ -15,6 +15,8 @@
 
 #include <stdlib.h>
 
+#include <SystemConfiguration/SystemConfiguration.h>
+
 #define MAX_REALM_LEN 64
 
 /* Linear whitespace */
@@ -46,6 +48,7 @@ struct digest_auth_request {
 	char *nonce_count;
 	char *qop_value;
 	char *digest_uri; /* may be NULL */
+	char *authzid; /* may be NULL, authorization ID */
 	unsigned char response[32];
 	unsigned long maxbuf;
 	unsigned int nonce_found:1;
@@ -53,6 +56,31 @@ struct digest_auth_request {
 	/* final reply: */
 	char *rspauth;
 };
+
+/* APPLE */
+/* return AD realm if it exists */
+const char *get_ad_realm ( struct auth_request *auth_request )
+{
+	const char *out_realm = NULL;
+
+	SCDynamicStoreRef store = SCDynamicStoreCreate(kCFAllocatorDefault, CFSTR("dovecot.digest.auth"), NULL, NULL);
+	if ( store ) {
+		CFDictionaryRef dict = SCDynamicStoreCopyValue(store, CFSTR("com.apple.opendirectoryd.ActiveDirectory"));
+		if (dict) {
+			CFStringRef domain = CFDictionaryGetValue(dict, CFSTR("DomainNameFlat"));
+			if (domain) {
+				const char *ad_realm = CFStringGetCStringPtr(domain, kCFStringEncodingUTF8);
+				if (ad_realm) {
+					auth_request_log_info(auth_request, "digest-md5", "ad realm: %s", ad_realm);
+					out_realm = t_strdup(ad_realm);
+				}
+			}
+			CFRelease(dict);
+		}
+		CFRelease(store);
+	}
+	return( out_realm );
+}
 
 static string_t *get_digest_challenge(struct digest_auth_request *request)
 {
@@ -89,8 +117,15 @@ static string_t *get_digest_challenge(struct digest_auth_request *request)
 		   to destination host name */
 		str_append(str, "realm=\"\",");
 	} else {
+		/* APPLE */
+		/* use AD realm if set otherwise default to config value(s) */
+		const char * ad_realm = get_ad_realm(&request->auth_request);
+		if ( ad_realm ) {
+			str_printfa(str, "realm=\"%s\",", ad_realm);
+		} else {
 		for (tmp = set->realms_arr; *tmp != NULL; tmp++)
 			str_printfa(str, "realm=\"%s\",", *tmp);
+		}
 	}
 
 	str_printfa(str, "nonce=\"%s\",", request->nonce);
@@ -112,6 +147,18 @@ static string_t *get_digest_challenge(struct digest_auth_request *request)
 	return str;
 }
 
+#ifdef APPLE_OS_X_SERVER
+#include "db-od.h"
+
+static bool verify_credentials(struct digest_auth_request *request ATTR_UNUSED,
+			       const unsigned char *credentials, size_t size)
+{
+	if ( (size != 0) && (strcmp( (const char *)credentials, kDIGEST_MD5_AuthSuccess ) == 0) )
+		return( TRUE );
+
+	return( FALSE );
+}
+#else
 static bool verify_credentials(struct digest_auth_request *request,
 			       const unsigned char *credentials, size_t size)
 {
@@ -133,7 +180,12 @@ static bool verify_credentials(struct digest_auth_request *request,
 		     { nonce-value, ":" nc-value, ":",
 		       cnonce-value, ":", qop-value, ":", HEX(H(A2)) }))
 
-	   and since we don't support authzid yet:
+	   and if authzid is not empty:
+
+	   A1 = { H( { username-value, ":", realm-value, ":", passwd } ),
+		":", nonce-value, ":", cnonce-value, ":", authzid }
+
+	   else:
 
 	   A1 = { H( { username-value, ":", realm-value, ":", passwd } ),
 		":", nonce-value, ":", cnonce-value }
@@ -155,6 +207,10 @@ static bool verify_credentials(struct digest_auth_request *request,
 	md5_update(&ctx, request->nonce, strlen(request->nonce));
 	md5_update(&ctx, ":", 1);
 	md5_update(&ctx, request->cnonce, strlen(request->cnonce));
+	if (request->authzid != NULL) {
+		md5_update(&ctx, ":", 1);
+		md5_update(&ctx, request->authzid, strlen(request->authzid));
+	}
 	md5_final(&ctx, digest);
 	a1_hex = binary_to_hex(digest, 16);
 
@@ -215,6 +271,7 @@ static bool verify_credentials(struct digest_auth_request *request,
 
 	return TRUE;
 }
+#endif
 
 static bool parse_next(char **data, char **key, char **value)
 {
@@ -324,7 +381,7 @@ static bool auth_handle_response(struct digest_auth_request *request,
 		return TRUE;
 	}
 
-	if (strcmp(key, "nonce-count") == 0) {
+	if (strcmp(key, "nc") == 0) {
 		if (request->nonce_count != NULL) {
 			*error = "nonce-count must not exist more than once";
 			return FALSE;
@@ -417,8 +474,18 @@ static bool auth_handle_response(struct digest_auth_request *request,
 	}
 
 	if (strcmp(key, "authzid") == 0) {
-		/* not supported, abort */
-		return FALSE;
+		if (request->authzid != NULL) {
+		    *error = "authzid must not exist more than once";
+		    return FALSE;
+		}
+
+		if (*value == '\0') {
+		    *error = "empty authzid";
+		    return FALSE;
+		}
+
+		request->authzid = p_strdup(request->pool, value);
+		return TRUE;
 	}
 
 	/* unknown key, ignore */
@@ -544,7 +611,11 @@ mech_digest_md5_auth_continue(struct auth_request *auth_request,
 			username = request->username;
 		}
 
-		if (auth_request_set_username(auth_request, username, &error)) {
+		if (auth_request_set_username(auth_request, username, &error) &&
+				(request->authzid == NULL ||
+				 auth_request_set_login_username(auth_request,
+								 request->authzid,
+								 &error))) {
 			auth_request_lookup_credentials(auth_request,
 					"DIGEST-MD5", credentials_callback);
 			return;

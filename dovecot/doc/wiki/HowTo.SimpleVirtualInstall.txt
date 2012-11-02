@@ -2,7 +2,7 @@ Simple Virtual User Installation
 ================================
 
  * Virtual users configured in '/etc/dovecot/passwd' file
- * Assuming an unmodified Dovecot v1.x installation
+ * Assuming an unmodified Dovecot v2.x installation
  * Assuming you're not using NFS. See <NFS.txt> for problems related to it.
 
 Contents
@@ -29,9 +29,9 @@ Contents
 System configuration
 ====================
 
- * Create *dovecot* user and *dovecot* group if they don't exist yet. This is
-   an unprivileged user for Dovecot's internal use. It doesn't need a home
-   directory or a shell.
+ * Create *dovecot* and *dovenull* users and groups if they don't exist yet.
+   These are unprivileged users for Dovecot's internal use. They doen't need a
+   home directory or a shell.
  * Create *vmail* user and *vmail* group. This is the user/group that's used to
    access the mails.
  * Create '/home/vmail' directory owned by vmail:vmail. The mails for all users
@@ -43,14 +43,13 @@ dovecot.conf
 ============
 
 Below is a fully working 'dovecot.conf' file. You can use it directly, but it
-might be better to instead use 'dovecot-example.conf' as the base and make the
-same modifications to it.
+might be better to instead use the included example-config as the base and make
+the same modifications to it.
 
 If you want to configure SSL, see <SSL.txt>.
 
 ---%<-------------------------------------------------------------------------
-# Remove pop3 things if you don't want them
-protocols = imap imaps pop3 pop3s
+protocols = imap pop3
 
 # It's nice to have separate log files for Dovecot. You could do this
 # by changing syslog configuration also, but this is easier.
@@ -58,26 +57,25 @@ log_path = /var/log/dovecot.log
 info_log_path = /var/log/dovecot-info.log
 
 # Disable SSL for now.
-ssl = no # v1.2+, for older versions use: ssl_disable = yes
+ssl = no
 disable_plaintext_auth = no
 
 # We're using Maildir format
 mail_location = maildir:~/Maildir
 
 # If you're using POP3, you'll need this:
-pop3_uidl_format = %08Xu%08Xv
+pop3_uidl_format = %g
 
 # Authentication configuration:
 auth_verbose = yes
-
-auth default {
-  mechanisms = plain
-  passdb passwd-file {
-    args = /etc/dovecot/passwd
-  }
-  userdb static {
-    args = uid=vmail gid=vmail home=/home/vmail/%u
-  }
+auth_mechanisms = plain
+passdb {
+  driver = passwd-file
+  args = /etc/dovecot/passwd
+}
+userdb {
+  driver = static
+  args = uid=vmail gid=vmail home=/home/vmail/%u
 }
 ---%<-------------------------------------------------------------------------
 
@@ -109,11 +107,11 @@ Passwords
 The passwords in the example passwd file are listed using plaintext scheme.
 It's possible to use other <password schemes>
 [Authentication.PasswordSchemes.txt] as well. For example SSHA would be a
-pretty strong scheme. You can create them using 'dovecotpw' utility, for
+pretty strong scheme. You can create them using 'doveadm pw' utility, for
 example:
 
 ---%<-------------------------------------------------------------------------
-dovecotpw -s ssha
+doveadm pw -s ssha
 Enter new password: foo
 Retype new password: foo
 {SSHA}DNODS3ZrOq1bu2MasNk79LxHhlU9iI03
@@ -164,27 +162,24 @@ Quota
 If you need to have quota, add this to 'dovecot.conf':
 
 ---%<-------------------------------------------------------------------------
+mail_plugins = $mail_plugins quota
 protocol imap {
-  mail_plugins = quota imap_quota
+  mail_plugins = $mail_plugins imap_quota
 }
-protocol pop3 {
-  mail_plugins = quota
-}
-protocol lda {
-  # .. other required lda settings ..
-  mail_plugins = quota
+plugin {
+  quota = maildir
 }
 ---%<-------------------------------------------------------------------------
 
-Then configure quota by adding 'userdb_quota' <extra field>
+Then configure quota by adding 'userdb_quota_rule' <extra field>
 [UserDatabase.ExtraFields.txt] to '/etc/dovecot/passwd', for example:
 
 ---%<-------------------------------------------------------------------------
-joe:{PLAIN}pass::::::userdb_quota=maildir:storage=102400
-jane:{PLAIN}pass::::::userdb_quota=maildir:storage=204800
+joe:{PLAIN}pass::::::userdb_quota_rule=*:storage=100M
+jane:{PLAIN}pass::::::userdb_quota_rule=*:storage=200M
 ---%<-------------------------------------------------------------------------
 
 Joe has now 100MB quota and Jane has 200MB quota. See <Quota.txt> for more
 information about quota settings.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

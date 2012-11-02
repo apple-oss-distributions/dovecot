@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -48,7 +48,8 @@ const struct sieve_command_def date_test = {
 	3, 0, FALSE, FALSE,
 	tst_date_registered,
 	NULL, 
-	tst_date_validate, 
+	tst_date_validate,
+	NULL, 
 	tst_date_generate, 
 	NULL 
 };
@@ -71,7 +72,8 @@ const struct sieve_command_def currentdate_test = {
 	2, 0, FALSE, FALSE,
 	tst_currentdate_registered,
 	NULL, 
-	tst_date_validate, 
+	tst_date_validate,
+	NULL,
 	tst_date_generate, 
 	NULL 
 };

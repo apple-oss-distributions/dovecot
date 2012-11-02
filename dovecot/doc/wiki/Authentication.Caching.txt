@@ -21,10 +21,10 @@ Settings
 
 The settings related to the authentication cache are:
 
- * 'auth_cache_size': Authentication cache size in kilobytes, 0 disables
-   caching (default). A typical passdb cache entry is around 50 bytes and a
-   typical userdb cache entry is around 100-200 bytes, depending on the amount
-   of information your user and password database lookups return.
+ * 'auth_cache_size': Authentication cache size, 0 disables caching (default).
+   A typical passdb cache entry is around 50 bytes and a typical userdb cache
+   entry is around 100-200 bytes, depending on the amount of information your
+   user and password database lookups return.
  * 'auth_cache_ttl': Time to live in seconds for cache entries. A cache entry
    is no longer used (except for internal failures) if it was created more than
    this many seconds ago. Entries are removed from the cache only when the
@@ -99,4 +99,4 @@ Early change scenario:
     previous authentication was unsuccessful, so Dovecot doesn't bother doing
     another backend passdb lookup (until cache TTL expires). The login fails.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

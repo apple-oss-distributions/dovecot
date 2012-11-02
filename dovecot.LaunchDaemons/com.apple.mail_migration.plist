@@ -7,13 +7,15 @@
         <key>Label</key>
         <string>com.apple.mail_migration</string>
         <key>Program</key>
-        <string>/usr/libexec/dovecot/mail_data_migrator.pl</string>
+        <string>/Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/mail_data_migrator.pl</string>
         <key>ProgramArguments</key>
         <array>
-                <string>mail_data_migrator.pl</string>
+                <string>/Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/mail_data_migrator.pl</string>
         </array>
         <key>RunAtLoad</key>
         <true/>
+	<key>PreventsSleep</key>
+	<true/>
 </dict>
 </plist>
 ~                                                                                                                                                                                                                           

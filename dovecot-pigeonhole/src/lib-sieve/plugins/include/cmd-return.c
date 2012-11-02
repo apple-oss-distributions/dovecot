@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -25,7 +25,7 @@ const struct sieve_command_def cmd_return = {
 	"return", 
 	SCT_COMMAND, 
 	0, 0, FALSE, FALSE,
-	NULL, NULL, NULL, 
+	NULL, NULL, NULL, NULL,
 	cmd_return_generate, 
 	NULL
 };

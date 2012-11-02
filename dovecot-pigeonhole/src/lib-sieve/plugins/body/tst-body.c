@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
  
 #include "sieve-extensions.h"
@@ -40,7 +40,8 @@ const struct sieve_command_def body_test = {
 	1, 0, FALSE, FALSE,
 	tst_body_registered, 
 	NULL,
-	tst_body_validate, 
+	tst_body_validate,
+	NULL, 
 	tst_body_generate, 
 	NULL 
 };

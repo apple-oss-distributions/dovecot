@@ -1,11 +1,15 @@
 Squat Full Text Search Indexing
 ===============================
 
-Squat indexes can be used to optimize standard IMAP SEARCH TEXT and BODY
-commands. The main advantage of Squat indexes is that they allow substring
-matching, while pretty much all other FTS indexes support only matching from
-the beginning of words. IMAP searches require substring matching, so Squat
-indexes are the only choice to optimize them in a standard way.
+The main difference between Squat indexes and the others is that Squat provides
+support for substring searches, while pretty much all other FTS indexes support
+only matching from the beginning of words. By strictly reading the IMAP RFC it
+requires substring matching, so to optimize regular TEXT and BODY searches you
+must use Squat with Dovecot v2.0. The other indexes are used only for Dovecot's
+non-standard X-TEXT-FAST and X-BODY-FAST searches. However, almost all other
+commonly used IMAP servers no longer care about this requirement, so Dovecot
+v2.1 also no longer makes this distinction. In Dovecot v2.1 TEXT and BODY
+searches are done using any indexes available.
 
  * The Squat indexes are currently updated only when SEARCH TEXT or SEARCH BODY
    command is used. It's planned that in future they could be updated
@@ -97,4 +101,23 @@ plugin {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2011-05-11 04:42)
+Using both Squat and non-Squat (v2.0-only)
+------------------------------------------
+
+It's possible to use both Squat and non-Squat indices at the same time, so that
+TEXT/BODY are looked up from Squat indexes and X-TEXT-FAST/X-BODY-FAST are
+looked up from the non-Squat index. This of course means that indices will have
+to be built and updated for both, so it might not be that good idea.
+
+---%<-------------------------------------------------------------------------
+protocol imap {
+..
+  mail_plugins = fts fts_squat fts_solr
+}
+...
+plugin {
+  fts = squat solr
+}
+---%<-------------------------------------------------------------------------
+
+(This file was created from the wiki on 2012-03-15 16:40)

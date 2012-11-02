@@ -28,9 +28,9 @@ the problem is. For non-PAM setups it should contain all the information needed
 to solve the problem. If it's trying to use a wrong password scheme, you can
 change that. See <Authentication.PasswordSchemes.txt>.
 
-If the client isn't even attempting to log in, you most likely have
-'disable_plaintext_auth=yes' (default) and the client isn't configured to use
-SSL/TLS (or you've also set 'ssl=no').
+'Aborted login (no auth attempts)' means that the client isn't even attempting
+to log in. Most likely you have 'disable_plaintext_auth=yes' (default) and the
+client isn't configured to use SSL/TLS (or you've also set 'ssl=no').
 
 If you're using <PAM> [PasswordDatabase.PAM.txt]:
 
@@ -53,4 +53,4 @@ It's not finding my emails
 'auth_debug=yes' may be helpful in debugging. See <MailLocation.txt> for how to
 configure where the mails are looked up from.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:41)

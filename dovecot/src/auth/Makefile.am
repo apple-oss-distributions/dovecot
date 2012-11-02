@@ -34,6 +34,7 @@ auth_LDFLAGS = -export-dynamic \
 	-F/System/Library/PrivateFrameworks \
 	-framework CoreDaemon \
 	-framework CoreFoundation \
+	-framework SystemConfiguration \
 	-framework OpenDirectory
 
 libpassword_a_SOURCES = \
@@ -113,6 +114,7 @@ auth_SOURCES = \
 	userdb-static.c \
 	userdb-vpopmail.c \
 	userdb-sql.c \
+	DSlibinfoMIGUser.c \
 	$(ldap_sources)
 
 headers = \

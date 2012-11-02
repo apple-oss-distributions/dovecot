@@ -96,7 +96,7 @@ static void od_lookup ( struct auth_request *in_request, userdb_callback_t *call
 	if ( in_request->mech_name && (strcmp(in_request->mech_name, "GSSAPI") == 0) ) {
 		if ( is_acct_enabled( in_request, user_info->acct_state, user_info->record_name) == FALSE) {
 			db_od_user_unref(&user_info);
-			callback( PASSDB_RESULT_USER_DISABLED, in_request );
+			callback( USERDB_RESULT_USER_UNKNOWN, in_request );
 			return;
 		}
 	}

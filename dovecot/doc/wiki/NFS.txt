@@ -9,18 +9,31 @@ NFS is commonly used in one of these ways:
  3. Dovecot is run in multiple computers, each user is assigned a specific
     computer which is used whenever possible.
 
-You should try to avoid the 2nd setup, see below. You can use <director>
-[Director.txt] service to easily implement the 3rd setup.
+*The only way to reliably implement the 2nd setup is with the <director>
+[Director.txt] service.*
 
 Dovecot configuration
 ---------------------
 
-Multi-server setup that tries to flush NFS caches:
+Single-server setup or <director> [Director.txt] setup:
 
 ---%<-------------------------------------------------------------------------
 mmap_disable = yes
 dotlock_use_excl = no # only needed with NFSv2, NFSv3+ supports O_EXCL and it's
 faster
+mail_fsync = always
+mail_nfs_storage = no
+mail_nfs_index = no
+---%<-------------------------------------------------------------------------
+
+Multi-server setup that *tries* to flush NFS caches (increases NFS operations,
+and *isn't fully reliable*):
+
+---%<-------------------------------------------------------------------------
+mmap_disable = yes
+dotlock_use_excl = no # only needed with NFSv2, NFSv3+ supports O_EXCL and it's
+faster
+mail_fsync = always
 mail_nfs_storage = yes
 mail_nfs_index = yes
 ---%<-------------------------------------------------------------------------
@@ -30,6 +43,7 @@ High performance NFS setup with indexes on local disk (see below for benefits):
 ---%<-------------------------------------------------------------------------
 mmap_disable = no
 dotlock_use_excl = yes # You most likely have NFSv3
+mail_fsync = always
 mail_nfs_storage = yes
 mail_nfs_index = no
 ---%<-------------------------------------------------------------------------
@@ -147,4 +161,4 @@ Misc notes
  * To learn more about NFS caching and other issues, mostly from a programmer's
    point of view, see NFS Coding HOWTO [http://www.unixcoding.org/NFSCoding]
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

@@ -83,6 +83,8 @@ static void mail_index_sync_add_keyword_update(struct mail_index_sync_ctx *ctx)
 	uint32_t uid;
 	size_t uidset_offset, i, size;
 
+	i_assert(u->name_size > 0);
+
 	uidset_offset = sizeof(*u) + u->name_size;
 	if ((uidset_offset % 4) != 0)
 		uidset_offset += 4 - (uidset_offset % 4);
@@ -315,15 +317,17 @@ mail_index_sync_set_log_view(struct mail_index_view *view,
 	ret = mail_transaction_log_view_set(view->log_view,
                                             start_file_seq, start_file_offset,
 					    log_seq, log_offset, &reset);
-	if (ret <= 0) {
+	if (ret < 0)
+		return -1;
+	if (ret == 0) {
 		/* either corrupted or the file was deleted for
 		   some reason. either way, we can't go forward */
 		mail_index_set_error(view->index,
 			"Unexpected transaction log desync with index %s",
 			view->index->filepath);
-		return -1;
+		return 0;
 	}
-	return 0;
+	return 1;
 }
 
 int mail_index_sync_begin(struct mail_index *index,
@@ -461,8 +465,13 @@ int mail_index_sync_begin_to(struct mail_index *index,
 
 	/* we wish to see all the changes from last mailbox sync position to
 	   the end of the transaction log */
-	if (mail_index_sync_set_log_view(ctx->view, hdr->log_file_seq,
-					 hdr->log_file_tail_offset) < 0) {
+	ret = mail_index_sync_set_log_view(ctx->view, hdr->log_file_seq,
+					   hdr->log_file_tail_offset);
+	if (ret < 0) {
+                mail_index_sync_rollback(&ctx);
+		return -1;
+	}
+	if (ret == 0) {
 		/* if a log file is missing, there's nothing we can do except
 		   to skip over it. fix the problem with fsck and try again. */
 		mail_index_fsck_locked(index);

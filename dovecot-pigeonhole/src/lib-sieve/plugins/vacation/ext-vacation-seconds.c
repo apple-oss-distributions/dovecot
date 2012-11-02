@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension vacation-seconds
@@ -45,7 +45,7 @@ bool ext_vacation_seconds_load
 	if ( *context == NULL ) {	
 		/* Make sure vacation extension is registered */
 		*context = (void *)	
-			sieve_extension_require(ext->svinst, &vacation_extension);
+			sieve_extension_require(ext->svinst, &vacation_extension, TRUE);
 	}
 
 	return TRUE;

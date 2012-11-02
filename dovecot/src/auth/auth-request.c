@@ -216,9 +216,58 @@ void auth_request_export(struct auth_request *request,
 		auth_stream_reply_add(reply, "mech", request->mech_name);
 }
 
+bool auth_request_import_info(struct auth_request *request,
+			      const char *key, const char *value)
+{
+	/* authentication and user lookups may set these */
+	if (strcmp(key, "service") == 0)
+		request->service = p_strdup(request->pool, value);
+	else if (strcmp(key, "lip") == 0)
+		net_addr2ip(value, &request->local_ip);
+	else if (strcmp(key, "rip") == 0)
+		net_addr2ip(value, &request->remote_ip);
+	else if (strcmp(key, "lport") == 0)
+		request->local_port = atoi(value);
+	else if (strcmp(key, "rport") == 0)
+		request->remote_port = atoi(value);
+	else
+		return FALSE;
+	return TRUE;
+}
+
+bool auth_request_import_auth(struct auth_request *request,
+			      const char *key, const char *value)
+{
+	if (auth_request_import_info(request, key, value))
+		return TRUE;
+
+	/* auth client may set these */
+	if (strcmp(key, "secured") == 0)
+		request->secured = TRUE;
+	else if (strcmp(key, "no-penalty") == 0)
+		request->no_penalty = TRUE;
+	else if (strcmp(key, "valid-client-cert") == 0)
+		request->valid_client_cert = TRUE;
+	else if (strcmp(key, "cert_username") == 0) {
+		if (request->set->ssl_username_from_cert) {
+			/* get username from SSL certificate. it overrides
+			   the username given by the auth mechanism. */
+			request->user = p_strdup(request->pool, value);
+			request->cert_username = TRUE;
+		}
+	} else {
+		return FALSE;
+	}
+	return TRUE;
+}
+
 bool auth_request_import(struct auth_request *request,
 			 const char *key, const char *value)
 {
+	if (auth_request_import_auth(request, key, value))
+		return TRUE;
+
+	/* for communication between auth master and worker processes */
 	if (strcmp(key, "user") == 0)
 		request->user = p_strdup(request->pool, value);
 	else if (strcmp(key, "master_user") == 0)
@@ -234,31 +283,8 @@ bool auth_request_import(struct auth_request *request,
 		request->original_username = p_strdup(request->pool, value);
 	else if (strcmp(key, "requested_login_user") == 0)
 		request->requested_login_user = p_strdup(request->pool, value);
-	else if (strcmp(key, "cert_username") == 0) {
-		if (request->set->ssl_username_from_cert) {
-			/* get username from SSL certificate. it overrides
-			   the username given by the auth mechanism. */
-			request->user = p_strdup(request->pool, value);
-			request->cert_username = TRUE;
-		}
-	} else if (strcmp(key, "service") == 0)
-		request->service = p_strdup(request->pool, value);
-	else if (strcmp(key, "lip") == 0)
-		net_addr2ip(value, &request->local_ip);
-	else if (strcmp(key, "rip") == 0)
-		net_addr2ip(value, &request->remote_ip);
-	else if (strcmp(key, "lport") == 0)
-		request->local_port = atoi(value);
-	else if (strcmp(key, "rport") == 0)
-		request->remote_port = atoi(value);
-	else if (strcmp(key, "secured") == 0)
-		request->secured = TRUE;
 	else if (strcmp(key, "nologin") == 0)
 		request->no_login = TRUE;
-	else if (strcmp(key, "valid-client-cert") == 0)
-		request->valid_client_cert = TRUE;
-	else if (strcmp(key, "no-penalty") == 0)
-		request->no_penalty = TRUE;
 	else if (strcmp(key, "successful") == 0)
 		request->successful = TRUE;
 	else if (strcmp(key, "skip_password_check") == 0) {
@@ -1520,6 +1546,7 @@ int auth_request_password_verify(struct auth_request *request,
 {
 	const unsigned char *raw_password;
 	size_t raw_password_size;
+	const char *error;
 	int ret;
 
 	if (request->skip_password_check) {
@@ -1541,12 +1568,12 @@ int auth_request_password_verify(struct auth_request *request,
 	}
 
 	ret = password_decode(crypted_password, scheme,
-			      &raw_password, &raw_password_size);
+			      &raw_password, &raw_password_size, &error);
 	if (ret <= 0) {
 		if (ret < 0) {
 			auth_request_log_error(request, subsystem,
-				"Password in passdb is not in expected scheme %s",
-				scheme);
+				"Password data is not valid for scheme %s: %s",
+				scheme, error);
 		} else {
 			auth_request_log_error(request, subsystem,
 					       "Unknown scheme %s", scheme);

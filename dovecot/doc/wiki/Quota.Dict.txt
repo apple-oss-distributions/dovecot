@@ -25,6 +25,9 @@ The supported options are:
  * ignoreunlimited: If user has unlimited quota, don't track it.
  * ns=<prefix>: This quota root is tracked only for the given namespace.
 
+NOTE: The dictionary stores only the current quota usage. The quota limits are
+still configured in userdb the same way as with other quota backends.
+
 Examples
 --------
 
@@ -152,4 +155,4 @@ dict {
 
 See <Dict.txt> for more information, especially about permission issues.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

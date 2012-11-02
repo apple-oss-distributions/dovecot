@@ -1,6 +1,23 @@
 Pigeonhole Installation
 =======================
 
+Contents
+
+
+ 1. Pigeonhole Installation
+
+     1. Getting the sources
+
+     2. Compiling
+
+     3. Prebuilt Binaries
+
+         1. ArchLinux
+
+         2. Debian
+
+         3. OpenBSD
+
 Getting the sources
 -------------------
 
@@ -52,4 +69,42 @@ sudo make install
 version, because otherwise the Sieve interpreter plugin will fail to load with
 a version error.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+Prebuilt Binaries
+-----------------
+
+ArchLinux
+---------
+
+Pidgeonhole is available in the community repositories, and can be installed by
+running:
+
+---%<-------------------------------------------------------------------------
+pacman -S  pigeonhole
+---%<-------------------------------------------------------------------------
+
+Debian
+------
+
+Starting with Debian Wheezy, Pigeonhole binaries are distributed in separate
+packages:'dovecot-sieve' for the <Sieve interpreter> [Pigeonhole.Sieve.txt] and
+'dovecot-managesieved' for the <ManageSieve service>
+[Pigeonhole.ManageSieve.txt]. You can install these by running:
+
+---%<-------------------------------------------------------------------------
+apt-get install dovecot-sieve dovecot-managesieved
+---%<-------------------------------------------------------------------------
+
+Older Debian releases have Sieve and ManageSieve support included in the main
+'dovecot-common' package, meaning that this is always available for those
+releases once Dovecot is installed.
+
+OpenBSD
+-------
+
+Pidgeonhole can be installed from packages by running:
+
+---%<-------------------------------------------------------------------------
+pkg_add dovecot-pigeonhole
+---%<-------------------------------------------------------------------------
+
+(This file was created from the wiki on 2012-03-15 16:40)

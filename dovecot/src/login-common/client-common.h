@@ -7,10 +7,11 @@
 
 /* max. size of input buffer. this means:
 
-   IMAP: Max. length of a single parameter
+   IMAP: Max. length of a single parameter. SASL initial response can be
+         long with GSSAPI.
    POP3: Max. length of a command line (spec says 512 would be enough)
 */
-#define LOGIN_MAX_INBUF_SIZE 1024
+#define LOGIN_MAX_INBUF_SIZE 4096
 /* max. size of output buffer. if it gets full, the client is disconnected.
    SASL authentication gives the largest output. */
 #define LOGIN_MAX_OUTBUF_SIZE 4096
@@ -118,6 +119,7 @@ struct client {
 	unsigned int tls:1;
 	unsigned int secured:1;
 	unsigned int trusted:1;
+	unsigned int ssl_servername_settings_read:1;
 	unsigned int authenticating:1;
 	unsigned int auth_tried_disabled_plaintext:1;
 	unsigned int auth_tried_unsupported_mech:1;

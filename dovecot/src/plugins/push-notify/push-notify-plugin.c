@@ -63,7 +63,7 @@ push_notification(struct mail_deliver_context *ctx, const char *mailbox)
 	}
 
 	memset( &msg_data, 0, sizeof( msg_data ) );
-	msg_data.msg = 3;
+	msg_data.msg[0] = '3';
 
 	/* set user/account id */
 	if ( ctx->dest_user->username != NULL ) {

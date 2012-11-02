@@ -30,7 +30,7 @@ In most installations your mail went to '/var/mail/username' file. This file is
 called *INBOX* in IMAP world. Since IMAP supports multiple mailboxes, you'll
 also have to have a directory for them as well. Usually '~/mail' is a good
 choice for this. For installation such as this, the mail location is specified
-with:
+with (typically in 'conf.d/10-mail.conf'):
 
 ---%<-------------------------------------------------------------------------
 mail_location = mbox:~/mail:INBOX=/var/mail/%u
@@ -47,7 +47,7 @@ Maildir
 -------
 
 Maildir exists almost always in '~/Maildir' directory. The mail location is
-specified with:
+specified with (typically in 'conf.d/10-mail.conf'):
 
 ---%<-------------------------------------------------------------------------
 mail_location = maildir:~/Maildir
@@ -62,4 +62,4 @@ configuration to see where it went or what went wrong.
 If you can find the mail, but it's in more exotic location, see if
 <MailLocation.txt> can help you to configure it.
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

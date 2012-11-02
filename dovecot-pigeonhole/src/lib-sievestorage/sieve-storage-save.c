@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -59,13 +59,11 @@ static const char *sieve_generate_tmp_filename(const char *scriptname)
 	}
 	last_tv = tv;
 
-	if ( scriptname == NULL )
-		return t_strdup_printf("NULL_%s.M%sP%s.%s.sieve", dec2str(tv.tv_sec), 
-			dec2str(tv.tv_usec), my_pid, my_hostname);
+	scriptname = t_strdup_printf("%s_%s.M%sP%s.%s",
+		( scriptname == NULL ? "NULL" : scriptname ),
+		dec2str(tv.tv_sec), dec2str(tv.tv_usec), my_pid, my_hostname);
 
-	return t_strdup_printf
-		("%s-%s.M%sP%s.%s.sieve", scriptname, dec2str(tv.tv_sec), 
-			dec2str(tv.tv_usec), my_pid, my_hostname);
+	return sieve_scriptfile_from_name(scriptname);
 }
 
 static int sieve_storage_create_tmp
@@ -327,7 +325,7 @@ int sieve_storage_save_commit(struct sieve_save_context **ctx)
 
 	T_BEGIN {
 		dest_path = t_strconcat((*ctx)->storage->dir, "/", 
-			(*ctx)->scriptname, ".sieve", NULL);
+			sieve_scriptfile_from_name((*ctx)->scriptname), NULL);
 
 		failed = !sieve_storage_script_move((*ctx), dest_path);
 	} T_END;

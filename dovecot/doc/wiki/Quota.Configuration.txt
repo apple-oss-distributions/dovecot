@@ -77,12 +77,12 @@ of a mailbox-specific limit if found. So for example:
 
 ---%<-------------------------------------------------------------------------
 quota_rule = *:storage=1G
-quota_rule2 = Trash:storage=100M
+quota_rule2 = Trash:storage=+100M
 quota_rule3 = SPAM:ignore
 ---%<-------------------------------------------------------------------------
 
 This means that the user has 1GB quota, but when saving messages to Trash
-mailbox it's possible to use up to 1,1GB of quota. The quota isn't specifically
+mailbox it's possible to use up to 1.1GB of quota. The quota isn't specifically
 assigned to Trash, so if you had 1GB of mails in Trash you could still save
 100MB of mails to Trash, but nothing to other mailboxes. The idea of this is
 mostly to allow the clients' move-to-Trash feature work while user is deleting
@@ -123,9 +123,9 @@ plugin {
   quota = maildir:User quota
   quota_rule = *:storage=1GB
   # 10% of 1GB = 100MB
-  quota_rule2 = Trash:storage=10%%
+  quota_rule2 = Trash:storage=+10%%
   # 20% of 1GB = 200MB
-  quota_rule3 = Spam:storage=20%%
+  quota_rule3 = Spam:storage=+20%%
 }
 ---%<-------------------------------------------------------------------------
 
@@ -142,14 +142,22 @@ Per-user quota
 
 You can override quota rules in your <userdb> [UserDatabase.txt]'s <extra
 fields> [UserDatabase.ExtraFields.txt]. Keep all the global settings in plugin
-section and override only those settings you need to in your userdb. For
-example:
+section and override only those settings you need to in your userdb.
+
+If you're wondering why per-user quota isn't working:
+
+ * Check that 'dovecot-lda' is called with *-d* parameter.
+ * Check that you're not using <userdb static> [UserDatabase.Static.txt].
+ * Check that 'quota_rule' setting is properly returned by userdb. Enable
+   'auth_debug=yes' and 'mail_debug=yes' to see this.
+
+For example:
 
 ---%<-------------------------------------------------------------------------
 plugin {
   quota = maildir:User quota
   quota_rule = *:storage=1G
-  quota_rule2 = Trash:storage=100M
+  quota_rule2 = Trash:storage=+100M
 }
 ---%<-------------------------------------------------------------------------
 
@@ -164,30 +172,39 @@ Quota limit is in quotaBytes field:
 user_attrs = homeDirectory=home, quotaBytes=quota_rule=*:bytes=%$
 ---%<-------------------------------------------------------------------------
 
+Remember that 'user_attrs' is used only if you use <userdb ldap>
+[AuthDatabase.LDAP.txt].
+
 MySQL
 -----
 
 ---%<-------------------------------------------------------------------------
 user_query = SELECT uid, gid, home, \
-  concat('*:bytes=', quota_bytes) AS quota_rule \
+  concat('*:bytes=', quota_limit_bytes) AS quota_rule \
   FROM users WHERE userid = '%u'
 
 # MySQL with userdb prefetch: Remember to prefix quota_rule with userdb_
 # (just like all other userdb extra fields):
 password_query = SELECT userid AS user, password, \
   uid AS userdb_uid, gid AS userdb_gid, \
-  concat('*:bytes=', quota_bytes) AS userdb_quota_rule \
+  concat('*:bytes=', quota_limit_bytes) AS userdb_quota_rule \
   FROM users WHERE userid = '%u'
 ---%<-------------------------------------------------------------------------
+
+Remember that 'user_query' is used only if you use <userdb sql>
+[AuthDatabase.SQL.txt].
 
 PostgreSQL, SQLite
 ------------------
 
 ---%<-------------------------------------------------------------------------
 user_query = SELECT uid, gid, home, \
-  '*:bytes=' || quota_bytes AS quota_rule \
+  '*:bytes=' || quota_limit_bytes AS quota_rule \
   FROM users WHERE userid = '%u'
 ---%<-------------------------------------------------------------------------
+
+Remember that 'user_query' is used only if you use <userdb sql>
+[AuthDatabase.SQL.txt].
 
 passwd-file
 -----------
@@ -311,4 +328,4 @@ just insert ":noenforcing" to proper location in it. For example with dict
 quota, you can use something like:'-o "plugin/quota=dict:User
 quota::noenforcing:proxy::quota"'
 
-(This file was created from the wiki on 2011-05-11 04:42)
+(This file was created from the wiki on 2012-03-15 16:40)

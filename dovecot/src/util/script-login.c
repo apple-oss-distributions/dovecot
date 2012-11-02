@@ -114,21 +114,27 @@ static void client_connected(struct master_service_connection *conn)
 	master_service_init_log(master_service,
 		t_strdup_printf("script-login(%s): ", input.username));
 
-	service_ctx = mail_storage_service_init(master_service, NULL, flags);
-	if (mail_storage_service_lookup(service_ctx, &input, &user, &error) <= 0)
-		i_fatal("%s", error);
-	mail_storage_service_restrict_setenv(service_ctx, user);
-
-	if (drop_to_userdb_privileges)
+	if (drop_to_userdb_privileges) {
+		service_ctx = mail_storage_service_init(master_service, NULL, flags);
+		if (mail_storage_service_lookup(service_ctx, &input, &user, &error) <= 0)
+			i_fatal("%s", error);
+		mail_storage_service_restrict_setenv(service_ctx, user);
+		/* we can't exec anything in a chroot */
+		env_remove("RESTRICT_CHROOT");
 		restrict_access_by_env(getenv("HOME"), TRUE);
+	}
 
 	if (dup2(fd, STDIN_FILENO) < 0)
 		i_fatal("dup2() failed: %m");
 	if (dup2(fd, STDOUT_FILENO) < 0)
 		i_fatal("dup2() failed: %m");
+	if (close(fd) < 0)
+		i_fatal("close() failed: %m");
 	if (conn->fd != SCRIPT_COMM_FD) {
 		if (dup2(conn->fd, SCRIPT_COMM_FD) < 0)
 			i_fatal("dup2() failed: %m");
+		if (close(conn->fd) < 0)
+			i_fatal("close() failed: %m");
 	}
 
 	/* close all listener sockets */

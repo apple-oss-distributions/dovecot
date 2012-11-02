@@ -25,7 +25,7 @@ struct zlib_istream {
 	struct istream_private istream;
 
 	z_stream zs;
-	uoff_t eof_offset;
+	uoff_t eof_offset, stream_size;
 	size_t prev_size, high_pos;
 	uint32_t crc32;
 	struct stat last_parent_statbuf;
@@ -37,6 +37,8 @@ struct zlib_istream {
 	unsigned int trailer_read:1;
 	unsigned int zs_closed:1;
 };
+
+static void i_stream_zlib_init(struct zlib_istream *zstream);
 
 static void i_stream_zlib_close(struct iostream_private *stream)
 {
@@ -157,6 +159,7 @@ static int i_stream_zlib_read_trailer(struct zlib_istream *zstream)
 		return -1;
 	}
 	i_stream_skip(stream->parent, GZ_TRAILER_SIZE);
+	zstream->prev_size = 0;
 	zstream->trailer_read = TRUE;
 	return 1;
 }
@@ -180,12 +183,22 @@ static ssize_t i_stream_zlib_read(struct istream_private *stream)
 			if (ret <= 0)
 				return ret;
 		}
-		stream->istream.eof = TRUE;
-		return -1;
+		if (!zstream->gz || i_stream_is_eof(stream->parent)) {
+			stream->istream.eof = TRUE;
+			return -1;
+		}
+		/* gzip file with concatenated content */
+		zstream->eof_offset = (uoff_t)-1;
+		zstream->stream_size = (uoff_t)-1;
+		zstream->header_read = FALSE;
+		zstream->trailer_read = FALSE;
+		zstream->crc32 = 0;
+
+		(void)inflateEnd(&zstream->zs);
+		i_stream_zlib_init(zstream);
 	}
 
 	if (!zstream->header_read) {
-		i_assert(zstream->high_pos == 0);
 		do {
 			ret = i_stream_zlib_read_header(stream);
 		} while (ret == 0 && stream->istream.blocking);
@@ -290,6 +303,7 @@ static ssize_t i_stream_zlib_read(struct istream_private *stream)
 	case Z_STREAM_END:
 		zstream->eof_offset = stream->istream.v_offset +
 			(stream->pos - stream->skip);
+		zstream->stream_size = zstream->eof_offset;
 		i_stream_skip(stream->parent,
 			      zstream->prev_size - zstream->zs.avail_in);
 		zstream->zs.avail_in = 0;
@@ -428,7 +442,7 @@ i_stream_zlib_stat(struct istream_private *stream, bool exact)
 		return st;
 
 	stream->statbuf = *st;
-	if (zstream->eof_offset == (uoff_t)-1) {
+	if (zstream->stream_size == (uoff_t)-1) {
 		uoff_t old_offset = stream->istream.v_offset;
 
 		do {
@@ -437,10 +451,10 @@ i_stream_zlib_stat(struct istream_private *stream, bool exact)
 		} while (i_stream_read(&stream->istream) > 0);
 
 		i_stream_seek(&stream->istream, old_offset);
-		if (zstream->eof_offset == (uoff_t)-1)
+		if (zstream->stream_size == (uoff_t)-1)
 			return NULL;
 	}
-	stream->statbuf.st_size = zstream->eof_offset;
+	stream->statbuf.st_size = zstream->stream_size;
 	return &stream->statbuf;
 }
 
@@ -469,6 +483,7 @@ i_stream_create_zlib(struct istream *input, bool gz, bool log_errors)
 
 	zstream = i_new(struct zlib_istream, 1);
 	zstream->eof_offset = (uoff_t)-1;
+	zstream->stream_size = (uoff_t)-1;
 	zstream->gz = gz;
 	zstream->log_errors = log_errors;
 

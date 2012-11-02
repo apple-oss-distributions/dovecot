@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_COMMANDS_H
@@ -120,7 +120,10 @@ struct sieve_command_def {
 	bool (*pre_validate)
 		(struct sieve_validator *valdtr, struct sieve_command *cmd); 
 	bool (*validate)
-		(struct sieve_validator *valdtr, struct sieve_command *cmd); 
+		(struct sieve_validator *valdtr, struct sieve_command *cmd);
+	bool (*validate_const)
+		(struct sieve_validator *valdtr, struct sieve_command *cmd,
+			int *const_current, int const_next); 
 	bool (*generate) 
 		(const struct sieve_codegen_env *cgenv, struct sieve_command *cmd);
 	bool (*control_generate) 

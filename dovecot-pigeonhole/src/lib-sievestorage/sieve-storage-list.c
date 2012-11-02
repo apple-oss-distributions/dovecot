@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -69,9 +69,7 @@ const char *sieve_storage_list_next
 		if ( (dp = readdir(ctx->dirp)) == NULL )
 			return NULL;
 
-		scriptname = sieve_storage_file_get_scriptname
-			(storage, dp->d_name);	
-		
+		scriptname = sieve_scriptfile_get_script_name(dp->d_name);	
 		if (scriptname != NULL ) {
 			/* Don't list our active sieve script link if the link 
 			 * resides in the script dir (generally a bad idea).

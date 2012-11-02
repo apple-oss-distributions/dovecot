@@ -58,7 +58,7 @@ mdbox_copy_file_get_file(struct mailbox_transaction_context *t,
 	rec = data;
 
 	if (mdbox_map_lookup(ctx->mbox->storage->map, rec->map_uid,
-			     &file_id, offset_r) <= 0)
+			     &file_id, offset_r) < 0)
 		i_unreached();
 
 	return mdbox_file_init(ctx->mbox->storage, file_id);
@@ -218,6 +218,7 @@ static int mdbox_save_finish_write(struct mail_save_context *_ctx)
 	i_stream_unref(&ctx->ctx.input);
 
 	if (ctx->ctx.failed) {
+		mail_index_expunge(ctx->ctx.trans, ctx->ctx.seq);
 		mdbox_map_append_abort(ctx->append_ctx);
 		array_delete(&ctx->mails, array_count(&ctx->mails) - 1, 1);
 		return -1;

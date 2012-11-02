@@ -79,7 +79,10 @@ void process_exec(const char *cmd, const char *extra_args[])
 	if (p != NULL) argv[0] = p+1;
 
 	/* prefix with dovecot/ */
-	argv[0] = t_strconcat(PACKAGE"/", argv[0], NULL);
+	argv[0] = t_strdup_printf("%s/%s", services->set->instance_name,
+				  argv[0]);
+	if (strncmp(argv[0], PACKAGE, strlen(PACKAGE)) != 0)
+		argv[0] = t_strconcat(PACKAGE"-", argv[0], NULL);
 	(void)execv_const(executable, argv);
 }
 
@@ -440,11 +443,14 @@ static void main_init(const struct master_settings *set)
 	lib_signals_init();
         lib_signals_ignore(SIGPIPE, TRUE);
         lib_signals_ignore(SIGALRM, FALSE);
-        lib_signals_set_handler(SIGHUP, TRUE, sig_settings_reload, NULL);
-        lib_signals_set_handler(SIGUSR1, TRUE, sig_log_reopen, NULL);
-        lib_signals_set_handler(SIGCHLD, TRUE, sig_reap_children, NULL);
-        lib_signals_set_handler(SIGINT, TRUE, sig_die, NULL);
-	lib_signals_set_handler(SIGTERM, TRUE, sig_die, NULL);
+	lib_signals_set_handler(SIGHUP, LIBSIG_FLAGS_SAFE,
+				sig_settings_reload, NULL);
+	lib_signals_set_handler(SIGUSR1, LIBSIG_FLAGS_SAFE,
+				sig_log_reopen, NULL);
+	lib_signals_set_handler(SIGCHLD, LIBSIG_FLAGS_SAFE,
+				sig_reap_children, NULL);
+        lib_signals_set_handler(SIGINT, LIBSIG_FLAGS_SAFE, sig_die, NULL);
+	lib_signals_set_handler(SIGTERM, LIBSIG_FLAGS_SAFE, sig_die, NULL);
 
 	create_pid_file(pidfile_path);
 	create_config_symlink(set);
