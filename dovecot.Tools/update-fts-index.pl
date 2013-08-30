@@ -1,6 +1,6 @@
 #!/usr/bin/perl -Tw
 
-# Copyright (c) 2010-2012 Apple Inc. All rights reserved.
+# Copyright (c) 2010-2013 Apple Inc. All rights reserved.
 # 
 # IMPORTANT NOTE: This file is licensed only for use on Apple-branded
 # computers and is subject to the terms and conditions of the Apple Software
@@ -37,11 +37,8 @@
 # Update users' fts search indexes (fts plugin for dovecot).
 
 use strict;
-use feature 'state';
 use Getopt::Long;
-use File::Temp qw(tempfile);
 use IPC::Open3;
-use IO::Handle;
 use Sys::Syslog qw(:standard :macros);
 use Errno;
 
@@ -76,7 +73,7 @@ if ((@ARGV == 0 && !defined($opts{queued})) ||
 if ($opts{syslog}) {
 	my $ident = $0;
 	$ident =~ s,.*/,,;
-	openlog($ident, "pid", LOG_LOCAL6) or die("openlog: $!\n");
+	openlog($ident, "pid", "dovecot") or die("openlog: $!\n");
 }
 
 if ($> != 0) {
@@ -87,11 +84,6 @@ my $queue_dir = "/private/var/db/dovecot.fts.update";
 
 $ENV{PATH} = "/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Server.app/Contents/ServerRoot/usr/bin:/Applications/Server.app/Contents/ServerRoot/usr/sbin";
 delete $ENV{CDPATH};
-
-my $imappid;
-my $to_imap;
-my $from_imap;
-local $SIG{__DIE__} = \&imap_cleanup;
 
 # if fts is disabled, don't bother doing anything
 my $conf = `/Applications/Server.app/Contents/ServerRoot/usr/bin/doveconf -h mail_plugins`;
@@ -220,238 +212,90 @@ sub update_fts
 	my $func_context = shift;
 	my @mailboxes = @_;
 
-	# rewrite specified mailboxes with LITERAL+ so they're safe
-	my @literal_mailboxes = @mailboxes;
-	for (@literal_mailboxes) {
-		my $size = length;
-		$_ = "{$size+}\r\n$_";
-	}
-
 	if (!$opts{quiet}) {
 		myinfo("Updating search indexes for user $user");
 	}
 
-	# start dovecot imap as the user
-	my @imapargv = ("/Applications/Server.app/Contents/ServerRoot/usr/libexec/dovecot/imap", "-u", $user);
-	$imappid = open3(\*TO_IMAP, \*FROM_IMAP, \*FROM_IMAP, @imapargv);
-	if (!defined($imappid)) {
-		mywarn("$imapargv[0]: $!");
-		return -1;
-	}
-	$to_imap = IO::Handle->new_from_fd(*TO_IMAP, "w");
-	$from_imap = IO::Handle->new_from_fd(*FROM_IMAP, "r");
-	if (!defined($to_imap) || !defined($from_imap)) {
-		mywarn("IO::Handle.new_from_fd: $!");
-		imap_cleanup();
-		return -1;
-	}
-	$to_imap->autoflush(1);
-
-	# verify greeting
-	my $reply;
-	while ($reply = $from_imap->getline()) {
-		printS($reply) if $opts{verbose};
-		$reply =~ s/[\r\n]+$//;
-		if ($reply =~ /DEBUG/i || $reply =~ /Growing/) {
-			# skip debugging messages
-		} elsif ($reply =~ /^\* PREAUTH /) {
-			last;
-		} else {
-			mywarn("bad greeting from IMAP server: $reply");
-			imap_cleanup();
-			return -1;
-		}
-	}
-	if (read_error($reply)) {
-		imap_cleanup();
-		return -1;
-	}
-	my $capability = $reply;
-
-	# at this point we're logged in so failures should return 0 not -1
-
-	my $tag = "a";
-	my $cmd;
-
 	if (@mailboxes == 0) {
-		# list all the mailboxes
-		$cmd = qq($tag LIST "" "*"\r\n);
-		printC($cmd) if $opts{verbose};
-		$to_imap->print($cmd);
-		while ($reply = $from_imap->getline()) {
-			printS($reply) if $opts{verbose};
-			$reply =~ s/[\r\n]+$//;
-			if ($reply =~ /^$tag /) {
-				if ($reply !~ /$tag OK (\[.*\])?/) {
-					mywarn("LIST failed: <$reply>");
-					imap_cleanup();
-					return 0;
-				}
-				last;
-			} elsif ($reply =~ /^\* LIST \([^\)]*\) (?:"."|NIL) (.*)/) {
-				my $mailbox = $1;
-				if ($mailbox =~ /^{(\d+)}/) {
-					# FIXME: ignore literal size,
-					# assume it's one line
-					my $size = $1;
-					my $mailbox = $from_imap->getline();
-					if (read_error($mailbox)) {
-						imap_cleanup();
-						return 0;
-					}
-					printS($mailbox) if $opts{verbose};
-					$mailbox =~ s/[\r\n]+$//;
-					# we'll send mailbox back as LITERAL+
-					$mailbox = "{$size+}\r\n$mailbox";
-				}
-
-				# keep quotes (if any) and literal (if any) in mailbox name
-				push @mailboxes, $mailbox if defined $mailbox;
-			}
+		my @list;
+		return 0 unless doveadm(\@list, "mailbox", "list", "-u", $user);
+		return 0 unless @list;
+		for (@list) {
+			# untaint
+			push @mailboxes, $1 if /(.+)/;
 		}
-		if (read_error($reply)) {
-			imap_cleanup();
-			return 0;
-		}
-		@literal_mailboxes = @mailboxes;
 	}
 
-	# rebuild index in every mailbox
-	BOX: for my $boxi (0..$#mailboxes) {
+	# rebuild index in each mailbox
+	my $ok = 1;
+	for my $boxi (0..$#mailboxes) {
 		if (!$opts{quiet}) {
 			myinfo("Updating search index for user $user" .
 				" mailbox " . ($boxi + 1) .
-				" of " . scalar(@mailboxes) .
-			        " in IMAP process $imappid");
+				" of " . scalar(@mailboxes));
 		}
 		my $mailbox = $mailboxes[$boxi];
-		my $literal_mailbox = $literal_mailboxes[$boxi];
 
 		&$preupdate_func($func_context, $mailbox)
 		    if defined $preupdate_func;
 
-		# EXAMINE don't SELECT the mailbox so we don't reset \Recent
-		++$tag;
-		$cmd = qq($tag EXAMINE $literal_mailbox\r\n);
-		printC($cmd) if $opts{verbose};
-		$to_imap->print($cmd);
-		while ($reply = $from_imap->getline()) {
-			printS($reply) if $opts{verbose};
-			$reply =~ s/[\r\n]+$//;
-			if ($reply =~ /^$tag /) {
-				if ($reply !~ /$tag OK (\[.*\])?/) {
-					mywarn("EXAMINE failed: <$reply>");
-					&$postupdate_func($func_context,
-							  $mailbox)
-					    if defined $postupdate_func;
-					next BOX;
-				}
-				last;
-			}
-		}
-		if (read_error($reply)) {
-			imap_cleanup();
-			&$postupdate_func($func_context, $mailbox)
-			    if defined $postupdate_func;
-			return 0;
-		}
-
-		# SEARCH the mailbox for some string; this updates the index
-		++$tag;
-		$cmd = qq($tag SEARCH BODY XYZZY\r\n);
-		printC($cmd) if $opts{verbose};
-		$to_imap->print($cmd);
-		while ($reply = $from_imap->getline()) {
-			printS($reply) if $opts{verbose};
-			$reply =~ s/[\r\n]+$//;
-			if ($reply =~ /^$tag /) {
-				if ($reply !~ /$tag OK (\[.*\])?/) {
-					mywarn("SEARCH failed: <$reply>");
-				}
-				last;
-			} elsif ($reply =~ /^\* OK (Indexed.*\%.*)/) {
-				if (!$opts{quiet}) {
-					myinfo("$1 [$user]");
-				}
-			} elsif ($reply =~ /Info:/) {
-				if (!$opts{quiet}) {
-					myinfo($reply);
-				}
-			} elsif ($reply =~ /(Warning|Error|Fatal|Panic):/ ||
-				 $reply =~ /fts_sk/) {
-				mywarn($reply);
-			}
-		}
-		if (read_error($reply)) {
-			imap_cleanup();
-			&$postupdate_func($func_context, $mailbox)
-			    if defined $postupdate_func;
-			return 0;
-		}
-
-		# perform any deferred expunges
-		next unless $capability =~ /\WX-FTS-COMPACT(\W|$)/;
-		if (!$opts{quiet}) {
-			myinfo("Compacting search index for user $user" .
-				" mailbox " . ($boxi + 1) .
-				" of " . scalar(@mailboxes) .
-			        " in IMAP process $imappid");
-		}
-		++$tag;
-		$cmd = qq($tag X-FTS-COMPACT\r\n);
-		printC($cmd) if $opts{verbose};
-		$to_imap->print($cmd);
-		while ($reply = $from_imap->getline()) {
-			printS($reply) if $opts{verbose};
-			$reply =~ s/[\r\n]+$//;
-			if ($reply =~ /^$tag /) {
-				if ($reply !~ /$tag OK (\[.*\])?/) {
-					mywarn("X-FTS-COMPACT failed: <$reply>");
-				}
-				last;
-			}
-		}
-		if (read_error($reply)) {
-			imap_cleanup();
-			&$postupdate_func($func_context, $mailbox)
-			    if defined $postupdate_func;
-			return 0;
-		}
+		# I like the idea of adding -q here to perform the indexing in
+		# the indexer-workers -- which can run in parallel up to a
+		# configurable limit -- but that's asynchronous and we have to
+		# wait until the indexing is done before compacting/optimizing.
+		# So, no -q.
+		$ok = 0 unless doveadm(undef, "index", "-u", $user, $mailbox);
 
 		&$postupdate_func($func_context, $mailbox)
 		    if defined $postupdate_func;
 	}
 
-	# log out
-	++$tag;
-	$cmd = qq($tag LOGOUT\r\n);
-	printC($cmd) if $opts{verbose};
-	$to_imap->print($cmd);
-	while ($reply = $from_imap->getline()) {
-		printS($reply) if $opts{verbose};
-		$reply =~ s/[\r\n]+$//;
-		if ($reply =~ /^$tag /) {
-			if ($reply !~ /$tag OK (\[.*\])?/) {
-				mywarn("LOGOUT failed: <$reply>");
-				imap_cleanup();
-				return 0;
-			}
-			last;
-		}
+	if (!$opts{quiet}) {
+		myinfo("Compacting search indexes for user $user");
 	}
-	if (read_error($reply)) {
-		imap_cleanup();
+
+	# optimize applies to all mailboxes for some reason
+	$ok = 0 unless doveadm(undef, "fts", "optimize", "-u", $user);
+
+	return $ok;
+}
+
+sub doveadm
+{
+	my $outref = shift;
+	my @args = @_;
+
+	my $doveadm = "/Applications/Server.app/Contents/ServerRoot/usr/bin/doveadm";
+	unshift @args, "-v" if $opts{verbose};
+	unshift @args, $doveadm;
+	print "> " . join(" ", @args) . "\n" if $opts{verbose};
+	my $pid = open3(\*TO_DOVEADM, \*FROM_DOVEADM, \*FROM_DOVEADM, @args);
+	if (!defined($pid)) {
+		mywarn("'" . join(" ", @args) . "' failed: $!");
 		return 0;
 	}
-
-	# done
-	$to_imap->close();
-	undef $to_imap;
-	$from_imap->close();
-	undef $from_imap;
-	waitpid($imappid, 0);
-	undef $imappid;
-
+	close(TO_DOVEADM);
+	my @errs;
+	while (my $line = <FROM_DOVEADM>) {
+		chomp $line;
+		print "< $line\n" if $opts{verbose};
+		if ($line =~ /(Debug|Info|Warning|Error|Fatal|Panic):/) {
+			push @errs, $line;
+		} elsif (defined($outref)) {
+			push @$outref, $line;
+		}
+	}
+	close(FROM_DOVEADM);
+	waitpid($pid, 0);
+	my $status = $?;
+	if ($status != 0) {
+		for (@errs) {
+			chomp;
+			mywarn("$doveadm: $_");
+		}
+		mywarn("'" . join(" ", @args) . "' failed: $status");
+		return 0;
+	}
 	return 1;
 }
 
@@ -484,82 +328,6 @@ sub delete_queuefile_for
 	if (defined($queuefile) && !unlink("$queue_dir/$queuefile")) {
 		# maybe another process got it first
 		mywarn("$queue_dir/$queuefile: $!") unless $!{ENOENT};
-	}
-}
-
-sub printC
-{
-	my $msg = shift;
-	printX("C", $msg);
-}
-
-sub printS
-{
-	printX("S", @_);
-}
-
-sub printX
-{
-	my $tag = shift;
-	my $msg = shift;
-
-	state $lastdir = "";
-	state $lastmsg = "\n";
-
-	if ($tag eq "C") {
-		if ($lastdir ne "C") {
-			print "~NO LINE TERMINATOR~\n" if $lastmsg !~ /\n$/;
-			print ">"x72 . "\n";
-			$lastdir = "C";
-		}
-	} else {
-		if ($lastdir ne "S") {
-			print "~NO LINE TERMINATOR~\n" if $lastmsg !~ /\n$/;
-			print "<"x72 . "\n";
-			$lastdir = "S";
-		}
-	}
-	print $msg;
-	$lastmsg = $msg;
-}
-
-sub read_error
-{
-	my $input = shift;
-	my $error;
-
-	if ($from_imap->error) {
-		$error = $!;
-	} elsif (!defined($input)) {
-		$error = "unexpected EOF";
-	}
-
-	if (defined($error)) {
-		mywarn("error communicating with imap process $imappid: $error");
-		return 1;
-	}
-
-	return 0;
-}
-
-sub imap_cleanup
-{
-	if (defined($to_imap)) {
-		$to_imap->close();
-		undef $to_imap;
-
-		sleep 2;	# maybe it will exit cleanly
-	}
-
-	if (defined($from_imap)) {
-		$from_imap->close();
-		undef $from_imap;
-	}
-
-	if (defined($imappid)) {
-		kill(9, $imappid);
-		waitpid($imappid, 0);
-		undef $imappid;
 	}
 }
 

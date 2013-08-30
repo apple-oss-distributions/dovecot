@@ -1,8 +1,8 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "wildcard-match.h"
 #include "hash.h"
@@ -18,23 +18,20 @@
 struct who_user {
 	const char *username;
 	const char *service;
-	ARRAY_DEFINE(ips, struct ip_addr);
-	ARRAY_DEFINE(pids, pid_t);
+	ARRAY(struct ip_addr) ips;
+	ARRAY(pid_t) pids;
 	unsigned int connection_count;
 	unsigned long elapsed;					/* APPLE */
 };
 
-static unsigned int who_user_hash(const void *p)
+static unsigned int who_user_hash(const struct who_user *user)
 {
-	const struct who_user *user = p;
-
 	return str_hash(user->username) + str_hash(user->service);
 }
 
-static int who_user_cmp(const void *p1, const void *p2)
+static int who_user_cmp(const struct who_user *user1,
+			const struct who_user *user2)
 {
-	const struct who_user *user1 = p1, *user2 = p2;
-
 	if (strcmp(user1->username, user2->username) != 0)
 		return 1;
 	if (strcmp(user1->service, user2->service) != 0)
@@ -56,7 +53,7 @@ who_user_has_ip(const struct who_user *user, const struct ip_addr *ip)
 
 static void who_parse_line(const char *line, struct who_line *line_r)
 {
-	const char *const *args = t_strsplit(line, "\t");
+	const char *const *args = t_strsplit_tab(line);
 	const char *ident = args[0];
 	const char *pid_str = args[1];
 	const char *refcount_str = args[2];
@@ -228,7 +225,7 @@ static void who_print_user(struct who_context *ctx,		/* APPLE */
 static void who_print(struct who_context *ctx)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	struct who_user *user;
 
 	doveadm_print_header("username", "username", 0);
 	doveadm_print_header("connections", "#",
@@ -241,9 +238,7 @@ static void who_print(struct who_context *ctx)
 		doveadm_print_header("elapsed", "elapsed", 0);
 
 	iter = hash_table_iterate_init(ctx->users);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct who_user *user = value;
-
+	while (hash_table_iterate(iter, ctx->users, &user, &user)) {
 		if (who_user_filter_match(user, &ctx->filter)) T_BEGIN {
 			who_print_user(ctx, user);		/* APPLE */
 		} T_END;
@@ -294,8 +289,7 @@ static void cmd_who(int argc, char *argv[])
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.anvil_path = t_strconcat(doveadm_settings->base_dir, "/anvil", NULL);
 	ctx.pool = pool_alloconly_create("who users", 10240);
-	ctx.users = hash_table_create(default_pool, ctx.pool, 0,
-				      who_user_hash, who_user_cmp);
+	hash_table_create(&ctx.users, ctx.pool, 0, who_user_hash, who_user_cmp);
 
 	while ((c = getopt(argc, argv, "1a:e")) > 0) {		/* APPLE */
 		switch (c) {
@@ -322,7 +316,8 @@ static void cmd_who(int argc, char *argv[])
 		who_lookup(&ctx, who_aggregate_line);
 		who_print(&ctx);
 	} else {
-		doveadm_print_header_simple("username");
+		doveadm_print_header("username", "username",
+				     DOVEADM_PRINT_HEADER_FLAG_EXPAND);
 		doveadm_print_header("service", "proto", 0);
 		doveadm_print_header_simple("pid");
 		doveadm_print_header_simple("ip");

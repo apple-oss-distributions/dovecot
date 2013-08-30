@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -25,10 +25,12 @@ struct sdbox_save_context {
 
 	struct sdbox_mailbox *mbox;
 	struct sdbox_sync_context *sync_ctx;
+
+	struct dbox_file *cur_file;
 	struct dbox_file_append_context *append_ctx;
 
 	uint32_t first_saved_seq;
-	ARRAY_DEFINE(files, struct dbox_file *);
+	ARRAY(struct dbox_file *) files;
 };
 
 struct dbox_file *
@@ -59,9 +61,9 @@ sdbox_save_alloc(struct mailbox_transaction_context *t)
 
 	if (ctx != NULL) {
 		/* use the existing allocated structure */
+		ctx->cur_file = NULL;
 		ctx->ctx.failed = FALSE;
 		ctx->ctx.finished = FALSE;
-		ctx->ctx.cur_file = NULL;
 		ctx->ctx.dbox_output = NULL;
 		return &ctx->ctx.ctx;
 	}
@@ -78,9 +80,18 @@ sdbox_save_alloc(struct mailbox_transaction_context *t)
 void sdbox_save_add_file(struct mail_save_context *_ctx, struct dbox_file *file)
 {
 	struct sdbox_save_context *ctx = (struct sdbox_save_context *)_ctx;
+	struct dbox_file *const *files;
+	unsigned int count;
 
 	if (ctx->first_saved_seq == 0)
 		ctx->first_saved_seq = ctx->ctx.seq;
+
+	files = array_get(&ctx->files, &count);
+	if (count > 0) {
+		/* a plugin may leave a previously saved file open.
+		   we'll close it here to avoid eating too many fds. */
+		dbox_file_close(files[count-1]);
+	}
 	array_append(&ctx->files, &file, 1);
 }
 
@@ -101,7 +112,7 @@ int sdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 		ctx->ctx.failed = TRUE;
 		return -1;
 	}
-	ctx->ctx.cur_file = file;
+	ctx->cur_file = file;
 	dbox_save_begin(&ctx->ctx, input);
 
 	sdbox_save_add_file(_ctx, file);
@@ -116,7 +127,7 @@ static int dbox_save_mail_write_metadata(struct dbox_save_context *ctx,
 	const struct mail_attachment_extref *extrefs;
 	struct dbox_message_header dbox_msg_hdr;
 	uoff_t message_size;
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 	unsigned int i, count;
 
 	i_assert(file->msg_header_size == sizeof(dbox_msg_hdr));
@@ -159,26 +170,22 @@ static int dbox_save_mail_write_metadata(struct dbox_save_context *ctx,
 static int dbox_save_finish_write(struct mail_save_context *_ctx)
 {
 	struct sdbox_save_context *ctx = (struct sdbox_save_context *)_ctx;
-	struct dbox_file *const *files;
+	struct dbox_file **files;
 
 	ctx->ctx.finished = TRUE;
 	if (ctx->ctx.dbox_output == NULL)
 		return -1;
 
-	if (_ctx->save_date != (time_t)-1) {
+	if (_ctx->data.save_date != (time_t)-1) {
 		/* we can't change ctime, but we can add the date to cache */
 		struct index_mail *mail = (struct index_mail *)_ctx->dest_mail;
-		uint32_t t = _ctx->save_date;
+		uint32_t t = _ctx->data.save_date;
 
 		index_mail_cache_add(mail, MAIL_CACHE_SAVE_DATE, &t, sizeof(t));
 	}
-
-	index_mail_cache_parse_deinit(_ctx->dest_mail,
-				      _ctx->received_date, !ctx->ctx.failed);
+	dbox_save_end(&ctx->ctx);
 
 	files = array_idx_modifiable(&ctx->files, array_count(&ctx->files) - 1);
-
-	dbox_save_end(&ctx->ctx);
 	if (!ctx->ctx.failed) T_BEGIN {
 		if (dbox_save_mail_write_metadata(&ctx->ctx, *files) < 0)
 			ctx->ctx.failed = TRUE;
@@ -187,14 +194,17 @@ static int dbox_save_finish_write(struct mail_save_context *_ctx)
 	if (ctx->ctx.failed) {
 		mail_index_expunge(ctx->ctx.trans, ctx->ctx.seq);
 		dbox_file_append_rollback(&ctx->append_ctx);
+		dbox_file_unlink(*files);
+		dbox_file_unref(files);
+		array_delete(&ctx->files, array_count(&ctx->files) - 1, 1);
 	} else {
 		dbox_file_append_checkpoint(ctx->append_ctx);
 		if (dbox_file_append_commit(&ctx->append_ctx) < 0)
 			ctx->ctx.failed = TRUE;
+		dbox_file_close(*files);
 	}
 
 	i_stream_unref(&ctx->ctx.input);
-	dbox_file_close(*files);
 	ctx->ctx.dbox_output = NULL;
 
 	return ctx->ctx.failed ? -1 : 0;
@@ -279,6 +289,10 @@ int sdbox_transaction_save_commit_pre(struct mail_save_context *_ctx)
 		return -1;
 	}
 
+	/* update dbox header flags */
+	dbox_save_update_header_flags(&ctx->ctx, ctx->sync_ctx->sync_view,
+		ctx->mbox->hdr_ext_id, offsetof(struct sdbox_index_header, flags));
+
 	/* assign UIDs for new messages */
 	hdr = mail_index_get_header(ctx->sync_ctx->sync_view);
 	mail_index_append_finish_uids(ctx->ctx.trans, hdr->next_uid,
@@ -315,10 +329,11 @@ void sdbox_transaction_save_commit_post(struct mail_save_context *_ctx,
 		ctx->ctx.failed = TRUE;
 
 	if (storage->set->parsed_fsync_mode != FSYNC_MODE_NEVER) {
-		if (fdatasync_path(ctx->mbox->box.path) < 0) {
+		const char *box_path = mailbox_get_path(&ctx->mbox->box);
+
+		if (fdatasync_path(box_path) < 0) {
 			mail_storage_set_critical(storage,
-				"fdatasync_path(%s) failed: %m",
-				ctx->mbox->box.path);
+				"fdatasync_path(%s) failed: %m", box_path);
 		}
 	}
 	sdbox_transaction_save_rollback(_ctx);

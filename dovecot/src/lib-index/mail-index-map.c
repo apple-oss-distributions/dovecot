@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -50,10 +50,7 @@ bool mail_index_map_lookup_ext(struct mail_index_map *map, const char *name,
 
 	array_foreach(&map->extensions, ext) {
 		if (strcmp(ext->name, name) == 0) {
-			if (idx_r != NULL) {
-				*idx_r = array_foreach_idx(&map->extensions,
-							   ext);
-			}
+			*idx_r = array_foreach_idx(&map->extensions, ext);
 			return TRUE;
 		}
 	}
@@ -72,7 +69,7 @@ mail_index_map_register_ext(struct mail_index_map *map,
 			    const struct mail_index_ext_header *ext_hdr)
 {
 	struct mail_index_ext *ext;
-	uint32_t idx, empty_idx = (uint32_t)-1;
+	uint32_t idx, ext_map_idx, empty_idx = (uint32_t)-1;
 
 	if (!array_is_created(&map->extensions)) {
                 mail_index_map_init_extbufs(map, 5);
@@ -80,7 +77,7 @@ mail_index_map_register_ext(struct mail_index_map *map,
 	} else {
 		idx = array_count(&map->extensions);
 	}
-	i_assert(!mail_index_map_lookup_ext(map, name, NULL));
+	i_assert(!mail_index_map_lookup_ext(map, name, &ext_map_idx));
 
 	ext = array_append_space(&map->extensions);
 	ext->name = p_strdup(map->extension_pool, name);
@@ -174,6 +171,12 @@ mail_index_map_ext_hdr_check_record(const struct mail_index_header *hdr,
 		return -1;
 	}
 
+	if (ext_hdr->record_offset == 0) {
+		/* if we get here from extension introduction, record_offset=0
+		   and hdr->record_size hasn't been updated yet */
+		return 0;
+	}
+
 	if (ext_hdr->record_offset + ext_hdr->record_size > hdr->record_size) {
 		*error_r = t_strdup_printf("Record field points "
 					   "outside record size (%u+%u > %u)",
@@ -210,9 +213,7 @@ int mail_index_map_ext_hdr_check(const struct mail_index_header *hdr,
 		return -1;
 	}
 
-	/* if we get here from extension introduction, record_offset=0 and
-	   hdr->record_size hasn't been updated yet */
-	if (ext_hdr->record_offset != 0 && ext_hdr->record_size != 0) {
+	if (ext_hdr->record_size != 0) {
 		if (mail_index_map_ext_hdr_check_record(hdr, ext_hdr,
 							error_r) < 0)
 			return -1;
@@ -265,9 +266,6 @@ struct mail_index_map *mail_index_map_alloc(struct mail_index *index)
 static void mail_index_record_map_free(struct mail_index_map *map,
 				       struct mail_index_record_map *rec_map)
 {
-	if (rec_map->lock_id != 0)
-		mail_index_unlock(map->index, &rec_map->lock_id);
-
 	if (rec_map->buffer != NULL) {
 		i_assert(rec_map->mmap_base == NULL);
 		buffer_free(&rec_map->buffer);
@@ -286,7 +284,7 @@ static void mail_index_record_map_free(struct mail_index_map *map,
 static void mail_index_record_map_unlink(struct mail_index_map *map)
 {
 	struct mail_index_map *const *maps;
-	unsigned int idx = -1U;
+	unsigned int idx = UINT_MAX;
 
 	array_foreach(&map->rec_map->maps, maps) {
 		if (*maps == map) {
@@ -294,7 +292,7 @@ static void mail_index_record_map_unlink(struct mail_index_map *map)
 			break;
 		}
 	}
-	i_assert(idx != -1U);
+	i_assert(idx != UINT_MAX);
 
 	array_delete(&map->rec_map->maps, idx, 1);
 	if (array_count(&map->rec_map->maps) == 0) {
@@ -334,11 +332,6 @@ static void mail_index_map_copy_records(struct mail_index_record_map *dest,
 
 	dest->records = buffer_get_modifiable_data(dest->buffer, NULL);
 	dest->records_count = src->records_count;
-
-	/* if the map is ever written back to disk, we need to keep track of
-	   what has changed. */
-	dest->write_seq_first = src->write_seq_first;
-	dest->write_seq_last = src->write_seq_last;
 }
 
 static void mail_index_map_copy_header(struct mail_index_map *dest,
@@ -400,10 +393,6 @@ struct mail_index_map *mail_index_map_clone(const struct mail_index_map *map)
 	}
 
 	mail_index_map_copy_header(mem_map, map);
-
-	mem_map->write_atomic = map->write_atomic;
-	mem_map->write_base_header = map->write_base_header;
-	mem_map->write_ext_header = map->write_ext_header;
 
 	/* copy extensions */
 	if (array_is_created(&map->ext_id_map)) {
@@ -470,8 +459,6 @@ void mail_index_map_move_to_memory(struct mail_index_map *map)
 	if (map->rec_map->mmap_base == NULL)
 		return;
 
-	i_assert(map->rec_map->lock_id != 0);
-
 	if (array_count(&map->rec_map->maps) == 1)
 		new_map = map->rec_map;
 	else {
@@ -488,7 +475,6 @@ void mail_index_map_move_to_memory(struct mail_index_map *map)
 		mail_index_record_map_unlink(map);
 		map->rec_map = new_map;
 	} else {
-		mail_index_unlock(map->index, &new_map->lock_id);
 		if (munmap(new_map->mmap_base, new_map->mmap_size) < 0)
 			mail_index_set_syscall_error(map->index, "munmap()");
 		new_map->mmap_base = NULL;
@@ -524,6 +510,7 @@ static uint32_t mail_index_bsearch_uid(struct mail_index_map *map,
 	idx = left_idx;
 	right_idx = I_MIN(map->hdr.messages_count, uid);
 
+	i_assert(right_idx < INT_MAX);
 	while (left_idx < right_idx) {
 		idx = (left_idx + right_idx) / 2;
 

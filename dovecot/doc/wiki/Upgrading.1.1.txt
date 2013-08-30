@@ -87,4 +87,4 @@ Removed settings
  * mmap_no_write: OpenBSD users will have to settle for mmap_disable=yes for
    now.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

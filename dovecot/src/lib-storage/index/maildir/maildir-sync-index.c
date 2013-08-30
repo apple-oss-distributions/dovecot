@@ -1,14 +1,13 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "array.h"
-#include "hex-binary.h"
 #include "maildir-storage.h"
 #include "index-sync-changes.h"
 #include "maildir-uidlist.h"
 #include "maildir-keywords.h"
-#include "maildir-filename.h"
+#include "maildir-filename-flags.h"
 #include "maildir-sync.h"
 
 #include <stdio.h>
@@ -51,12 +50,12 @@ void maildir_sync_set_new_msgs_count(struct maildir_index_sync_context *ctx,
 static bool
 maildir_expunge_is_valid_guid(struct maildir_index_sync_context *ctx,
 			      uint32_t uid, const char *filename,
-			      uint8_t expunged_guid_128[MAIL_GUID_128_SIZE])
+			      guid_128_t expunged_guid_128)
 {
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 	const char *guid;
 
-	if (mail_guid_128_is_empty(expunged_guid_128)) {
+	if (guid_128_is_empty(expunged_guid_128)) {
 		/* no GUID associated with expunge */
 		return TRUE;
 	}
@@ -75,8 +74,8 @@ maildir_expunge_is_valid_guid(struct maildir_index_sync_context *ctx,
 	mail_storage_set_critical(&ctx->mbox->storage->storage,
 		"Mailbox %s: Expunged GUID mismatch for UID %u: %s vs %s",
 		ctx->mbox->box.vname, ctx->uid,
-		binary_to_hex(guid_128, sizeof(guid_128)),
-		binary_to_hex(expunged_guid_128, MAIL_GUID_128_SIZE));
+		guid_128_to_string(guid_128),
+		guid_128_to_string(expunged_guid_128));
 	return FALSE;
 }
 
@@ -123,7 +122,7 @@ static int maildir_sync_flags(struct maildir_mailbox *mbox, const char *path,
 	i_assert(*fname != '\0');
 
 	/* get the current flags and keywords */
-	maildir_filename_get_flags(ctx->keywords_sync_ctx,
+	maildir_filename_flags_get(ctx->keywords_sync_ctx,
 				   fname, &ctx->flags, &ctx->keywords);
 
 	/* apply changes */
@@ -133,8 +132,8 @@ static int maildir_sync_flags(struct maildir_mailbox *mbox, const char *path,
 	ctx->flags = flags8;
 
 	/* and try renaming with the new name */
-	newfname = maildir_filename_set_flags(ctx->keywords_sync_ctx, fname,
-					      ctx->flags, &ctx->keywords);
+	newfname = maildir_filename_flags_kw_set(ctx->keywords_sync_ctx, fname,
+						 ctx->flags, &ctx->keywords);
 	newpath = t_strconcat(dir, newfname, NULL);
 	if (strcmp(path, newpath) == 0) {
 		/* just make sure that the file still exists. avoid rename()
@@ -182,6 +181,7 @@ static int maildir_handle_uid_insertion(struct maildir_index_sync_context *ctx,
 	if ((uflags & MAILDIR_UIDLIST_REC_FLAG_RACING) == 0) {
 		/* mark it racy and check in next sync */
 		ctx->mbox->maildir_hdr.cur_check_time = 0;
+		maildir_sync_set_racing(ctx->maildir_sync_ctx);
 		maildir_uidlist_add_flags(ctx->mbox->uidlist, filename,
 					  MAILDIR_UIDLIST_REC_FLAG_RACING);
 		return 0;
@@ -206,7 +206,7 @@ static int maildir_handle_uid_insertion(struct maildir_index_sync_context *ctx,
 	maildir_uidlist_sync_finish(ctx->uidlist_sync_ctx);
 
 	i_warning("Maildir %s: Expunged message reappeared, giving a new UID "
-		  "(old uid=%u, file=%s)%s", ctx->mbox->box.path,
+		  "(old uid=%u, file=%s)%s", mailbox_get_path(&ctx->mbox->box),
 		  uid, filename, strncmp(filename, "msg.", 4) != 0 ? "" :
 		  " (Your MDA is saving MH files into Maildir?)");
 	return 0;
@@ -230,7 +230,7 @@ int maildir_sync_index_begin(struct maildir_mailbox *mbox,
 
 	if (mail_index_sync_begin(_box->index, &sync_ctx, &view,
 				  &trans, sync_flags) < 0) {
-		mail_storage_set_index_error(_box);
+		mailbox_set_index_error(_box);
 		return -1;
 	}
 
@@ -244,7 +244,7 @@ int maildir_sync_index_begin(struct maildir_mailbox *mbox,
 		maildir_keywords_sync_init(mbox->keywords, _box->index);
 	ctx->sync_changes =
 		index_sync_changes_init(ctx->sync_ctx, ctx->view, ctx->trans,
-					mbox->box.backend_readonly);
+					maildir_is_backend_readonly(mbox));
 	ctx->start_time = time(NULL);
 
 	*ctx_r = ctx;
@@ -278,12 +278,13 @@ static void
 maildir_sync_index_update_ext_header(struct maildir_index_sync_context *ctx)
 {
 	struct maildir_mailbox *mbox = ctx->mbox;
+	const char *cur_path;
 	const void *data;
 	size_t data_size;
 	struct stat st;
 
-	if (ctx->update_maildir_hdr_cur &&
-	    stat(t_strconcat(mbox->box.path, "/cur", NULL), &st) == 0) {
+	cur_path = t_strconcat(mailbox_get_path(&mbox->box), "/cur", NULL);
+	if (ctx->update_maildir_hdr_cur && stat(cur_path, &st) == 0) {
 		if ((time_t)mbox->maildir_hdr.cur_check_time < st.st_mtime)
 			mbox->maildir_hdr.cur_check_time = st.st_mtime;
 		mbox->maildir_hdr.cur_mtime = st.st_mtime;
@@ -312,7 +313,7 @@ static int maildir_sync_index_finish(struct maildir_index_sync_context *ctx,
 		i_warning("Maildir %s: Synchronization took %u seconds "
 			  "(%u new msgs, %u flag change attempts, "
 			  "%u expunge attempts)",
-			  ctx->mbox->box.path, time_diff,
+			  mailbox_get_path(&ctx->mbox->box), time_diff,
 			  ctx->new_msgs_count, ctx->flag_change_count,
 			  ctx->expunge_count);
 	}
@@ -328,7 +329,7 @@ static int maildir_sync_index_finish(struct maildir_index_sync_context *ctx,
 		   start a second index sync and crash. */
 		mbox->syncing_commit = TRUE;
 		if (mail_index_sync_commit(&ctx->sync_ctx) < 0) {
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 			ret = -1;
 		}
 		mbox->syncing_commit = FALSE;
@@ -356,10 +357,8 @@ void maildir_sync_index_rollback(struct maildir_index_sync_context **_ctx)
 	(void)maildir_sync_index_finish(ctx, FALSE);
 }
 
-static int uint_cmp(const void *p1, const void *p2)
+static int uint_cmp(const unsigned int *i1, const unsigned int *i2)
 {
-	const unsigned int *i1 = p1, *i2 = p2;
-
 	if (*i1 < *i2)
 		return -1;
 	else if (*i1 > *i2)
@@ -392,10 +391,11 @@ maildir_sync_mail_keywords(struct maildir_index_sync_context *ctx, uint32_t seq)
 	old_indexes = array_get(&ctx->idx_keywords, &old_count);
 	have_indexonly_keywords = FALSE;
 	for (i = old_count; i > 0; i--) {
-		if (old_indexes[i-1] < MAILDIR_MAX_KEYWORDS)
-			break;
-		have_indexonly_keywords = TRUE;
-		array_delete(&ctx->idx_keywords, i-1, 1);
+		if (maildir_keywords_idx_char(ctx->keywords_sync_ctx,
+					      old_indexes[i-1]) == '\0') {
+			have_indexonly_keywords = TRUE;
+			array_delete(&ctx->idx_keywords, i-1, 1);
+		}
 	}
 
 	if (!have_indexonly_keywords) {
@@ -465,7 +465,8 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 	unsigned int changes = 0;
 	int ret = 0;
 	time_t time_before_sync;
-	uint8_t expunged_guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t expunged_guid_128;
+	enum mail_flags private_flags_mask;
 	bool expunged, full_rescan = FALSE;
 
 	i_assert(!mbox->syncing_commit);
@@ -479,7 +480,8 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 		   first time, reset the index so we can add all messages as
 		   new */
 		i_warning("Maildir %s: UIDVALIDITY changed (%u -> %u)",
-			  mbox->box.path, hdr->uid_validity, uid_validity);
+			  mailbox_get_path(&ctx->mbox->box),
+			  hdr->uid_validity, uid_validity);
 		mail_index_reset(trans);
 		index_mailbox_reset_uidvalidity(&mbox->box);
 
@@ -490,6 +492,8 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 	}
 	hdr_next_uid = hdr->next_uid;
 
+	ctx->mbox->box.tmp_sync_view = view;
+	private_flags_mask = mailbox_get_private_flags_mask(&mbox->box);
 	time_before_sync = time(NULL);
 	mbox->syncing_commit = TRUE;
 	seq = prev_uid = 0; first_recent_uid = I_MAX(hdr->first_recent_uid, 1);
@@ -497,7 +501,7 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 	i_array_init(&ctx->idx_keywords, MAILDIR_MAX_KEYWORDS);
 	iter = maildir_uidlist_iter_init(mbox->uidlist);
 	while (maildir_uidlist_iter_next(iter, &uid, &uflags, &filename)) {
-		maildir_filename_get_flags(ctx->keywords_sync_ctx, filename,
+		maildir_filename_flags_get(ctx->keywords_sync_ctx, filename,
 					   &ctx->flags, &ctx->keywords);
 
 		i_assert(uid > prev_uid);
@@ -505,7 +509,7 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 
 		/* the private flags are kept only in indexes. don't use them
 		   at all even for newly seen mails */
-		ctx->flags &= ~mbox->box.private_flags_mask;
+		ctx->flags &= ~private_flags_mask;
 
 	again:
 		seq++;
@@ -580,7 +584,7 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 		}
 
 		/* the private flags are stored only in indexes, keep them */
-		ctx->flags |= rec->flags & mbox->box.private_flags_mask;
+		ctx->flags |= rec->flags & private_flags_mask;
 
 		if (index_sync_changes_have(ctx->sync_changes)) {
 			/* apply flag changes to maildir */
@@ -644,6 +648,7 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 
 	if (mbox->box.v.sync_notify != NULL)
 		mbox->box.v.sync_notify(&mbox->box, 0, 0);
+	ctx->mbox->box.tmp_sync_view = NULL;
 
 	/* check cur/ mtime later. if we came here from saving messages they
 	   could still be moved to cur/ directory. */
@@ -682,17 +687,18 @@ int maildir_sync_index(struct maildir_index_sync_context *ctx,
 	return ret < 0 ? -1 : (full_rescan ? 0 : 1);
 }
 
-static unsigned int maildir_list_get_ext_id(struct maildir_storage *storage,
-					    struct mail_index_view *view)
+static unsigned int
+maildir_list_get_ext_id(struct maildir_mailbox *mbox,
+			struct mail_index_view *view)
 {
-	if (storage->maildir_list_ext_id == (uint32_t)-1) {
-		storage->maildir_list_ext_id =
+	if (mbox->maildir_list_index_ext_id == (uint32_t)-1) {
+		mbox->maildir_list_index_ext_id =
 			mail_index_ext_register(mail_index_view_get_index(view),
 				"maildir", 0,
 				sizeof(struct maildir_list_index_record),
 				sizeof(uint32_t));
 	}
-	return storage->maildir_list_ext_id;
+	return mbox->maildir_list_index_ext_id;
 }
 
 int maildir_list_index_has_changed(struct mailbox *box,
@@ -706,8 +712,15 @@ int maildir_list_index_has_changed(struct mailbox *box,
 	struct stat st;
 	uint32_t ext_id;
 	bool expunged;
+	int ret;
 
-	ext_id = maildir_list_get_ext_id(mbox->storage, list_view);
+	ret = index_storage_list_index_has_changed(box, list_view, seq);
+	if (ret != 0)
+		return ret;
+	if (mbox->storage->set->maildir_very_dirty_syncs)
+		return 0;
+
+	ext_id = maildir_list_get_ext_id(mbox, list_view);
 	mail_index_lookup_ext(list_view, seq, ext_id, &data, &expunged);
 	rec = data;
 
@@ -717,8 +730,11 @@ int maildir_list_index_has_changed(struct mailbox *box,
 		return 1;
 	}
 
-	root_dir = mailbox_list_get_path(box->list, box->name,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				  &root_dir);
+	if (ret < 0)
+		return ret;
+	i_assert(ret > 0);
 
 	/* check if new/ changed */
 	new_dir = t_strconcat(root_dir, "/new", NULL);
@@ -742,9 +758,9 @@ int maildir_list_index_has_changed(struct mailbox *box,
 	return 0;
 }
 
-int maildir_list_index_update_sync(struct mailbox *box,
-				   struct mail_index_transaction *trans,
-				   uint32_t seq)
+void maildir_list_index_update_sync(struct mailbox *box,
+				    struct mail_index_transaction *trans,
+				    uint32_t seq)
 {
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)box;
 	struct mail_index_view *list_view;
@@ -755,12 +771,16 @@ int maildir_list_index_update_sync(struct mailbox *box,
 	uint32_t ext_id;
 	bool expunged;
 
+	index_storage_list_index_update_sync(box, trans, seq);
+	if (mbox->storage->set->maildir_very_dirty_syncs)
+		return;
+
 	/* get the current record */
 	list_view = mail_index_transaction_get_view(trans);
-	ext_id = maildir_list_get_ext_id(mbox->storage, list_view);
+	ext_id = maildir_list_get_ext_id(mbox, list_view);
 	mail_index_lookup_ext(list_view, seq, ext_id, &data, &expunged);
 	if (expunged)
-		return 0;
+		return;
 	old_rec = data;
 
 	memset(&new_rec, 0, sizeof(new_rec));
@@ -773,10 +793,6 @@ int maildir_list_index_update_sync(struct mailbox *box,
 	}
 
 	if (old_rec == NULL ||
-	    memcmp(old_rec, &new_rec, sizeof(old_rec)) != 0) {
-		mail_index_update_ext(trans, seq,
-				      mbox->storage->maildir_list_ext_id,
-				      &new_rec, NULL);
-	}
-	return 0;
+	    memcmp(old_rec, &new_rec, sizeof(*old_rec)) != 0)
+		mail_index_update_ext(trans, seq, ext_id, &new_rec, NULL);
 }

@@ -48,6 +48,9 @@ courier-dovecot-migrate.pl --quiet --to-dovecot --convert Maildir
 exec /usr/local/libexec/dovecot/imap
 ---%<-------------------------------------------------------------------------
 
+FIXME: The script should rename also folder names that aren't valid mUTF-7.
+Dovecot can't otherwise access such folders.
+
 Dovecot configuration
 ---------------------
 
@@ -79,4 +82,4 @@ Manual conversion
  * Courier's message keywords implementation isn't Dovecot compatible. There
    doesn't exist a simple way to convert the keywords manually.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

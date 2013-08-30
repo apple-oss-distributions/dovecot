@@ -26,6 +26,14 @@ of the base filename. For example '1199932653.M583975P6568.host,W=2211:2,' is a
 file whose virtual size is 2211 bytes (and real size somewhat smaller). Note
 that this must not be done for existing files, only to newly delivered mails.
 
+If Dovecot's LDA is used, dovecot-uidlist and the index files are updated upon
+message arrival, therefore there will be no message-size performance issues.
+
+'pop3_fast_size_lookups=yes' setting in v2.0.5+ uses the virtual message sizes
+when they're already available, but fallbacks to using the physical message
+sizes (violating POP3 specifications, but then again a lot of POP3 servers do
+that).
+
 mbox Performance
 ----------------
 
@@ -38,6 +46,10 @@ could have been avoided if the index files had just been completely disabled.
 You may want to try how performance changes if you disable indexes for POP3
 users. You can also try preserving indexes but try different values for
 'mbox_min_index_size' setting.
+
+Do not disable indexing if there are users that do not delete messages after
+downloading them.  Also, if you use Dovecot LDA, indexes may be helpful to have
+fast access to the message sizes.
 
 Session locking
 ---------------
@@ -146,4 +158,4 @@ If you use <Dovecot's deliver> [LDA.txt] or IMAP APPEND and 'pop3_uidl_format =
 %m', it always appends the X-Delivery-ID: header to saved mailbox. Any existing
 X-Delivery-ID: headers in the saved mails are dropped.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

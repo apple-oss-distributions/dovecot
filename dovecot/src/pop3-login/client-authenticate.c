@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "base64.h"
@@ -31,7 +31,7 @@ bool cmd_capa(struct pop3_client *client, const char *args ATTR_UNUSED)
 	str_append(str, "+OK\r\n");
 	str_append(str, capability_string);
 
-	if (ssl_initialized && !client->common.tls)
+	if (client_is_tls_enabled(&client->common) && !client->common.tls)
 		str_append(str, "STLS\r\n");
 	if (!client->common.set->disable_plaintext_auth ||
 	    client->common.secured)
@@ -49,26 +49,28 @@ bool cmd_capa(struct pop3_client *client, const char *args ATTR_UNUSED)
 	return TRUE;
 }
 
-bool pop3_client_auth_handle_reply(struct client *client,
-				   const struct client_auth_reply *reply)
+void pop3_client_auth_result(struct client *client,
+			     enum client_auth_result result,
+			     const struct client_auth_reply *reply ATTR_UNUSED,
+			     const char *text)
 {
-	if (!reply->nologin)
-		return FALSE;
-
-	if (reply->reason != NULL) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-				 reply->reason);
-	} else if (reply->temp) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAIL_TEMP,
-				 AUTH_TEMP_FAILED_MSG);
-	} else {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-				 AUTH_FAILED_MSG);
+	switch (result) {
+	case CLIENT_AUTH_RESULT_SUCCESS:
+		/* nothing to be done for POP3 */
+		break;
+	case CLIENT_AUTH_RESULT_TEMPFAIL:
+		client_send_reply(client, POP3_CMD_REPLY_TEMPFAIL, text);
+		break;
+	case CLIENT_AUTH_RESULT_AUTHFAILED:
+	case CLIENT_AUTH_RESULT_AUTHFAILED_REASON:
+	case CLIENT_AUTH_RESULT_AUTHZFAILED:
+	case CLIENT_AUTH_RESULT_SSL_REQUIRED:
+		client_send_reply(client, POP3_CMD_REPLY_AUTH_ERROR, text);
+		break;
+	default:
+		client_send_reply(client, POP3_CMD_REPLY_ERROR, text);
+		break;
 	}
-
-	if (!client->destroyed)
-		client_auth_failed(client);
-	return TRUE;
 }
 
 bool cmd_auth(struct pop3_client *pop3_client, const char *args)
@@ -128,8 +130,8 @@ bool cmd_pass(struct pop3_client *pop3_client, const char *args)
 		if (!client_check_plaintext_auth(client, TRUE))
 			return TRUE;
 
-		client_send_line(client, CLIENT_CMD_REPLY_BAD,
-				 "No username given.");
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  "No username given.");
 		return TRUE;
 	}
 
@@ -160,8 +162,8 @@ bool cmd_apop(struct pop3_client *pop3_client, const char *args)
 	if (pop3_client->apop_challenge == NULL) {
 		if (client->set->auth_verbose)
 			client_log(client, "APOP failed: APOP not enabled");
-		client_send_line(client, CLIENT_CMD_REPLY_BAD,
-				 "APOP not enabled.");
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  "APOP not enabled.");
 		return TRUE;
 	}
 
@@ -170,8 +172,8 @@ bool cmd_apop(struct pop3_client *pop3_client, const char *args)
 	if (p == NULL || strlen(p+1) != 32) {
 		if (client->set->auth_verbose)
 			client_log(client, "APOP failed: Invalid parameters");
-		client_send_line(client, CLIENT_CMD_REPLY_BAD,
-				 "Invalid parameters.");
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  "Invalid parameters.");
 		return TRUE;
 	}
 
@@ -187,8 +189,8 @@ bool cmd_apop(struct pop3_client *pop3_client, const char *args)
 			client_log(client, "APOP failed: "
 				   "Invalid characters in MD5 response");
 		}
-		client_send_line(client, CLIENT_CMD_REPLY_BAD,
-				 "Invalid characters in MD5 response.");
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  "Invalid characters in MD5 response.");
 		return TRUE;
 	}
 

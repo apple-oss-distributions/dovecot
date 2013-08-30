@@ -2,7 +2,34 @@
  * Contains:   Routines Mail Services support for Apple Push Notification Service.
  * Written by: Michael (for addtl writers check SVN comments).
  *
- * Copyright (c) 2011-2012 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without  
+ * modification, are permitted provided that the following conditions  
+ * are met:
+ * 
+ * 1.  Redistributions of source code must retain the above copyright  
+ * notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above  
+ * copyright notice, this list of conditions and the following  
+ * disclaimer in the documentation and/or other materials provided  
+ * with the distribution.
+ * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
+ * contributors may be used to endorse or promote products derived  
+ * from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
+ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
+ * SUCH DAMAGE.
  * 
  * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
  * computers and is subject to the terms and conditions of the Apple Software
@@ -15,8 +42,6 @@
  * Note:       When editing this file set Xcode to "Editor uses tabs/width=4".
  *             Any other editor or tab setting may not show this file nicely!
  */
-
-#import <syslog.h>
 
 #import "push_notify.h"
 #import "APNSNotify.h"
@@ -68,7 +93,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	else
 		name = sandboxHost;
 
-	syslog(VLOG_NOTICE, "Opening connection to apn server %s for topic %s (port 2195)", [name UTF8String], [[self topic_name] UTF8String]);
+	log_info("Opening connection to apn server %s for topic %s (port 2195)", [name UTF8String], [[self topic_name] UTF8String]);
 	[self connectToHost:name port:2195];
 }
 
@@ -77,7 +102,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 
 -(void) newConnectionCreated
 {
-	syslog(VLOG_INFO, "Connected to apn server %s for topic %s", [host UTF8String], [[self topic_name] UTF8String] );
+	log_info("Connected to apn server %s for topic %s", [host UTF8String], [[self topic_name] UTF8String] );
 }
 
 // -----------------------------------------------------------------
@@ -86,11 +111,10 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 -(void) connectionClosed: (NSError *)streamError
 {
 	if ( !streamError )
-		syslog( streamError ? VLOG_WARNING : VLOG_NOTICE, 
-			"Disconnected from apn server %s for topic %s", 
+		log_warning("Disconnected from apn server %s for topic %s", 
 			[host UTF8String], [[self topic_name] UTF8String] );
 	else {
-		syslog(VLOG_NOTICE,  "Disconnected from apn server %s for topic %s: error %s", 
+		log_info("Disconnected from apn server %s for topic %s: error %s", 
 			[host UTF8String], [[self topic_name] UTF8String], [[streamError localizedFailureReason]UTF8String] );
 
 		[self startReconnect];
@@ -120,7 +144,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	CFRelease(cp);
 
 	if ( identity == NULL ) {
-		syslog(VLOG_ERR, "Couldn't get identity for preference %s", [in_cert_pref UTF8String]);
+		log_err("Couldn't get identity for preference %s", [in_cert_pref UTF8String]);
 		_ssl_settings = nil;
 		return;
 	}
@@ -140,19 +164,19 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	CFRelease(cert);
 
 	if (dict == nil)
-		syslog(VLOG_WARNING, "SSL certificate null certificate dictionary!");
+		log_warning("SSL certificate null certificate dictionary!");
 
 #if 0 // debug
 	NSString *description = [dict description];
 	NSArray *lines = [description componentsSeparatedByString: @"\n"];
 	for (NSString *line in lines)
-		syslog(VLOG_DEBUG, "%s", [line UTF8String]);
+		log_debug("%s", [line UTF8String]);
 #endif
 
 	if ([dict objectForKey:productionOID] != nil)
 		_is_production = YES;
 	else if ([dict objectForKey:sandboxOID] == nil)
-		syslog(VLOG_WARNING, "Doesn't appear to be valid push cert");
+		log_warning("Doesn't appear to be valid push cert");
 			  
 	NSArray* nameArray = [[dict objectForKey:(NSString*)kSecOIDX509V1SubjectName] objectForKey:(NSString*)kSecPropertyKeyValue];
 	for (NSDictionary* nameDict in nameArray) {
@@ -161,7 +185,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	}
 	CFRelease((CFDictionaryRef)dict);
 	
-	syslog(VLOG_INFO, "is production = %d, topic = %s", _is_production, [_topic_name UTF8String]);
+	log_info("is production = %d, topic = %s", _is_production, [_topic_name UTF8String]);
 	
 	if (_is_production)
 		[sslSettings setObject:prodHost forKey:(NSString*)kCFStreamSSLPeerName];
@@ -222,7 +246,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 		[msg appendString:chars];
 		[msg appendString:@"\n"];
 	}
-	syslog(VLOG_DEBUG, "%s message:\n%s", [in_tag UTF8String], [msg UTF8String]);
+	log_debug("%s message:\n%s", [in_tag UTF8String], [msg UTF8String]);
 } // hex_log_msg
 
 // -----------------------------------------------------------------
@@ -238,7 +262,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	size_t data_len = [in_data length];
 	const uint8_t *data_buff = [in_data bytes];
 
-	syslog(VLOG_DEBUG, "notify: have data: length: %d", (int)data_len);
+	log_debug("notify: have data: length: %d", (int)data_len);
 
 	if (data_buff[0] == 8 && data_len >= 6) {
 		int status = data_buff[1];
@@ -255,9 +279,9 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 			case 8: err_txt = " Invalid token"; break;
 		   default: err_txt = " Unknown error"; break;
 		}
-		syslog(VLOG_ERR, "Error: Received notification response: %s (%d) with response identifier: %d", err_txt, status, resp_ID);
+		log_err("Error: Received notification response: %s (%d) with response identifier: %d", err_txt, status, resp_ID);
 	} else if ( data_len ){
-		syslog(VLOG_ERR, "Received unknown notification response with command: %d length: %d", (int)data_buff[1], (int)data_len);
+		log_err("Received unknown notification response with command: %d length: %d", (int)data_buff[1], (int)data_len);
 		[self hex_log_msg: data_buff size: data_len tag: @"receive"];
 	}
 
@@ -277,7 +301,7 @@ NSString* sandboxHost = @"gateway.sandbox.push.apple.com";
 	uint8_t binary_device_token[32];
 	const char* device_str = [in_device UTF8String];
 	if (device_str == NULL || strspn(device_str, "0123456789ABCDEFabcdef") != 64 || device_str[64] != '\0') {
-		syslog(VLOG_WARNING, "Got bad device ID: %s", [in_device UTF8String]);
+		log_warning("Got bad device ID: %s", [in_device UTF8String]);
 		return;
 	}
 

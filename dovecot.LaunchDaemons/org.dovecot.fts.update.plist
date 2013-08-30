@@ -14,6 +14,10 @@
 		<string>--syslog</string>
 		<string>--queued</string>
 	</array>
+	<key>StandardOutPath</key>
+	<string>/Library/Logs/Mail/mail-info.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Logs/Mail/mail-err.log</string>
 	<key>QueueDirectories</key>
 	<array>
 		<string>/var/db/dovecot.fts.update</string>

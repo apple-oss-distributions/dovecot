@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_TOOL_H
@@ -6,7 +6,7 @@
 
 #include "sieve-common.h"
 
-/* 
+/*
  * Types
  */
 
@@ -30,7 +30,7 @@ struct sieve_tool *sieve_tool_init
 int sieve_tool_getopt(struct sieve_tool *tool);
 
 struct sieve_instance *sieve_tool_init_finish
-	(struct sieve_tool *tool, bool init_mailstore);
+	(struct sieve_tool *tool, bool init_mailstore, bool preserve_root);
 
 void sieve_tool_deinit(struct sieve_tool **_tool);
 

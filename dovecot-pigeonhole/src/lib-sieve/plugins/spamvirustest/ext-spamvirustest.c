@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extensions spamtest, spamtestplus and virustest
@@ -18,7 +18,7 @@
  * sieve_spamtest_status_header = \
  *   X-Spam-Score: [[:alnum:]]+, score=(-?[[:digit:]]+\.[[:digit:]])
  * sieve_spamtest_max_value = 5.0
- * 
+ *
  * # 2: X-Spam-Status: Yes
  *
  * sieve_spamtest_status_header = X-Spam-Status
@@ -33,9 +33,9 @@
  * # 4: X-Spam-Score: status=3.2 required=5.0
  *
  * sieve_spamtest_status_header = \
- *   X-Spam-Score: score=(-?[[:digit:]]+\.[[:digit:]]).* 
+ *   X-Spam-Score: score=(-?[[:digit:]]+\.[[:digit:]]).*
  * sieve_spamtest_max_header = \
- *   X-Spam-Score: score=-?[[:digit:]]+\.[[:digit:]] required=([[:digit:]]+\.[[:digit:]]) 
+ *   X-Spam-Score: score=-?[[:digit:]]+\.[[:digit:]] required=([[:digit:]]+\.[[:digit:]])
  *
  * # 5: X-Virus-Scan: Found to be clean.
  *
@@ -45,7 +45,7 @@
  * sieve_virustest_text_value1 = clean
  * sieve_virustest_text_value5 = infected
  */
- 
+
 #include "lib.h"
 #include "array.h"
 
@@ -58,8 +58,8 @@
 
 #include "ext-spamvirustest-common.h"
 
-/* 
- * Extensions 
+/*
+ * Extensions
  */
 
 /* Spamtest */
@@ -67,34 +67,28 @@
 static bool ext_spamvirustest_validator_load
 (const struct sieve_extension *ext, struct sieve_validator *validator);
 
-const struct sieve_extension_def spamtest_extension = { 
-	"spamtest", 
-	ext_spamvirustest_load, 
-	ext_spamvirustest_unload,
-	ext_spamvirustest_validator_load, 
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_OPERATION(spamtest_operation), 
-	SIEVE_EXT_DEFINE_NO_OPERANDS
+const struct sieve_extension_def spamtest_extension = {
+	.name = "spamtest",
+	.load = ext_spamvirustest_load,
+	.unload = ext_spamvirustest_unload,
+	.validator_load = ext_spamvirustest_validator_load,
+	SIEVE_EXT_DEFINE_OPERATION(spamtest_operation)
 };
 
-const struct sieve_extension_def spamtestplus_extension = { 
-	"spamtestplus", 
-	ext_spamvirustest_load,  
-	ext_spamvirustest_unload,
-	ext_spamvirustest_validator_load, 
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_OPERATION(spamtest_operation), 
-	SIEVE_EXT_DEFINE_NO_OPERANDS
+const struct sieve_extension_def spamtestplus_extension = {
+	.name = "spamtestplus",
+	.load = ext_spamvirustest_load,
+	.unload = ext_spamvirustest_unload,
+	.validator_load = ext_spamvirustest_validator_load,
+	SIEVE_EXT_DEFINE_OPERATION(spamtest_operation)
 };
 
-const struct sieve_extension_def virustest_extension = { 
-	"virustest", 
-	ext_spamvirustest_load, 
-	ext_spamvirustest_unload,
-	ext_spamvirustest_validator_load, 
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_OPERATION(virustest_operation), 
-	SIEVE_EXT_DEFINE_NO_OPERANDS
+const struct sieve_extension_def virustest_extension = {
+	.name = "virustest",
+	.load = ext_spamvirustest_load,
+	.unload = ext_spamvirustest_unload,
+	.validator_load = ext_spamvirustest_validator_load,
+	SIEVE_EXT_DEFINE_OPERATION(virustest_operation)
 };
 
 /*
@@ -102,7 +96,7 @@ const struct sieve_extension_def virustest_extension = {
  */
 
 static bool ext_spamtest_validator_extension_validate
-	(const struct sieve_extension *ext, struct sieve_validator *valdtr, 
+	(const struct sieve_extension *ext, struct sieve_validator *valdtr,
 		void *context, struct sieve_ast_argument *require_arg);
 
 const struct sieve_validator_extension spamtest_validator_extension = {
@@ -132,7 +126,7 @@ static bool ext_spamvirustest_validator_load
 }
 
 static bool ext_spamtest_validator_extension_validate
-(const struct sieve_extension *ext, struct sieve_validator *valdtr, 
+(const struct sieve_extension *ext, struct sieve_validator *valdtr,
 	void *context ATTR_UNUSED, struct sieve_ast_argument *require_arg)
 {
 	const struct sieve_extension *ext_spamtestplus =

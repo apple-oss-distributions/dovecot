@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
@@ -64,7 +64,11 @@ static struct stack_block *unused_block; /* largest unused block is kept here */
 
 static struct stack_block *last_buffer_block;
 static size_t last_buffer_size;
+#ifdef DEBUG
+static bool clean_after_pop = TRUE;
+#else
 static bool clean_after_pop = FALSE;
+#endif
 static bool outofmem = FALSE;
 
 static union {
@@ -367,7 +371,7 @@ static void *t_malloc_real(size_t size, bool permanent)
 
 		ret = STACK_BLOCK_DATA(current_block);
 #ifdef DEBUG
-		if (warn) {
+		if (warn && getenv("DEBUG_SILENT") == NULL) {
 			/* warn after allocation, so if i_warning() wants to
 			   allocate more memory we don't go to infinite loop */
 			i_warning("Growing data stack with: %"PRIuSIZE_T,
@@ -472,13 +476,13 @@ void t_buffer_alloc(size_t size)
 	i_assert(current_block->left >= size);
 
 	/* we've already reserved the space, now we just mark it used */
-	t_malloc_real(size, TRUE);
+	(void)t_malloc_real(size, TRUE);
 }
 
 void t_buffer_alloc_last_full(void)
 {
 	if (last_buffer_block != NULL)
-		t_malloc_real(last_buffer_size, TRUE);
+		(void)t_malloc_real(last_buffer_size, TRUE);
 }
 
 void data_stack_set_clean_after_pop(bool enable ATTR_UNUSED)
@@ -490,33 +494,33 @@ void data_stack_set_clean_after_pop(bool enable ATTR_UNUSED)
 
 void data_stack_init(void)
 {
-#ifdef DEBUG
-	clean_after_pop = TRUE;
-#endif
-	if (data_stack_frame == 0) {
-		data_stack_frame = 1;
-
-		outofmem_area.block.size = outofmem_area.block.left =
-			sizeof(outofmem_area) - sizeof(outofmem_area.block);
-
-		current_block = mem_block_alloc(INITIAL_STACK_SIZE);
-		current_block->left = current_block->size;
-		current_block->next = NULL;
-
-		current_frame_block = NULL;
-		unused_frame_blocks = NULL;
-		frame_pos = BLOCK_FRAME_COUNT-1;
-
-		last_buffer_block = NULL;
-		last_buffer_size = 0;
+	if (data_stack_frame > 0) {
+		/* already initialized (we did auto-initialization in
+		   t_malloc/t_push) */
+		return;
 	}
+	data_stack_frame = 1;
 
-	t_push();
+	outofmem_area.block.size = outofmem_area.block.left =
+		sizeof(outofmem_area) - sizeof(outofmem_area.block);
+
+	current_block = mem_block_alloc(INITIAL_STACK_SIZE);
+	current_block->left = current_block->size;
+	current_block->next = NULL;
+
+	current_frame_block = NULL;
+	unused_frame_blocks = NULL;
+	frame_pos = BLOCK_FRAME_COUNT-1;
+
+	last_buffer_block = NULL;
+	last_buffer_size = 0;
+
+	(void)t_push();
 }
 
 void data_stack_deinit(void)
 {
-	t_pop();
+	(void)t_pop();
 
 	if (frame_pos != BLOCK_FRAME_COUNT-1)
 		i_panic("Missing t_pop() call");

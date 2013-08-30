@@ -11,6 +11,10 @@ Contents
 
      1. Configuration file
 
+         1. Installing from sources
+
+         2. Split configuration files
+
      2. Authentication
 
      3. Mail Location
@@ -30,23 +34,41 @@ Contents
 Configuration file
 ------------------
 
+Prebuilt packages usually install the configuration files into '/etc/dovecot/'.
+You'll find the correct path by running:
+
+---%<-------------------------------------------------------------------------
+doveconf -n | head -n 1
+---%<-------------------------------------------------------------------------
+
+It's a good idea to read through all the config files and see what settings you
+might want to change.
+
+Installing from sources
+-----------------------
+
 If you compiled and installed Dovecot from sources, Dovecot has installed only
 a '/usr/local/etc/dovecot/README' file, which contains the path to the
 installed example configuration files, usually
-'/usr/local/share/doc/dovecot/example-config'. Copy the 'dovecot.conf' file and
-'conf.d' directory from the example-config directory into
-'/usr/local/etc/dovecot/'. Prebuilt packages usually install the configuration
-files directly into '/etc/dovecot/'.
- You'll find the path by running 'doveconf -n | head -n 1'.
- It's a good idea to read through all the files and see what settings you might
-want to change.
+'/usr/local/share/doc/dovecot/example-config'. Copy them to etc/:
+
+---%<-------------------------------------------------------------------------
+cp -r /usr/local/share/doc/dovecot/example-config/* /usr/local/etc/dovecot/
+---%<-------------------------------------------------------------------------
+
+Split configuration files
+-------------------------
 
 The default configuration starts from 'dovecot.conf', which contains an
-'!include conf.d/*.conf' statement to read the rest of the configuration. This
-split of configuration files isn't a requirement to use, and it doesn't really
-matter which .conf file you add any particular setting, just as long as it
-isn't overridden in another file. You can verify with 'doveconf -n' that
-everything looks as you intended.
+'!include conf.d/*.conf' statement to read the rest of the configuration. The
+idea is that the settings are nicely grouped into different files to make it
+easier for new admins to scan through related settings. It doesn't matter which
+config file you add which setting. In the production system it's often easier
+to just have a single 'dovecot.conf' file, which you can create easily using
+
+---%<-------------------------------------------------------------------------
+doveconf -n > dovecot.conf
+---%<-------------------------------------------------------------------------
 
 Authentication
 --------------
@@ -104,10 +126,11 @@ If you intend to use SSL, set 'ssl_cert' and 'ssl_key' settings. Otherwise set
 'ssl = no'. Easiest way to get SSL certificates built is to use Dovecot's
 'doc/mkcert.sh' script. See <SSL.txt>.
 
-By default Dovecot doesn't allow users to send passwords unencrypted to the
-server. Usually if SSL is enabled, it's a good idea not to allow this. However,
-if you don't offer SSL for some reason, you'll probably want to set
-'disable_plaintext_auth = no'.
+By default 'disable_plaintext_auth = yes', which means that Dovecot will fail
+the authentication if the client doesn't use SSL (or use <non-plaintext
+authentication> [Authentication.Mechanisms.txt]). This is recommended in most
+situations, since it prevents leaking passwords. However, if you don't offer
+SSL for some reason, you'll probably want to set 'disable_plaintext_auth = no'.
 
 NFS
 ---
@@ -120,4 +143,4 @@ Running
 
 See <RunningDovecot.txt> and <Logging.txt>.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

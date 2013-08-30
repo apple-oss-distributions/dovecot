@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -145,7 +145,7 @@ int dbox_mail_get_save_date(struct mail *_mail, time_t *date_r)
 	if (storage->v.mail_open(mail, &offset, &file) < 0)
 		return -1;
 
-	mail->imail.mail.stats_fstat_lookup_count++;
+	_mail->transaction->stats.fstat_lookup_count++;
 	if (dbox_file_stat(file, &st) < 0) {
 		if (errno == ENOENT)
 			mail_set_expunged(_mail);
@@ -165,12 +165,19 @@ dbox_get_cached_metadata(struct dbox_mail *mail, enum dbox_metadata_key key,
 		INDEX_STORAGE_CONTEXT(imail->mail.mail.box);
 	const char *value;
 	string_t *str;
+	uint32_t order;
 
-	str = str_new(imail->data_pool, 64);
-	if (mail_cache_lookup_field(imail->trans->cache_view, str,
-				    imail->mail.mail.seq,
+	str = str_new(imail->mail.data_pool, 64);
+	if (mail_cache_lookup_field(imail->mail.mail.transaction->cache_view,
+				    str, imail->mail.mail.seq,
 				    ibox->cache_fields[cache_field].idx) > 0) {
-		*value_r = str_c(str);
+		if (cache_field != MAIL_CACHE_POP3_ORDER)
+			*value_r = str_c(str);
+		else {
+			i_assert(str_len(str) == sizeof(order));
+			memcpy(&order, str_data(str), sizeof(order));
+			*value_r = order == 0 ? "" : dec2str(order);
+		}
 		return 0;
 	}
 
@@ -179,8 +186,15 @@ dbox_get_cached_metadata(struct dbox_mail *mail, enum dbox_metadata_key key,
 
 	if (value == NULL)
 		value = "";
-	index_mail_cache_add_idx(imail, ibox->cache_fields[cache_field].idx,
-				 value, strlen(value)+1);
+	if (cache_field != MAIL_CACHE_POP3_ORDER) {
+		index_mail_cache_add_idx(imail, ibox->cache_fields[cache_field].idx,
+					 value, strlen(value)+1);
+	} else {
+		if (str_to_uint(value, &order) < 0)
+			order = 0;
+		index_mail_cache_add_idx(imail, ibox->cache_fields[cache_field].idx,
+					 &order, sizeof(order));
+	}
 
 	/* don't return pointer to dbox metadata directly, since it may
 	   change unexpectedly */
@@ -202,6 +216,9 @@ int dbox_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 	case MAIL_FETCH_UIDL_BACKEND:
 		return dbox_get_cached_metadata(mail, DBOX_METADATA_POP3_UIDL,
 						MAIL_CACHE_POP3_UIDL, value_r);
+	case MAIL_FETCH_POP3_ORDER:
+		return dbox_get_cached_metadata(mail, DBOX_METADATA_POP3_ORDER,
+						MAIL_CACHE_POP3_ORDER, value_r);
 	case MAIL_FETCH_GUID:
 		return dbox_get_cached_metadata(mail, DBOX_METADATA_GUID,
 						MAIL_CACHE_GUID, value_r);
@@ -220,8 +237,10 @@ get_mail_stream(struct dbox_mail *mail, uoff_t offset,
 	struct dbox_file *file = mail->open_file;
 	int ret;
 
-	if ((ret = dbox_file_seek(file, offset)) <= 0)
+	if ((ret = dbox_file_seek(file, offset)) <= 0) {
+		*stream_r = NULL;
 		return ret;
+	}
 
 	*stream_r = i_stream_create_limit(file->input, file->cur_physical_size);
 	if (pmail->v.istream_opened != NULL) {
@@ -234,7 +253,8 @@ get_mail_stream(struct dbox_mail *mail, uoff_t offset,
 		return dbox_attachment_file_get_stream(file, stream_r);
 }
 
-int dbox_mail_get_stream(struct mail *_mail, struct message_size *hdr_size,
+int dbox_mail_get_stream(struct mail *_mail, bool get_body ATTR_UNUSED,
+			 struct message_size *hdr_size,
 			 struct message_size *body_size,
 			 struct istream **stream_r)
 {
@@ -257,6 +277,8 @@ int dbox_mail_get_stream(struct mail *_mail, struct message_size *hdr_size,
 			dbox_file_set_corrupted(mail->open_file,
 				"uid=%u points to broken data at offset="
 				"%"PRIuUOFF_T, _mail->uid, offset);
+			if (input != NULL)
+				i_stream_unref(&input);
 			return -1;
 		}
 		data->stream = input;

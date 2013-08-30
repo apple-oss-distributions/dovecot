@@ -1,8 +1,13 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
 #include "str.h"
+
+#include "sieve.h"
+#include "sieve-script.h"
+#include "sieve-script-file.h"
+
 #include "sieve-storage-private.h"
 #include "sieve-storage-script.h"
 #include "sieve-storage-quota.h"
@@ -30,10 +35,16 @@ bool sieve_storage_quota_validsize
 	return TRUE;
 }
 
+uint64_t sieve_storage_quota_max_script_size
+(struct sieve_storage *storage)
+{
+	return sieve_max_script_size(storage->svinst);
+}
+
 int sieve_storage_quota_havespace
 (struct sieve_storage *storage, const char *scriptname, size_t size,
 	enum sieve_storage_quota *quota_r, uint64_t *limit_r)
-{	
+{
 	struct dirent *dp;
 	DIR *dirp;
 	uint64_t script_count = 1;
@@ -78,16 +89,16 @@ int sieve_storage_quota_havespace
 		}
 
 		/* Parse filename */
-		name = sieve_scriptfile_get_script_name(dp->d_name);	
+		name = sieve_scriptfile_get_script_name(dp->d_name);
 
 		/* Ignore non-script files */
 		if ( name == NULL )
 			continue;
-			
-		/* Don't list our active sieve script link if the link 
+
+		/* Don't list our active sieve script link if the link
 		 * resides in the script dir (generally a bad idea).
 		 */
-		if ( *(storage->link_path) == '\0' && 
+		if ( *(storage->link_path) == '\0' &&
 			strcmp(storage->active_fname, dp->d_name) == 0 )
 			continue;
 
@@ -98,8 +109,8 @@ int sieve_storage_quota_havespace
 		if ( storage->max_scripts > 0 ) {
 			if ( !replaced ) {
 				script_count++;
-			
-				if ( script_count > storage->max_scripts ) {				
+
+				if ( script_count > storage->max_scripts ) {
 					*quota_r = SIEVE_STORAGE_QUOTA_MAXSCRIPTS;
 					*limit_r = storage->max_scripts;
 					result = 0;
@@ -109,14 +120,13 @@ int sieve_storage_quota_havespace
 		}
 
 		/* Check storage quota if necessary */
-		if ( storage->max_storage > 0 ) { 
+		if ( storage->max_storage > 0 ) {
 			const char *path;
 			struct stat st;
-			int ret;
 
 			path = t_strconcat(storage->dir, "/", dp->d_name, NULL);
-		
-			if ( (ret=stat(path, &st)) < 0 ) {
+
+			if ( stat(path, &st) < 0 ) {
 				i_warning
 					("sieve-storage: quota: stat(%s) failed: %m", path);
 				continue;
@@ -129,7 +139,7 @@ int sieve_storage_quota_havespace
 					*quota_r = SIEVE_STORAGE_QUOTA_MAXSTORAGE;
 					*limit_r = storage->max_storage;
 					result = 0;
-					break;	
+					break;
 				}
 			}
 		}
@@ -145,5 +155,5 @@ int sieve_storage_quota_havespace
 }
 
 
-	
-    
+
+

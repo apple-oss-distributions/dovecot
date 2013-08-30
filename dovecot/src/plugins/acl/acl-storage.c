@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -37,8 +37,6 @@ static void acl_mail_user_create(struct mail_user *user, const char *env)
 
 	auser->acl_env = env;
 	auser->master_user = mail_user_plugin_getenv(user, "master_user");
-	/* APPLE - urlauth */
-	auser->submit_user = mail_user_plugin_getenv(user, "submit_user");
 
 	env = mail_user_plugin_getenv(user, "acl_groups");
 	if (env != NULL) {
@@ -54,7 +52,7 @@ void acl_mail_user_created(struct mail_user *user)
 	const char *env;
 
 	env = mail_user_plugin_getenv(user, "acl");
-	if (env != NULL)
+	if (env != NULL && *env != '\0')
 		acl_mail_user_create(user, env);
 	else {
 		if (user->mail_debug)

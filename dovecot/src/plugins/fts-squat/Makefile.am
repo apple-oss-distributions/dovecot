@@ -5,6 +5,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage \
 	-I$(top_srcdir)/src/plugins/fts
 
+NOPLUGIN_LDFLAGS =
 lib21_fts_squat_plugin_la_LDFLAGS = -module -avoid-version
 
 module_LTLIBRARIES = \
@@ -36,9 +37,11 @@ common_objects = \
 	squat-trie.lo \
 	squat-uidlist.lo
 
-libs = \
+squat_test_LDADD = \
+	$(common_objects) \
 	$(LIBDOVECOT_STORAGE) \
-	$(common_objects)
-
-squat_test_LDADD = $(libs) $(LIBDOVECOT)
-squat_test_DEPENDENCIES = $(libs) $(LIBDOVECOT_DEPS)
+	$(LIBDOVECOT)
+squat_test_DEPENDENCIES = \
+	$(common_objects) \
+	$(LIBDOVECOT_STORAGE_DEPS) \
+	$(LIBDOVECOT_DEPS)

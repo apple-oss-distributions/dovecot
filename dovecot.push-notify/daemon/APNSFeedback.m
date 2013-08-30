@@ -2,7 +2,34 @@
  * Contains:   Routines Mail Services support for Apple Push Notification Service.
  * Written by: Michael (for addtl writers check SVN comments).
  *
- * Copyright:  © 2008-2012 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without  
+ * modification, are permitted provided that the following conditions  
+ * are met:
+ * 
+ * 1.  Redistributions of source code must retain the above copyright  
+ * notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above  
+ * copyright notice, this list of conditions and the following  
+ * disclaimer in the documentation and/or other materials provided  
+ * with the distribution.
+ * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
+ * contributors may be used to endorse or promote products derived  
+ * from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
+ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
+ * SUCH DAMAGE.
  * 
  * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
  * computers and is subject to the terms and conditions of the Apple Software
@@ -16,8 +43,6 @@
  *             Any other editor or tab setting may not show this file nicely!
  */
 
-
-#import <syslog.h>
 
 #import "push_notify.h"
 #import "APNSFeedback.h"
@@ -60,7 +85,8 @@ NSString* feedbackSandboxHost = @"feedback.sandbox.push.apple.com";
 	} else {
 		name = feedbackSandboxHost;
 	}
-	syslog(VLOG_NOTICE, "Opening connection to apn feedback server %s for topic %s", [name UTF8String], [[_pn_connection topic_name] UTF8String]);
+	log_info("Opening connection to apn feedback server %s for topic %s",
+		[name UTF8String], [[_pn_connection topic_name] UTF8String]);
 	[self connectToHost:name port:2196];
 } // connect
 
@@ -69,7 +95,8 @@ NSString* feedbackSandboxHost = @"feedback.sandbox.push.apple.com";
 
 -(void) newConnectionCreated
 {
-	syslog(VLOG_INFO, "Connected to apn feedback server %s for topic %s", [host UTF8String], [[_pn_connection topic_name]UTF8String]);
+	log_info("Connected to apn feedback server %s for topic %s",
+		[host UTF8String], [[_pn_connection topic_name]UTF8String]);
 } // newConnectionCreated
 
 // -----------------------------------------------------------------
@@ -78,9 +105,10 @@ NSString* feedbackSandboxHost = @"feedback.sandbox.push.apple.com";
 -(void) connectionClosed: (NSError *) streamError
 {
 	if ( !streamError )
-		syslog(VLOG_NOTICE, "Disconnected from apn feedback server %s for topic %s", [host UTF8String], [[_pn_connection topic_name]UTF8String]);
+		log_info("Disconnected from apn feedback server %s for topic %s",
+			[host UTF8String], [[_pn_connection topic_name]UTF8String]);
 	else {
-		syslog(VLOG_WARNING, "Disconnected from apn feedback server %s for topic %s: error: %s",
+		log_warning("Disconnected from apn feedback server %s for topic %s: error: %s",
 			[host UTF8String], [[_pn_connection topic_name]UTF8String], [[streamError localizedFailureReason]UTF8String]);
 
 		[self startReconnect];
@@ -129,20 +157,20 @@ NSString* feedbackSandboxHost = @"feedback.sandbox.push.apple.com";
 	size_t length = [data length];
 	const char *bytes = start;
 
-	syslog(VLOG_DEBUG, "feedback: have data: length: %d", (int)length);
+	log_debug("feedback: have data: length: %d", (int)length);
 
 	while ( (start + length - bytes) >= 38 ) {
 		// TODO: use date for re-rigestration of device
 		UInt32 date = ntohl(*(UInt32*)bytes);
-		syslog(VLOG_DEBUG, "feedback: have data: date: %d", (int)date);
+		log_debug("feedback: have data: date: %d", (int)date);
 
 		bytes += 4;
 		UInt16 size = ntohs(*(UInt16*)bytes);
-		syslog(VLOG_DEBUG, "feedback: have data: token length: %d", (int)size);
+		log_debug("feedback: have data: token length: %d", (int)size);
 
 		bytes += 2;
 		if (size != 32) {
-			syslog(VLOG_WARNING, "feedback: have data: unexpected token size %d", (int)size);
+			log_warning("feedback: have data: unexpected token size %d", (int)size);
 			if (size > start+length-bytes) {
 				bytes -= 6;
 				break;
@@ -155,11 +183,11 @@ NSString* feedbackSandboxHost = @"feedback.sandbox.push.apple.com";
 		NSDateFormatter *format = [[NSDateFormatter alloc] init];
 		[format setDateFormat:@"MMM dd, yyyy HH:mm"];
 		NSString *dateString = [format stringFromDate: rejectDate];
-		syslog(VLOG_DEBUG, "feedback: have data: date string: %s", [dateString UTF8String]);
+		log_debug("feedback: have data: date string: %s", [dateString UTF8String]);
 
 		// Flag device as not responding & stop sending notifications
 		NSString *token = [self convertBytesToToken: bytes length: size];
-		syslog(VLOG_WARNING, "feedback: have data: token: %s", [token UTF8String]);
+		log_warning("feedback: have data: token: %s", [token UTF8String]);
 		bytes += size;
 
 		NSMutableDictionary *devices = [NSMutableDictionary dictionaryWithContentsOfFile: DEVICE_MAPS_PATH];

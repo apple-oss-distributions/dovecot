@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+# Copyright (c) 2010-2013 Apple Inc. All rights reserved.
 # 
 # Redistribution and use in source and binary forms, with or without  
 # modification, are permitted provided that the following conditions  
@@ -35,10 +35,10 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-mail \
 	-I$(top_srcdir)/src/lib-index \
 	-I$(top_srcdir)/src/lib-storage \
-	-I$(top_srcdir)/src/imap \
 	-I$(top_srcdir)/src/plugins/fts \
 	-DPKG_LIBEXECDIR=\""$(pkglibexecdir)"\"
 
+NOPLUGIN_LDFLAGS =
 lib21_fts_sk_plugin_la_LDFLAGS = -module -avoid-version \
 	-framework CoreFoundation \
 	-framework CoreServices

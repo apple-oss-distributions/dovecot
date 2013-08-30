@@ -1,9 +1,10 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "hash-format.h"
 #include "var-expand.h"
+#include "unichar.h"
 #include "settings-parser.h"
 #include "mail-index.h"
 #include "mail-user.h"
@@ -15,6 +16,7 @@
 
 static bool mail_storage_settings_check(void *_set, pool_t pool, const char **error_r);
 static bool namespace_settings_check(void *_set, pool_t pool, const char **error_r);
+static bool mailbox_settings_check(void *_set, pool_t pool, const char **error_r);
 static bool mail_user_settings_check(void *_set, pool_t pool, const char **error_r);
 
 #undef DEF
@@ -28,24 +30,33 @@ static const struct setting_define mail_storage_setting_defines[] = {
 	DEF(SET_STR_VARS, mail_attachment_dir),
 	DEF(SET_STR, mail_attachment_hash),
 	DEF(SET_SIZE, mail_attachment_min_size),
+	DEF(SET_STR_VARS, mail_attribute_dict),
+	DEF(SET_UINT, mail_prefetch_count),
 	DEF(SET_STR, mail_cache_fields),
+	DEF(SET_STR, mail_always_cache_fields),
 	DEF(SET_STR, mail_never_cache_fields),
 	DEF(SET_UINT, mail_cache_min_mail_count),
 	DEF(SET_TIME, mailbox_idle_check_interval),
 	DEF(SET_UINT, mail_max_keyword_length),
 	DEF(SET_TIME, mail_max_lock_timeout),
+	DEF(SET_TIME, mail_temp_scan_interval),
 	DEF(SET_BOOL, mail_save_crlf),
 	DEF(SET_ENUM, mail_fsync),
 	DEF(SET_BOOL, mmap_disable),
 	DEF(SET_BOOL, dotlock_use_excl),
 	DEF(SET_BOOL, mail_nfs_storage),
 	DEF(SET_BOOL, mail_nfs_index),
-	DEF(SET_BOOL, mailbox_list_index_disable),
+	DEF(SET_BOOL, mailbox_list_index),
 	DEF(SET_BOOL, mail_debug),
 	DEF(SET_BOOL, mail_full_filesystem_access),
 	DEF(SET_BOOL, maildir_stat_dirs),
+	DEF(SET_BOOL, mail_shared_explicit_inbox),
 	DEF(SET_ENUM, lock_method),
 	DEF(SET_STR, pop3_uidl_format),
+
+	DEF(SET_STR, ssl_client_ca_dir),
+	DEF(SET_STR, ssl_client_ca_file),
+	DEF(SET_STR, ssl_crypto_device),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -56,24 +67,33 @@ const struct mail_storage_settings mail_storage_default_settings = {
 	.mail_attachment_dir = "",
 	.mail_attachment_hash = "%{sha1}",
 	.mail_attachment_min_size = 1024*128,
+	.mail_attribute_dict = "",
+	.mail_prefetch_count = 0,
 	.mail_cache_fields = "flags",
+	.mail_always_cache_fields = "",
 	.mail_never_cache_fields = "imap.envelope",
 	.mail_cache_min_mail_count = 0,
 	.mailbox_idle_check_interval = 30,
 	.mail_max_keyword_length = 50,
 	.mail_max_lock_timeout = 0,
+	.mail_temp_scan_interval = 7*24*60*60,
 	.mail_save_crlf = FALSE,
 	.mail_fsync = "optimized:never:always",
 	.mmap_disable = FALSE,
 	.dotlock_use_excl = TRUE,
 	.mail_nfs_storage = FALSE,
 	.mail_nfs_index = FALSE,
-	.mailbox_list_index_disable = FALSE,
+	.mailbox_list_index = FALSE,
 	.mail_debug = FALSE,
 	.mail_full_filesystem_access = FALSE,
 	.maildir_stat_dirs = FALSE,
+	.mail_shared_explicit_inbox = FALSE,
 	.lock_method = "fcntl:flock:dotlock",
-	.pop3_uidl_format = "%08Xu%08Xv"
+	.pop3_uidl_format = "%08Xu%08Xv",
+
+	.ssl_client_ca_dir = "",
+	.ssl_client_ca_file = "",
+	.ssl_crypto_device = ""
 };
 
 const struct setting_parser_info mail_storage_setting_parser_info = {
@@ -92,7 +112,46 @@ const struct setting_parser_info mail_storage_setting_parser_info = {
 
 #undef DEF
 #define DEF(type, name) \
+	{ type, #name, offsetof(struct mailbox_settings, name), NULL }
+
+static const struct setting_define mailbox_setting_defines[] = {
+	DEF(SET_STR, name),
+	{ SET_ENUM, "auto", offsetof(struct mailbox_settings, autocreate), NULL } ,
+	DEF(SET_STR, special_use),
+	DEF(SET_STR, driver),
+
+	SETTING_DEFINE_LIST_END
+};
+
+const struct mailbox_settings mailbox_default_settings = {
+	.name = "",
+	.autocreate = MAILBOX_SET_AUTO_NO":"
+		MAILBOX_SET_AUTO_CREATE":"
+		MAILBOX_SET_AUTO_SUBSCRIBE,
+	.special_use = "",
+	.driver = ""
+};
+
+const struct setting_parser_info mailbox_setting_parser_info = {
+	.defines = mailbox_setting_defines,
+	.defaults = &mailbox_default_settings,
+
+	.type_offset = offsetof(struct mailbox_settings, name),
+	.struct_size = sizeof(struct mailbox_settings),
+
+	.parent_offset = (size_t)-1,
+	.parent = &mail_user_setting_parser_info,
+
+	.check_func = mailbox_settings_check
+};
+
+#undef DEF
+#undef DEFLIST_UNIQUE
+#define DEF(type, name) \
 	{ type, #name, offsetof(struct mail_namespace_settings, name), NULL }
+#define DEFLIST_UNIQUE(field, name, defines) \
+	{ SET_DEFLIST_UNIQUE, name, \
+	  offsetof(struct mail_namespace_settings, field), defines }
 
 static const struct setting_define mail_namespace_setting_defines[] = {
 	DEF(SET_STR, name),
@@ -108,6 +167,10 @@ static const struct setting_define mail_namespace_setting_defines[] = {
 	DEF(SET_BOOL, hidden),
 	DEF(SET_ENUM, list),
 	DEF(SET_BOOL, subscriptions),
+	DEF(SET_BOOL, ignore_on_failure),
+	DEF(SET_BOOL, disabled),
+
+	DEFLIST_UNIQUE(mailboxes, "mailbox", &mailbox_setting_parser_info),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -123,7 +186,11 @@ const struct mail_namespace_settings mail_namespace_default_settings = {
 	.inbox = FALSE,
 	.hidden = FALSE,
 	.list = "yes:no:children",
-	.subscriptions = TRUE
+	.subscriptions = TRUE,
+	.ignore_on_failure = FALSE,
+	.disabled = FALSE,
+
+	.mailboxes = ARRAY_INIT
 };
 
 const struct setting_parser_info mail_namespace_setting_parser_info = {
@@ -245,22 +312,6 @@ const void *mail_storage_get_driver_settings(struct mail_storage *storage)
 						 storage->name);
 }
 
-enum mail_index_open_flags
-mail_storage_settings_to_index_flags(const struct mail_storage_settings *set)
-{
-	enum mail_index_open_flags index_flags = 0;
-
-#ifndef MMAP_CONFLICTS_WRITE
-	if (set->mmap_disable)
-#endif
-		index_flags |= MAIL_INDEX_OPEN_FLAG_MMAP_DISABLE;
-	if (set->dotlock_use_excl)
-		index_flags |= MAIL_INDEX_OPEN_FLAG_DOTLOCK_USE_EXCL;
-	if (set->mail_nfs_index)
-		index_flags |= MAIL_INDEX_OPEN_FLAG_NFS_FLUSH;
-	return index_flags;
-}
-
 const struct dynamic_settings_parser *
 mail_storage_get_dynamic_parsers(pool_t pool)
 {
@@ -300,6 +351,11 @@ static bool mail_storage_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 	const char *p, *error;
 	bool uidl_format_ok;
 	char c;
+
+	if (set->mailbox_idle_check_interval == 0) {
+		*error_r = "mailbox_idle_check_interval must not be 0";
+		return FALSE;
+	}
 
 	if (strcmp(set->mail_fsync, "optimized") == 0)
 		set->parsed_fsync_mode = FSYNC_MODE_OPTIMIZED;
@@ -374,6 +430,15 @@ static bool mail_storage_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 		return FALSE;
 	}
 	hash_format_deinit_free(&format);
+#ifndef CONFIG_BINARY
+	if (*set->ssl_client_ca_dir != '\0' &&
+	    access(set->ssl_client_ca_dir, X_OK) < 0) {
+		*error_r = t_strdup_printf(
+			"ssl_client_ca_dir: access(%s) failed: %m",
+			set->ssl_client_ca_dir);
+		return FALSE;
+	}
+#endif
 	return TRUE;
 }
 
@@ -393,8 +458,13 @@ static bool namespace_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 			name);
 		return FALSE;
 	}
+	if (!uni_utf8_str_is_valid(name)) {
+		*error_r = t_strdup_printf("Namespace prefix not valid UTF8: %s",
+					   name);
+		return FALSE;
+	}
 
-	if (ns->alias_for != NULL) {
+	if (ns->alias_for != NULL && !ns->disabled) {
 		if (array_is_created(&ns->user_set->namespaces)) {
 			namespaces = array_get(&ns->user_set->namespaces,
 					       &count);
@@ -419,6 +489,69 @@ static bool namespace_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 				namespaces[i]->alias_for);
 			return FALSE;
 		}
+	}
+	return TRUE;
+}
+
+static bool mailbox_special_use_exists(const char *name)
+{
+	if (name[0] != '\\')
+		return FALSE;
+	name++;
+
+	if (strcasecmp(name, "All") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Archive") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Drafts") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Flagged") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Junk") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Sent") == 0)
+		return TRUE;
+	if (strcasecmp(name, "Trash") == 0)
+		return TRUE;
+	return FALSE;
+}
+
+static bool
+mailbox_special_use_check(struct mailbox_settings *set, pool_t pool,
+			  const char **error_r)
+{
+	const char *const *uses, *str;
+	unsigned int i;
+
+	uses = t_strsplit_spaces(set->special_use, " ");
+	for (i = 0; uses[i] != NULL; i++) {
+		if (!mailbox_special_use_exists(uses[i])) {
+			*error_r = t_strdup_printf(
+				"mailbox %s: unknown special_use: %s",
+				set->name, uses[i]);
+			return FALSE;
+		}
+	}
+	/* make sure there are no extra spaces */
+	str = t_strarray_join(uses, " ");
+	if (strcmp(str, set->special_use) != 0)
+		set->special_use = p_strdup(pool, str);
+	return TRUE;
+}
+
+static bool mailbox_settings_check(void *_set, pool_t pool,
+				   const char **error_r)
+{
+	struct mailbox_settings *set = _set;
+
+	if (!uni_utf8_str_is_valid(set->name)) {
+		*error_r = t_strdup_printf("mailbox %s: name isn't valid UTF-8",
+					   set->name);
+		return FALSE;
+	}
+	if (*set->special_use != '\0') {
+		if (!mailbox_special_use_check(set, pool, error_r))
+			return FALSE;
 	}
 	return TRUE;
 }

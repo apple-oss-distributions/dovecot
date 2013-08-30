@@ -57,7 +57,8 @@ service director {
     mode = 0666
   }
   fifo_listener login/proxy-notify {
-    mode = 0666
+    mode = 0600
+    user = $default_login_user
   }
   unix_listener director-userdb {
     mode = 0600
@@ -142,6 +143,9 @@ protocol lmtp {
 #}
 ---%<-------------------------------------------------------------------------
 
+By default LMTP proxy connects to the same port in backend as what was used for
+the incoming connection.
+
 Other settings
 --------------
 
@@ -152,6 +156,17 @@ haven't yet expired. You can configure this setting from:
 
 ---%<-------------------------------------------------------------------------
 director_user_expire = 15 min
+---%<-------------------------------------------------------------------------
+
+'doveadm director move' needs to be able to connect to the 'ipc' socket. Make
+sure the director process can do it:
+
+---%<-------------------------------------------------------------------------
+service ipc {
+  unix_listener ipc {
+    user = dovecot
+  }
+}
 ---%<-------------------------------------------------------------------------
 
 Passdb configuration
@@ -174,6 +189,12 @@ passdb {
 }
 ---%<-------------------------------------------------------------------------
 
+Note that while this is the simplest director configuration, users will be
+assigned to a backend before they have been authenticated.  A director
+configured this way can be attacked by sending it a large number of unknown
+users.  To prevent this, the director should be configured to authenticate the
+user and might make use of a master password to log into the backend servers.
+
 Doveadm server
 --------------
 
@@ -186,8 +207,7 @@ service doveadm {
     port = 24245
   }
 }
-# same port as above
-doveadm_proxy_port = 24245
+
 local 10.10.10.0/24 {
   # password to use for client authentication
   doveadm_password = secret
@@ -199,6 +219,9 @@ local 10.10.10.0/24 {
 The director also needs the following configuration:
 
 ---%<-------------------------------------------------------------------------
+# same port as doveadm's inet_listener
+doveadm_proxy_port = 24245
+
 protocol doveadm {
   auth_socket_path = director-userdb
 }
@@ -214,4 +237,26 @@ Brad Davidson has written a small daemon for monitoring backend servers, and
 disable/enable them on demand.
 Ref:http://www.dovecot.org/list/dovecot/2010-August/051946.html
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Forcefully moving users to a different backend
+----------------------------------------------
+
+This is useful if you need to do maintenance on one of the backend servers and
+want (active) clients to move to a different backend:
+
+ 1. Disable any system that will undo changes you make to backend server
+    weights, such as poolmon.
+ 2. Set the weight of the backend server to be worked on to 0: 'doveadm
+    director add <backend server ip> 0'
+ 3. Flush current assignments to disable new connections to this server:
+    'doveadm director flush <backend server ip>'
+ 4. *From the backend server* close all open sessions: 'doveadm kick 0.0.0.0/0'
+
+Most IMAP clients will silently just reconnect to the (new backend) server
+after being kicked (at least Apple Mail 6.0 and Thunderbird 14.0).
+
+For moving specific users to other servers (e.g. because there are too many
+"heavy users" assigned to the same backend), you can use 'doveadm director
+move' command in v2.0.14+. This requires the ipc permissions to be configured
+correctly (see above).
+
+(This file was created from the wiki on 2013-08-05 04:42)

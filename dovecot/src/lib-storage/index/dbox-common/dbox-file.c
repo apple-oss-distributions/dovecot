@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -215,7 +215,7 @@ static int dbox_file_open_full(struct dbox_file *file, bool try_altpath,
 		}
 	}
 
-	file->input = i_stream_create_fd(file->fd, DBOX_READ_BLOCK_SIZE, FALSE);
+	file->input = i_stream_create_fd(file->fd, DBOX_READ_BLOCK_SIZE, TRUE);
 	i_stream_set_name(file->input, file->cur_path);
 	i_stream_set_init_buffer_size(file->input, DBOX_READ_BLOCK_SIZE);
 	return dbox_file_read_header(file);
@@ -286,9 +286,12 @@ int dbox_file_header_write(struct dbox_file *file, struct ostream *output)
 void dbox_file_close(struct dbox_file *file)
 {
 	dbox_file_unlock(file);
-	if (file->input != NULL)
+	if (file->input != NULL) {
+		/* stream autocloses the fd when it gets destroyed. note that
+		   the stream may outlive the struct dbox_file. */
 		i_stream_unref(&file->input);
-	if (file->fd != -1) {
+		file->fd = -1;
+	} else if (file->fd != -1) {
 		if (close(file->fd) < 0)
 			dbox_file_set_syscall_error(file, "close()");
 		file->fd = -1;
@@ -328,7 +331,7 @@ void dbox_file_unlock(struct dbox_file *file)
 #ifdef DBOX_FILE_LOCK_METHOD_FLOCK
 		file_unlock(&file->lock);
 #else
-		(void)file_dotlock_delete(&file->lock);
+		file_dotlock_delete(&file->lock);
 #endif
 	}
 	if (file->input != NULL)
@@ -407,7 +410,7 @@ dbox_file_seek_next_at_metadata(struct dbox_file *file, uoff_t *offset)
 
 	/* skip over the actual metadata */
 	buf_size = i_stream_get_max_buffer_size(file->input);
-	i_stream_set_max_buffer_size(file->input, 0);
+	i_stream_set_max_buffer_size(file->input, (size_t)-1);
 	while ((line = i_stream_read_next_line(file->input)) != NULL) {
 		if (*line == DBOX_METADATA_OLDV1_SPACE || *line == '\0') {
 			/* end of metadata */
@@ -469,6 +472,7 @@ struct dbox_file_append_context *dbox_file_append_init(struct dbox_file *file)
 	ctx->file = file;
 	if (file->fd != -1) {
 		ctx->output = o_stream_create_fd_file(file->fd, 0, FALSE);
+		o_stream_set_name(ctx->output, file->cur_path);
 		o_stream_cork(ctx->output);
 	}
 	return ctx;
@@ -519,8 +523,10 @@ void dbox_file_append_rollback(struct dbox_file_append_context **_ctx)
 		if (ftruncate(file->fd, ctx->first_append_offset) < 0)
 			dbox_file_set_syscall_error(file, "ftruncate()");
 	}
-	if (ctx->output != NULL)
+	if (ctx->output != NULL) {
+		o_stream_ignore_last_errors(ctx->output);
 		o_stream_unref(&ctx->output);
+	}
 	i_free(ctx);
 
 	if (close_file)
@@ -532,12 +538,21 @@ int dbox_file_append_flush(struct dbox_file_append_context *ctx)
 {
 	struct mail_storage *storage = &ctx->file->storage->storage;
 
-	if (ctx->last_flush_offset == ctx->output->offset)
+	if (ctx->last_flush_offset == ctx->output->offset &&
+	    ctx->last_checkpoint_offset == ctx->output->offset)
 		return 0;
 
-	if (o_stream_flush(ctx->output) < 0) {
+	if (o_stream_nfinish(ctx->output) < 0) {
 		dbox_file_set_syscall_error(ctx->file, "write()");
 		return -1;
+	}
+
+	if (ctx->last_checkpoint_offset != ctx->output->offset) {
+		if (ftruncate(ctx->file->fd, ctx->last_checkpoint_offset) < 0) {
+			dbox_file_set_syscall_error(ctx->file, "ftruncate()");
+			return -1;
+		}
+		o_stream_seek(ctx->output, ctx->last_checkpoint_offset);
 	}
 
 	if (storage->set->parsed_fsync_mode != FSYNC_MODE_NEVER) {
@@ -599,7 +614,10 @@ int dbox_file_get_append_stream(struct dbox_file_append_context *ctx,
 				"dbox file size too small");
 			return 0;
 		}
-		o_stream_seek(ctx->output, st.st_size);
+		if (o_stream_seek(ctx->output, st.st_size) < 0) {
+			dbox_file_set_syscall_error(file, "lseek()");
+			return -1;
+		}
 	}
 	*output_r = ctx->output;
 	return 1;
@@ -657,7 +675,8 @@ dbox_file_metadata_read_at(struct dbox_file *file, uoff_t metadata_offset)
 
 	ret = 0;
 	buf_size = i_stream_get_max_buffer_size(file->input);
-	i_stream_set_max_buffer_size(file->input, 0);
+	/* use unlimited line length for metadata */
+	i_stream_set_max_buffer_size(file->input, (size_t)-1);
 	while ((line = i_stream_read_next_line(file->input)) != NULL) {
 		if (*line == DBOX_METADATA_OLDV1_SPACE || *line == '\0') {
 			/* end of metadata */

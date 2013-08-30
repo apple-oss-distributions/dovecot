@@ -1,13 +1,15 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
+#include "nfs-workarounds.h"
 #include "index-mail.h"
 #include "maildir-storage.h"
 #include "maildir-filename.h"
 #include "maildir-uidlist.h"
 #include "maildir-sync.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -22,7 +24,7 @@ static int
 do_open(struct maildir_mailbox *mbox, const char *path,
 	struct maildir_open_context *ctx)
 {
-	ctx->fd = open(path, O_RDONLY);
+	ctx->fd = nfs_safe_open(path, O_RDONLY);
 	if (ctx->fd != -1) {
 		ctx->path = i_strdup(path);
 		return 1;
@@ -62,7 +64,6 @@ static struct istream *
 maildir_open_mail(struct maildir_mailbox *mbox, struct mail *mail,
 		  bool *deleted_r)
 {
-	struct mail_private *p = (struct mail_private *)mail;
 	struct istream *input;
 	const char *path;
 	struct maildir_open_context ctx;
@@ -72,7 +73,7 @@ maildir_open_mail(struct maildir_mailbox *mbox, struct mail *mail,
 	ctx.fd = -1;
 	ctx.path = NULL;
 
-	p->stats_open_lookup_count++;
+	mail->transaction->stats.open_lookup_count++;
 	if (!mail->saving) {
 		if (maildir_file_do(mbox, mail->uid, do_open, &ctx) < 0)
 			return NULL;
@@ -101,7 +102,7 @@ maildir_open_mail(struct maildir_mailbox *mbox, struct mail *mail,
 	return input;
 }
 
-static int maildir_mail_stat(struct mail *mail, struct stat *st)
+static int maildir_mail_stat(struct mail *mail, struct stat *st_r)
 {
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)mail->box;
 	struct index_mail *imail = (struct index_mail *)mail;
@@ -109,10 +110,12 @@ static int maildir_mail_stat(struct mail *mail, struct stat *st)
 	const char *path;
 	int ret;
 
-	if (mail->lookup_abort == MAIL_LOOKUP_ABORT_NOT_IN_CACHE)
-		return mail_set_aborted(mail);
+	if (mail->lookup_abort == MAIL_LOOKUP_ABORT_NOT_IN_CACHE) {
+		mail_set_aborted(mail);
+		return -1;
+	}
 
-	if (index_mail_get_access_part(imail) != 0 &&
+	if (imail->data.access_part != 0 &&
 	    imail->data.stream == NULL) {
 		/* we're going to open the mail anyway */
 		struct istream *input;
@@ -121,23 +124,22 @@ static int maildir_mail_stat(struct mail *mail, struct stat *st)
 	}
 
 	if (imail->data.stream != NULL) {
-		imail->mail.stats_fstat_lookup_count++;
-		stp = i_stream_stat(imail->data.stream, FALSE);
-		if (stp == NULL)
+		mail->transaction->stats.fstat_lookup_count++;
+		if (i_stream_stat(imail->data.stream, FALSE, &stp) < 0)
 			return -1;
-		*st = *stp;
+		*st_r = *stp;
 	} else if (!mail->saving) {
-		imail->mail.stats_stat_lookup_count++;
-		ret = maildir_file_do(mbox, mail->uid, do_stat, st);
+		mail->transaction->stats.stat_lookup_count++;
+		ret = maildir_file_do(mbox, mail->uid, do_stat, st_r);
 		if (ret <= 0) {
 			if (ret == 0)
 				mail_set_expunged(mail);
 			return -1;
 		}
 	} else {
-		imail->mail.stats_stat_lookup_count++;
+		mail->transaction->stats.stat_lookup_count++;
 		path = maildir_save_file_get_path(mail->transaction, mail->seq);
-		if (stat(path, st) < 0) {
+		if (stat(path, st_r) < 0) {
 			mail_storage_set_critical(mail->box->storage,
 						  "stat(%s) failed: %m", path);
 			return -1;
@@ -188,7 +190,7 @@ maildir_mail_get_fname(struct maildir_mailbox *mbox, struct mail *mail,
 	bool exists;
 	int ret;
 
-	ret = maildir_uidlist_lookup(mbox->uidlist, mail->uid, &flags, fname_r);
+	ret = maildir_sync_lookup(mbox, mail->uid, &flags, fname_r);
 	if (ret != 0)
 		return ret;
 
@@ -198,7 +200,7 @@ maildir_mail_get_fname(struct maildir_mailbox *mbox, struct mail *mail,
 	/* one reason this could happen is if we delayed opening
 	   dovecot-uidlist and we're trying to open a mail that got recently
 	   expunged. Let's test this theory first: */
-	(void)mail_index_refresh(mbox->box.index);
+	mail_index_refresh(mbox->box.index);
 	view = mail_index_view_open(mbox->box.index);
 	exists = mail_index_lookup_seq(view, mail->uid, &seq);
 	mail_index_view_close(&view);
@@ -231,8 +233,8 @@ static int maildir_get_pop3_state(struct index_mail *mail)
 		MAIL_FETCH_STREAM_BODY | MAIL_FETCH_UIDL_FILE_NAME |
 		MAIL_FETCH_VIRTUAL_SIZE;
 
-	if (mail->wanted_headers != NULL ||
-	    (mail->wanted_fields & ~allowed_pop3_fields) != 0)
+	if (mail->data.wanted_headers != NULL ||
+	    (mail->data.wanted_fields & ~allowed_pop3_fields) != 0)
 		not_pop3_only = TRUE;
 
 	/* get vsize decisions */
@@ -293,11 +295,12 @@ static int maildir_quick_size_lookup(struct index_mail *mail, bool vsize,
 	}
 
 	/* size can be included in filename */
-	if (maildir_filename_get_size(fname,
-				      vsize ? MAILDIR_EXTRA_VIRTUAL_SIZE :
-				      MAILDIR_EXTRA_FILE_SIZE,
-				      size_r))
-		return 1;
+	if (vsize || !mbox->storage->set->maildir_broken_filename_sizes) {
+		if (maildir_filename_get_size(fname,
+				vsize ? MAILDIR_EXTRA_VIRTUAL_SIZE :
+					MAILDIR_EXTRA_FILE_SIZE, size_r))
+			return 1;
+	}
 
 	/* size can be included in uidlist entry */
 	if (!_mail->saving) {
@@ -472,11 +475,17 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 	struct index_mail *mail = (struct index_mail *)_mail;
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)_mail->box;
 	const char *path, *fname = NULL, *end, *guid, *uidl, *order;
+	struct stat st;
 
 	switch (field) {
 	case MAIL_FETCH_GUID:
 		/* use GUID from uidlist if it exists */
 		i_assert(!_mail->saving);
+
+		if (mail->data.guid != NULL) {
+			*value_r = mail->data.guid;
+			return 0;
+		}
 
 		/* first make sure that we have a refreshed uidlist */
 		if (maildir_mail_get_fname(mbox, _mail, &fname) <= 0)
@@ -486,22 +495,28 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 						  MAILDIR_UIDLIST_REC_EXT_GUID);
 		if (guid != NULL) {
 			if (*guid != '\0') {
-				*value_r = p_strdup(mail->data_pool, guid);
+				*value_r = mail->data.guid =
+					p_strdup(mail->mail.data_pool, guid);
 				return 0;
 			}
 
 			mail_storage_set_critical(_mail->box->storage,
 				"Maildir %s: Corrupted dovecot-uidlist: "
 				"UID %u had empty GUID, clearing it",
-				_mail->box->path, _mail->uid);
-			maildir_uidlist_set_ext(mbox->uidlist, _mail->uid,
-				MAILDIR_UIDLIST_REC_EXT_GUID, NULL);
+				mailbox_get_path(_mail->box), _mail->uid);
+			maildir_uidlist_unset_ext(mbox->uidlist, _mail->uid,
+				MAILDIR_UIDLIST_REC_EXT_GUID);
 		}
 
 		/* default to base filename: */
+		if (maildir_mail_get_special(_mail, MAIL_FETCH_UIDL_FILE_NAME,
+					     value_r) < 0)
+			return -1;
+		mail->data.guid = mail->data.filename;
+		return 0;
 	case MAIL_FETCH_UIDL_FILE_NAME:
-		if (mail->data.guid != NULL) {
-			*value_r = mail->data.guid;
+		if (mail->data.filename != NULL) {
+			*value_r = mail->data.filename;
 			return 0;
 		}
 		if (fname != NULL) {
@@ -517,10 +532,10 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 			fname = fname != NULL ? fname + 1 : path;
 		}
 		end = strchr(fname, MAILDIR_INFO_SEP);
-		mail->data.guid = end == NULL ?
-			p_strdup(mail->data_pool, fname) :
-			p_strdup_until(mail->data_pool, fname, end);
-		*value_r = mail->data.guid;
+		mail->data.filename = end == NULL ?
+			p_strdup(mail->mail.data_pool, fname) :
+			p_strdup_until(mail->mail.data_pool, fname, end);
+		*value_r = mail->data.filename;
 		return 0;
 	case MAIL_FETCH_UIDL_BACKEND:
 		uidl = maildir_uidlist_lookup_ext(mbox->uidlist, _mail->uid,
@@ -533,7 +548,7 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 			return maildir_mail_get_special(_mail,
 					MAIL_FETCH_UIDL_FILE_NAME, value_r);
 		} else {
-			*value_r = p_strdup(mail->data_pool, uidl);
+			*value_r = p_strdup(mail->mail.data_pool, uidl);
 		}
 		return 0;
 	case MAIL_FETCH_POP3_ORDER:
@@ -542,18 +557,25 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		if (order == NULL) {
 			*value_r = "";
 		} else {
-			*value_r = p_strdup(mail->data_pool, order);
+			*value_r = p_strdup(mail->mail.data_pool, order);
 		}
+		return 0;
+	case MAIL_FETCH_REFCOUNT:
+		if (maildir_mail_stat(_mail, &st) < 0)
+			return -1;
+		*value_r = p_strdup_printf(mail->mail.data_pool, "%lu",
+					   (unsigned long)st.st_nlink);
 		return 0;
 	default:
 		return index_mail_get_special(_mail, field, value_r);
 	}
 }
 							
-static int maildir_mail_get_stream(struct mail *_mail,
-				   struct message_size *hdr_size,
-				   struct message_size *body_size,
-				   struct istream **stream_r)
+static int
+maildir_mail_get_stream(struct mail *_mail, bool get_body ATTR_UNUSED,
+			struct message_size *hdr_size,
+			struct message_size *body_size,
+			struct istream **stream_r)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)_mail->box;
@@ -569,8 +591,10 @@ static int maildir_mail_get_stream(struct mail *_mail,
 		}
 		if (mail->mail.v.istream_opened != NULL) {
 			if (mail->mail.v.istream_opened(_mail,
-							&data->stream) < 0)
+							&data->stream) < 0) {
+				i_stream_unref(&data->stream);
 				return -1;
+			}
 		}
 	}
 
@@ -590,40 +614,112 @@ static void maildir_update_pop3_uidl(struct mail *_mail, const char *uidl)
 		uidl = "";
 	}
 
+	_mail->transaction->nontransactional_changes = TRUE;
 	maildir_uidlist_set_ext(mbox->uidlist, _mail->uid,
 				MAILDIR_UIDLIST_REC_EXT_POP3_UIDL, uidl);
+}
+
+static void maildir_mail_remove_sizes_from_uidlist(struct mail *mail)
+{
+	struct maildir_mailbox *mbox = (struct maildir_mailbox *)mail->box;
+
+	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
+				       MAILDIR_UIDLIST_REC_EXT_VSIZE) != NULL) {
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_VSIZE);
+	}
+	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
+				       MAILDIR_UIDLIST_REC_EXT_PSIZE) != NULL) {
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_PSIZE);
+	}
+}
+
+static int
+do_fix_size(struct maildir_mailbox *mbox, const char *path, char *wrong_key_p)
+{
+	const char *fname, *newpath, *extra, *info, *dir;
+	struct stat st;
+
+	fname = strrchr(path, '/');
+	i_assert(fname != NULL);
+	dir = t_strdup_until(path, fname++);
+
+	extra = strchr(fname, MAILDIR_EXTRA_SEP);
+	i_assert(extra != NULL);
+	info = strchr(fname, MAILDIR_INFO_SEP);
+	if (info == NULL) info = "";
+
+	if (stat(path, &st) < 0) {
+		if (errno == ENOENT)
+			return 0;
+		mail_storage_set_critical(&mbox->storage->storage,
+					  "stat(%s) failed: %m", path);
+		return -1;
+	}
+
+	newpath = t_strdup_printf("%s/%s,S=%"PRIuUOFF_T"%s", dir,
+				  t_strdup_until(fname, extra),
+				  (uoff_t)st.st_size, info);
+
+	if (rename(path, newpath) == 0) {
+		mail_storage_set_critical(mbox->box.storage,
+			"Maildir filename has wrong %c value, "
+			"renamed the file from %s to %s",
+			*wrong_key_p, path, newpath);
+		return 1;
+	}
+	if (errno == ENOENT)
+		return 0;
+
+	mail_storage_set_critical(&mbox->storage->storage,
+				  "rename(%s, %s) failed: %m", path, newpath);
+	return -1;
+}
+
+static void
+maildir_mail_remove_sizes_from_filename(struct mail *mail,
+					enum mail_fetch_field field)
+{
+	struct maildir_mailbox *mbox = (struct maildir_mailbox *)mail->box;
+	enum maildir_uidlist_rec_flag flags;
+	const char *fname;
+	uoff_t size;
+	char wrong_key;
+
+	if (mbox->storage->set->maildir_broken_filename_sizes) {
+		/* never try to fix sizes in maildir filenames */
+		return;
+	}
+
+	if (maildir_sync_lookup(mbox, mail->uid, &flags, &fname) <= 0)
+		return;
+	if (strchr(fname, MAILDIR_EXTRA_SEP) == NULL)
+		return;
+
+	if (field == MAIL_FETCH_VIRTUAL_SIZE &&
+	    maildir_filename_get_size(fname, MAILDIR_EXTRA_VIRTUAL_SIZE,
+				      &size)) {
+		wrong_key = 'W';
+	} else if (field == MAIL_FETCH_PHYSICAL_SIZE &&
+		   maildir_filename_get_size(fname, MAILDIR_EXTRA_FILE_SIZE,
+					     &size)) {
+		wrong_key = 'S';
+	} else {
+		/* the broken size isn't in filename */
+		return;
+	}
+
+	(void)maildir_file_do(mbox, mail->uid, do_fix_size, &wrong_key);
 }
 
 static void maildir_mail_set_cache_corrupted(struct mail *_mail,
 					     enum mail_fetch_field field)
 {
-	struct maildir_mailbox *mbox = (struct maildir_mailbox *)_mail->box;
-	enum maildir_uidlist_rec_flag flags;
-	const char *fname;
-	uoff_t size;
-	int ret;
-
-	if (field == MAIL_FETCH_VIRTUAL_SIZE) {
-		/* make sure it gets removed from uidlist.
-		   if it's in file name, we can't really do more than log it. */
-		ret = maildir_uidlist_lookup(mbox->uidlist, _mail->uid,
-					     &flags, &fname);
-		if (ret <= 0)
-			return;
-		if (maildir_filename_get_size(fname, MAILDIR_EXTRA_VIRTUAL_SIZE,
-					      &size)) {
-			const char *subdir =
-				(flags & MAILDIR_UIDLIST_REC_FLAG_NEW_DIR) != 0 ?
-				"new" : "cur";
-			mail_storage_set_critical(_mail->box->storage,
-				"Maildir filename has wrong W value: %s/%s/%s",
-				mbox->box.path, subdir, fname);
-		} else if (maildir_uidlist_lookup_ext(mbox->uidlist, _mail->uid,
-				MAILDIR_UIDLIST_REC_EXT_VSIZE) != NULL) {
-			maildir_uidlist_set_ext(mbox->uidlist, _mail->uid,
-						MAILDIR_UIDLIST_REC_EXT_VSIZE,
-						NULL);
-		}
+	if (field == MAIL_FETCH_PHYSICAL_SIZE ||
+	    field == MAIL_FETCH_VIRTUAL_SIZE) {
+		maildir_mail_remove_sizes_from_uidlist(_mail);
+		maildir_mail_remove_sizes_from_filename(_mail, field);
 	}
 	index_mail_set_cache_corrupted(_mail, field);
 }
@@ -634,11 +730,15 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_set_seq,
 	index_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
+	index_mail_precache,
+	index_mail_add_temp_wanted_fields,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	maildir_mail_get_received_date,
@@ -649,14 +749,15 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	maildir_mail_get_stream,
+	index_mail_get_binary_stream,
 	maildir_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	maildir_update_pop3_uidl,
 	index_mail_expunge,
-	index_mail_parse,
 	maildir_mail_set_cache_corrupted,
 	index_mail_opened
 };

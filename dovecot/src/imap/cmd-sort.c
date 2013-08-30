@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "buffer.h"
@@ -19,7 +19,8 @@ static struct sort_name sort_names[] = {
 	{ MAIL_SORT_SIZE,		"size" },
 	{ MAIL_SORT_SUBJECT,		"subject" },
 	{ MAIL_SORT_TO,			"to" },
-	{ MAIL_SORT_SEARCH_SCORE,	"x-score" },
+	{ MAIL_SORT_RELEVANCY,		"x-score" }, /* FIXME: obsolete */
+	{ MAIL_SORT_RELEVANCY,		"relevancy" },
 	{ MAIL_SORT_DISPLAYFROM,	"displayfrom" },
 	{ MAIL_SORT_DISPLAYTO,		"displayto" },
 
@@ -113,23 +114,29 @@ bool cmd_sort(struct client_command_context *cmd)
 	/* sort program */
 	if (!imap_arg_get_list(args, &list_args)) {
 		client_send_command_error(cmd, "Invalid sort argument.");
+		imap_search_context_free(ctx);
 		return TRUE;
 	}
 
-	if (get_sort_program(cmd, list_args, sort_program) < 0)
+	if (get_sort_program(cmd, list_args, sort_program) < 0) {
+		imap_search_context_free(ctx);
 		return TRUE;
+	}
 	args++;
 
 	/* charset */
 	if (!imap_arg_get_astring(args, &charset)) {
 		client_send_command_error(cmd, "Invalid charset argument.");
+		imap_search_context_free(ctx);
 		return TRUE;
 	}
 	args++;
 
 	ret = imap_search_args_build(cmd, args, charset, &sargs);
-	if (ret <= 0)
+	if (ret <= 0) {
+		imap_search_context_free(ctx);
 		return ret < 0;
+	}
 
 	return imap_search_start(ctx, sargs, sort_program);
 }

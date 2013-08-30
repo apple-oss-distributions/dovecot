@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "login-common.h"
@@ -28,16 +28,12 @@
 /* Disconnect client when it sends too many bad commands */
 #define CLIENT_MAX_BAD_COMMANDS 3
 
-const struct login_binary login_binary = {
-	.protocol = "sieve",
-	.process_name = "managesieve-login",
-	.default_port = 4190
+struct managesieve_command {
+	const char *name;
+	int (*func)
+		(struct managesieve_client *client, const struct managesieve_arg *args);
+	int preparsed_args;
 };
-
-void login_process_preinit(void)
-{
-	login_set_roots = managesieve_login_settings_set_roots;
-}
 
 /* Skip incoming data until newline is found,
    returns TRUE if newline was found. */
@@ -60,7 +56,7 @@ bool client_skip_line(struct managesieve_client *client)
 
 static void client_send_capabilities(struct client *client)
 {
-	struct managesieve_client *msieve_client = 
+	struct managesieve_client *msieve_client =
 		(struct managesieve_client *) client;
 	const char *saslcap;
 
@@ -68,12 +64,12 @@ static void client_send_capabilities(struct client *client)
 		saslcap = client_authenticate_get_capabilities(client);
 
 		/* Default capabilities */
-		client_send_raw(client, t_strconcat("\"IMPLEMENTATION\" \"", 
+		client_send_raw(client, t_strconcat("\"IMPLEMENTATION\" \"",
 			msieve_client->set->managesieve_implementation_string, "\"\r\n", NULL));
-		client_send_raw(client, t_strconcat("\"SIEVE\" \"", 
+		client_send_raw(client, t_strconcat("\"SIEVE\" \"",
 			msieve_client->set->managesieve_sieve_capability, "\"\r\n", NULL));
 		if ( msieve_client->set->managesieve_notify_capability != NULL )
-			client_send_raw(client, t_strconcat("\"NOTIFY\" \"", 
+			client_send_raw(client, t_strconcat("\"NOTIFY\" \"",
 				msieve_client->set->managesieve_notify_capability, "\"\r\n", NULL));
 		client_send_raw
 			(client, t_strconcat("\"SASL\" \"", saslcap, "\"\r\n", NULL));
@@ -87,7 +83,9 @@ static void client_send_capabilities(struct client *client)
 	} T_END;
 }
 
-static int cmd_capability(struct managesieve_client *client)
+static int cmd_capability
+(struct managesieve_client *client,
+	const struct managesieve_arg *args ATTR_UNUSED)
 {
 	o_stream_cork(client->common.output);
 
@@ -99,31 +97,41 @@ static int cmd_capability(struct managesieve_client *client)
 	return 1;
 }
 
-static int cmd_starttls(struct managesieve_client *client)
+static int cmd_starttls
+(struct managesieve_client *client,
+	const struct managesieve_arg *args ATTR_UNUSED)
 {
 	client_cmd_starttls(&client->common);
 	return 1;
 }
 
+static void managesieve_client_notify_starttls
+(struct client *client, bool success, const char *text)
+{
+	if ( success )
+		client_send_ok(client, text);
+	else
+		client_send_no(client, text);
+}
+
 static int cmd_noop
-(struct managesieve_client *client, struct managesieve_arg *args)
+(struct managesieve_client *client,
+	const struct managesieve_arg *args)
 {
 	const char *text;
 	string_t *resp_code;
 
-	if ( args[0].type == MANAGESIEVE_ARG_EOL ) {
+	if ( MANAGESIEVE_ARG_IS_EOL(&args[0]) ) {
 		client_send_ok(&client->common, "NOOP Completed");
-		return TRUE;
+		return 1;
 	}
 
-	if ( args[1].type != MANAGESIEVE_ARG_EOL ) {
-		client_send_no(&client->common, "Too many arguments");
-		return TRUE;
-	}
+	if ( !MANAGESIEVE_ARG_IS_EOL(&args[1]) )
+		return -1;
 
-	if ( (text = managesieve_arg_string(&args[0])) == NULL ) {
+	if ( !managesieve_arg_get_string(&args[0], &text) ) {
 		client_send_no(&client->common, "Invalid echo tag.");
-		return TRUE;
+		return 1;
 	}
 
 	resp_code = t_str_new(256);
@@ -131,10 +139,12 @@ static int cmd_noop
 	managesieve_quote_append_string(resp_code, text, FALSE);
 
 	client_send_okresp(&client->common, str_c(resp_code), "Done");
-	return TRUE;
+	return 1;
 }
 
-static int cmd_logout(struct managesieve_client *client)
+static int cmd_logout
+(struct managesieve_client *client,
+	const struct managesieve_arg *args ATTR_UNUSED)
 {
 	client_send_ok(&client->common, "Logout completed.");
 	client_destroy(&client->common, "Aborted login");
@@ -142,51 +152,43 @@ static int cmd_logout(struct managesieve_client *client)
 }
 
 /* APPLE - <rdar://problem/9119321> */
-static int cmd_forbidden(struct managesieve_client *client)
+static int cmd_forbidden(struct managesieve_client *client,
+			 const struct managesieve_arg *args ATTR_UNUSED)
 {
 	client_send_bye(&client->common, "Invalid MANAGESIEVE command.");
 	client_destroy(&client->common, "Disconnected due to forbidden command");
 	return 1;
 }
 
-static int client_command_execute
-(struct managesieve_client *client, const char *cmd, 
-	struct managesieve_arg *args)
-{
-	cmd = t_str_ucase(cmd);
-	if (strcmp(cmd, "AUTHENTICATE") == 0)
-		return cmd_authenticate(client, args);
-	if (strcmp(cmd, "CAPABILITY") == 0)
-		return cmd_capability(client);
-	if (strcmp(cmd, "STARTTLS") == 0)
-		return cmd_starttls(client);
-	if (strcmp(cmd, "NOOP") == 0)
-		return cmd_noop(client, args);
-	if (strcmp(cmd, "LOGOUT") == 0)
-		return cmd_logout(client);
+static struct managesieve_command commands[] = {
+	{ "AUTHENTICATE", cmd_authenticate, 1 },
+	{ "CAPABILITY", cmd_capability, -1 },
+	{ "STARTTLS", cmd_starttls, -1 },
+	{ "NOOP", cmd_noop, 0 },
+	{	"LOGOUT", cmd_logout, -1},
 
 	/* APPLE - <rdar://problem/9119321> */
-	if (strcmp(cmd, "CONNECT") == 0 || strcmp(cmd, "GET") == 0 ||
-	    strcmp(cmd, "POST") == 0)
-		return cmd_forbidden(client);
+	{ "CONNECT", cmd_forbidden, -2 },
+	{ "GET", cmd_forbidden, -2 },
+	{ "POST", cmd_forbidden, -2 },
 
-	return -1;
-}
+	{ NULL, NULL, 0}
+};
 
 static bool client_handle_input(struct managesieve_client *client)
 {
-	struct managesieve_arg *args;
+	const struct managesieve_arg *args = NULL;
 	const char *msg;
-	int ret;
+	int ret = 1;
 	bool fatal;
 
 	i_assert(!client->common.authenticating);
 
 	if (client->cmd_finished) {
-		/* clear the previous command from memory. don't do this
-		   immediately after handling command since we need the
-		   cmd_tag to stay some time after authentication commands. */
+		/* clear the previous command from memory */
 		client->cmd_name = NULL;
+		client->cmd_parsed_args = FALSE;
+		client->cmd = NULL;
 		managesieve_parser_reset(client->parser);
 
 		/* remove \r\n */
@@ -199,46 +201,87 @@ static bool client_handle_input(struct managesieve_client *client)
 		client->cmd_finished = FALSE;
 	}
 
-	if (client->cmd_name == NULL) {
+	if (client->cmd == NULL) {
+		struct managesieve_command *cmd;
+		const char *cmd_name;
+
 		client->cmd_name = managesieve_parser_read_word(client->parser);
 		if (client->cmd_name == NULL)
 			return FALSE; /* need more data */
+
+		cmd_name = t_str_ucase(client->cmd_name);
+		cmd = commands;
+		while ( cmd->name != NULL ) {
+			if ( strcmp(cmd->name, cmd_name) == 0 )
+				break;
+			cmd++;
+		}
+
+		if ( cmd->name != NULL )
+			client->cmd = cmd;
+		else
+			client->skip_line = TRUE;
 	}
 
-	switch (managesieve_parser_read_args(client->parser, 0, 0, &args)) {
-	case -1:
-		/* error */
-		msg = managesieve_parser_get_error(client->parser, &fatal);
-		if (fatal) {
-			client_send_bye(&client->common, msg);
-			client_destroy(&client->common, t_strconcat("Disconnected: ",
-				msg, NULL));
+	if ( client->cmd != NULL && !client->cmd_parsed_args ) {
+		unsigned int arg_count =
+			( client->cmd->preparsed_args > 0 ? client->cmd->preparsed_args : 0 );
+		switch (managesieve_parser_read_args(client->parser, arg_count, 0, &args)) {
+		case -1:
+			/* error */
+			msg = managesieve_parser_get_error(client->parser, &fatal);
+			if (fatal) {
+				client_send_bye(&client->common, msg);
+				client_destroy(&client->common, t_strconcat("Disconnected: ",
+					msg, NULL));
+				return FALSE;
+			}
+
+			client_send_no(&client->common, msg);
+			client->cmd_finished = TRUE;
+			client->skip_line = TRUE;
+			return TRUE;
+		case -2:
+			/* not enough data */
 			return FALSE;
 		}
 
-		client_send_no(&client->common, msg);
-		client->cmd_finished = TRUE;
-		client->skip_line = TRUE;
-		return TRUE;
-	case -2:
-		/* not enough data */
-		return FALSE;
+		if (arg_count == 0 ) {
+			/* we read the entire line - skip over the CRLF */
+			if (!client_skip_line(client))
+				i_unreached();
+		} else {
+			/* get rid of it later */
+			client->skip_line = TRUE;
+		}
+
+		client->cmd_parsed_args = TRUE;
+
+		if (client->cmd->preparsed_args == -1) {
+			/* check absence of arguments */
+			if ( args[0].type != MANAGESIEVE_ARG_EOL )
+				ret = -1;
+		}
 	}
-	/* we read the entire line - skip over the CRLF */
-	if (!client_skip_line(client))
-		i_unreached();
 
-	ret = client_command_execute(client, client->cmd_name, args);
+	if (client->cmd == NULL) {
+		ret = -1;
+		client->cmd_finished = TRUE;
+	} else {
+		if (ret > 0)
+			ret = client->cmd->func(client, args);
+		if (ret != 0)
+			client->cmd_finished = TRUE;
+	}
 
-	client->cmd_finished = TRUE;
 	if (ret < 0) {
 		if (++client->common.bad_counter >= CLIENT_MAX_BAD_COMMANDS) {
-			client_send_bye(&client->common,	
+			client_send_bye(&client->common,
 				"Too many invalid MANAGESIEVE commands.");
-			client_destroy(&client->common, 
+			client_destroy(&client->common,
 				"Disconnected: Too many invalid commands.");
 			return FALSE;
-		}  
+		}
 		client_send_no(&client->common,
 			"Error in MANAGESIEVE command received by server.");
 	}
@@ -248,7 +291,7 @@ static bool client_handle_input(struct managesieve_client *client)
 
 static void managesieve_client_input(struct client *client)
 {
-	struct managesieve_client *managesieve_client = 
+	struct managesieve_client *managesieve_client =
 		(struct managesieve_client *) client;
 
 	if (!client_read(client))
@@ -289,32 +332,31 @@ static struct client *managesieve_client_alloc(pool_t pool)
 static void managesieve_client_create
 (struct client *client, void **other_sets)
 {
-	struct managesieve_client *msieve_client = 
+	struct managesieve_client *msieve_client =
 		(struct managesieve_client *) client;
 
 	msieve_client->set = other_sets[0];
 	msieve_client->parser = managesieve_parser_create
-		(msieve_client->common.input, msieve_client->common.output, 
-		MAX_MANAGESIEVE_LINE);
+		(msieve_client->common.input, MAX_MANAGESIEVE_LINE);
 	client->io = io_add(client->fd, IO_READ, client_input, client);
 }
 
 static void managesieve_client_destroy(struct client *client)
 {
-	struct managesieve_client *managesieve_client = 
+	struct managesieve_client *managesieve_client =
 		(struct managesieve_client *) client;
 
 	managesieve_parser_destroy(&managesieve_client->parser);
 }
 
-static void managesieve_client_send_greeting(struct client *client)
+static void managesieve_client_notify_auth_ready(struct client *client)
 {
 	/* Cork the stream to send the capability data as a single tcp frame
 	 *   Some naive clients break if we don't.
 	 */
 	o_stream_cork(client->output);
 
-	/* Send initial capabilities */   
+	/* Send initial capabilities */
 	client_send_capabilities(client);
 	client_send_ok(client, client->set->login_greeting);
 
@@ -323,13 +365,12 @@ static void managesieve_client_send_greeting(struct client *client)
 
 static void managesieve_client_starttls(struct client *client)
 {
-	struct managesieve_client *msieve_client = 
+	struct managesieve_client *msieve_client =
 		(struct managesieve_client *) client;
 
 	managesieve_parser_destroy(&msieve_client->parser);
-	msieve_client->parser =
-		managesieve_parser_create(msieve_client->common.input,
-				   msieve_client->common.output, MAX_MANAGESIEVE_LINE);
+	msieve_client->parser = managesieve_parser_create
+		(msieve_client->common.input, MAX_MANAGESIEVE_LINE);
 
 	/* CRLF is lost from buffer when streams are reopened. */
 	msieve_client->skip_line = FALSE;
@@ -342,27 +383,28 @@ static void managesieve_client_starttls(struct client *client)
 	client_send_capabilities(client);
 	client_send_ok(client, "TLS negotiation successful.");
 
-	o_stream_uncork(client->output);	
+	o_stream_uncork(client->output);
 }
 
-void _client_send_response(struct client *client, 
-	const char *oknobye, const char *resp_code, const char *msg)
+static void
+client_send_reply_raw(struct client *client,
+				   const char *prefix, const char *resp_code,
+				   const char *text)
 {
 	T_BEGIN {
 		string_t *line = t_str_new(256);
 
-		str_append(line, oknobye);
-		
+		str_append(line, prefix);
+
 		if (resp_code != NULL) {
-			str_append(line, " [");
+			str_append(line, " (");
 			str_append(line, resp_code);
-			str_append_c(line, ']');
+			str_append_c(line, ')');
 		}
-		
-		if ( msg != NULL )	
-		{
+
+		if ( text != NULL )	{
 			str_append_c(line, ' ');
-			managesieve_quote_append_string(line, msg, TRUE);
+			managesieve_quote_append_string(line, text, TRUE);
 		}
 
 		str_append(line, "\r\n");
@@ -371,66 +413,89 @@ void _client_send_response(struct client *client,
 	} T_END;
 }
 
-static void managesieve_client_send_line
-(struct client *client, enum client_cmd_reply reply, const char *text)
+void client_send_reply_code
+(struct client *client, enum managesieve_cmd_reply reply, const char *resp_code,
+	const char *text)
 {
-	const char *resp_code = NULL;
 	const char *prefix = "NO";
 
 	switch (reply) {
-	case CLIENT_CMD_REPLY_OK:
+	case MANAGESIEVE_CMD_REPLY_OK:
 		prefix = "OK";
 		break;
-	case CLIENT_CMD_REPLY_AUTH_FAILED:
+	case MANAGESIEVE_CMD_REPLY_NO:
 		break;
-	case CLIENT_CMD_REPLY_AUTHZ_FAILED:
-		break;
-	case CLIENT_CMD_REPLY_AUTH_FAIL_TEMP:
-		resp_code = "TRYLATER";
-		break;
-	case CLIENT_CMD_REPLY_AUTH_FAIL_REASON:
-		break;
-	case CLIENT_CMD_REPLY_AUTH_FAIL_NOSSL:
-		resp_code = "ENCRYPT-NEEDED";
-		break;
-	case CLIENT_CMD_REPLY_BAD:
-		prefix = "NO";
-		break;
-	case CLIENT_CMD_REPLY_BYE:
+	case MANAGESIEVE_CMD_REPLY_BYE:
 		prefix = "BYE";
-		break;
-	case CLIENT_CMD_REPLY_STATUS:
-		return;
-	case CLIENT_CMD_REPLY_STATUS_BAD:
-		prefix = "NO";
 		break;
 	}
 
-	_client_send_response(client, prefix, resp_code, text);
+	client_send_reply_raw(client, prefix, resp_code, text);
 }
 
-void clients_init(void)
+void client_send_reply
+(struct client *client, enum managesieve_cmd_reply reply, const char *text)
+{
+	client_send_reply_code(client, reply, NULL, text);
+}
+
+static void
+managesieve_client_notify_disconnect
+(struct client *client, enum client_disconnect_reason reason, const char *text)
+{
+	if ( reason == CLIENT_DISCONNECT_SYSTEM_SHUTDOWN ) {
+		client_send_reply_code
+			(client, MANAGESIEVE_CMD_REPLY_BYE, "TRYLATER", text);
+	} else {
+		client_send_reply_code
+			(client, MANAGESIEVE_CMD_REPLY_BYE, NULL, text);
+	}
+}
+
+static void managesieve_login_preinit(void)
+{
+	login_set_roots = managesieve_login_settings_set_roots;
+}
+
+static void managesieve_login_init(void)
 {
 }
 
-void clients_deinit(void)
+static void managesieve_login_deinit(void)
 {
 	clients_destroy_all();
 }
 
-struct client_vfuncs client_vfuncs = {
+static struct client_vfuncs managesieve_client_vfuncs = {
 	managesieve_client_alloc,
 	managesieve_client_create,
 	managesieve_client_destroy,
-	managesieve_client_send_greeting,
+	managesieve_client_notify_auth_ready,
+	managesieve_client_notify_disconnect,
+	NULL,
+	managesieve_client_notify_starttls,
 	managesieve_client_starttls,
 	managesieve_client_input,
-	managesieve_client_send_line,
-	managesieve_client_auth_handle_reply,
 	managesieve_client_auth_send_challenge,
 	managesieve_client_auth_parse_response,
+	managesieve_client_auth_result,
 	managesieve_proxy_reset,
-	managesieve_proxy_parse_line
+	managesieve_proxy_parse_line,
+	managesieve_proxy_error
 };
 
+static const struct login_binary managesieve_login_binary = {
+	.protocol = "sieve",
+	.process_name = "managesieve-login",
+	.default_port = 4190,
 
+	.client_vfuncs = &managesieve_client_vfuncs,
+	.preinit = managesieve_login_preinit,
+	.init = managesieve_login_init,
+	.deinit = managesieve_login_deinit
+};
+
+int main(int argc, char *argv[])
+{
+	return login_binary_run(&managesieve_login_binary, argc, argv);
+}

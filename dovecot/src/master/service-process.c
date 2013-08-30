@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "array.h"
@@ -10,6 +10,7 @@
 #include "base64.h"
 #include "hash.h"
 #include "str.h"
+#include "strescape.h"
 #include "llist.h"
 #include "hostpid.h"
 #include "env-util.h"
@@ -38,7 +39,9 @@ service_dup_fds(struct service *service)
 {
 	struct service_listener *const *listeners;
 	ARRAY_TYPE(dup2) dups;
-	unsigned int i, count, n = 0, socket_listener_count, ssl_socket_count;
+	string_t *listener_names;
+	int fd = MASTER_LISTEN_FD_FIRST;
+	unsigned int i, count, socket_listener_count, ssl_socket_count;
 
 	/* stdin/stdout is already redirected to /dev/null. Other master fds
 	   should have been opened with fd_close_on_exec() so we don't have to
@@ -50,37 +53,41 @@ service_dup_fds(struct service *service)
         socket_listener_count = 0;
 	listeners = array_get(&service->listeners, &count);
 	t_array_init(&dups, count + 10);
+	listener_names = t_str_new(256);
 
 	switch (service->type) {
 	case SERVICE_TYPE_LOG:
-		i_assert(n == 0);
-		services_log_dup2(&dups, service->list, MASTER_LISTEN_FD_FIRST,
+		i_assert(fd == MASTER_LISTEN_FD_FIRST);
+		services_log_dup2(&dups, service->list, fd,
 				  &socket_listener_count);
-		n += socket_listener_count;
+		fd += socket_listener_count;
 		break;
 	case SERVICE_TYPE_ANVIL:
 		dup2_append(&dups, service_anvil_global->log_fdpass_fd[0],
 			    MASTER_ANVIL_LOG_FDPASS_FD);
 		/* nonblocking anvil fd must be the first one. anvil treats it
 		   as the master's fd */
-		dup2_append(&dups, service_anvil_global->nonblocking_fd[0],
-			    MASTER_LISTEN_FD_FIRST + n++);
-		dup2_append(&dups, service_anvil_global->blocking_fd[0],
-			    MASTER_LISTEN_FD_FIRST + n++);
+		dup2_append(&dups, service_anvil_global->nonblocking_fd[0], fd++);
+		dup2_append(&dups, service_anvil_global->blocking_fd[0], fd++);
 		socket_listener_count += 2;
 		break;
 	default:
 		break;
 	}
 
+	/* anvil/log fds have no names */
+	for (i = MASTER_LISTEN_FD_FIRST; i < (unsigned int)fd; i++)
+		str_append_c(listener_names, '\t');
+
 	/* first add non-ssl listeners */
 	for (i = 0; i < count; i++) {
 		if (listeners[i]->fd != -1 &&
 		    (listeners[i]->type != SERVICE_LISTENER_INET ||
 		     !listeners[i]->set.inetset.set->ssl)) {
-			dup2_append(&dups, listeners[i]->fd,
-				    MASTER_LISTEN_FD_FIRST + n);
-			n++; socket_listener_count++;
+			str_append_tabescaped(listener_names, listeners[i]->name);
+			str_append_c(listener_names, '\t');
+			dup2_append(&dups, listeners[i]->fd, fd++);
+			socket_listener_count++;
 		}
 	}
 	/* then ssl-listeners */
@@ -89,9 +96,10 @@ service_dup_fds(struct service *service)
 		if (listeners[i]->fd != -1 &&
 		    listeners[i]->type == SERVICE_LISTENER_INET &&
 		    listeners[i]->set.inetset.set->ssl) {
-			dup2_append(&dups, listeners[i]->fd,
-				    MASTER_LISTEN_FD_FIRST + n);
-			n++; socket_listener_count++;
+			str_append_tabescaped(listener_names, listeners[i]->name);
+			str_append_c(listener_names, '\t');
+			dup2_append(&dups, listeners[i]->fd, fd++);
+			socket_listener_count++;
 			ssl_socket_count++;
 		}
 	}
@@ -145,8 +153,10 @@ service_dup_fds(struct service *service)
 	if (dup2_array(&dups) < 0)
 		i_fatal("service(%s): dup2s failed", service->set->name);
 
+	i_assert(fd == MASTER_LISTEN_FD_FIRST + (int)socket_listener_count);
 	env_put(t_strdup_printf("SOCKET_COUNT=%d", socket_listener_count));
 	env_put(t_strdup_printf("SSL_SOCKET_COUNT=%d", ssl_socket_count));
+	env_put(t_strdup_printf("SOCKET_NAMES=%s", str_c(listener_names)));
 }
 
 static void
@@ -157,7 +167,7 @@ drop_privileges(struct service *service)
 	unsigned int len;
 
 	if (service->vsz_limit != 0)
-		restrict_process_size(service->vsz_limit/1024/1024, -1U);
+		restrict_process_size(service->vsz_limit);
 
 	restrict_access_init(&rset);
 	rset.uid = service->uid;
@@ -180,12 +190,9 @@ drop_privileges(struct service *service)
 	}
 }
 
-static void
-service_process_setup_environment(struct service *service, unsigned int uid)
+static void service_process_setup_config_environment(struct service *service)
 {
 	const struct master_service_settings *set = service->list->service_set;
-
-	master_service_env_clean();
 
 	switch (service->type) {
 	case SERVICE_TYPE_CONFIG:
@@ -201,21 +208,37 @@ service_process_setup_environment(struct service *service, unsigned int uid)
 		env_put(t_strconcat("DEBUG_LOG_PATH=", set->debug_log_path, NULL));
 		env_put(t_strconcat("LOG_TIMESTAMP=", set->log_timestamp, NULL));
 		env_put(t_strconcat("SYSLOG_FACILITY=", set->syslog_facility, NULL));
+		env_put("SSL=no");
 		break;
 	default:
 		env_put(t_strconcat(MASTER_CONFIG_FILE_ENV"=",
 			services_get_config_socket_path(service->list), NULL));
 		break;
 	}
+}
+
+static void
+service_process_setup_environment(struct service *service, unsigned int uid)
+{
+	master_service_env_clean();
 
 	env_put(MASTER_IS_PARENT_ENV"=1");
+	service_process_setup_config_environment(service);
 	env_put(t_strdup_printf(MASTER_CLIENT_LIMIT_ENV"=%u",
 				service->client_limit));
+	env_put(t_strdup_printf(MASTER_PROCESS_LIMIT_ENV"=%u",
+				service->process_limit));
+	env_put(t_strdup_printf(MASTER_PROCESS_MIN_AVAIL_ENV"=%u",
+				service->set->process_min_avail));
+	env_put(t_strdup_printf(MASTER_SERVICE_IDLE_KILL_ENV"=%u",
+				service->idle_kill));
 	if (service->set->service_count != 0) {
 		env_put(t_strdup_printf(MASTER_SERVICE_COUNT_ENV"=%u",
 					service->set->service_count));
 	}
 	env_put(t_strdup_printf(MASTER_UID_ENV"=%u", uid));
+	env_put(t_strdup_printf(MY_HOSTNAME_ENV"=%s", my_hostname));
+	env_put(t_strdup_printf(MY_HOSTDOMAIN_ENV"=%s", my_hostdomain()));
 
 	if (!service->set->master_set->version_ignore)
 		env_put(MASTER_DOVECOT_VERSION_ENV"="PACKAGE_VERSION);
@@ -226,6 +249,9 @@ service_process_setup_environment(struct service *service, unsigned int uid)
 		env_put(t_strconcat(MASTER_SSL_KEY_PASSWORD_ENV"=",
 				    ssl_manual_key_password, NULL));
 	}
+	if (service->type == SERVICE_TYPE_ANVIL &&
+	    service_anvil_global->restarted)
+		env_put("ANVIL_RESTARTED=1");
 }
 
 static void service_process_status_timeout(struct service_process *process)
@@ -253,6 +279,11 @@ struct service_process *service_process_create(struct service *service)
 
 	if (service->to_throttle != NULL) {
 		/* throttling service, don't create new processes */
+		return NULL;
+	}
+	if (service->list->destroying) {
+		/* these services are being destroyed, no point in creating
+		   new processes now */
 		return NULL;
 	}
 
@@ -295,7 +326,7 @@ struct service_process *service_process_create(struct service *service)
 	DLLIST_PREPEND(&service->processes, process);
 
 	service_list_ref(service->list);
-	hash_table_insert(service_pids, &process->pid, process);
+	hash_table_insert(service_pids, POINTER_CAST(process->pid), process);
 
 	if (service->type == SERVICE_TYPE_ANVIL && process_forked)
 		service_anvil_process_created(process);
@@ -308,7 +339,7 @@ void service_process_destroy(struct service_process *process)
 	struct service_list *service_list = service->list;
 
 	DLLIST_REMOVE(&service->processes, process);
-	hash_table_remove(service_pids, &process->pid);
+	hash_table_remove(service_pids, POINTER_CAST(process->pid));
 
 	if (process->available_count > 0)
 		service->process_avail--;
@@ -339,17 +370,15 @@ void service_process_ref(struct service_process *process)
 	process->refcount++;
 }
 
-int service_process_unref(struct service_process *process)
+void service_process_unref(struct service_process *process)
 {
 	i_assert(process->refcount > 0);
 
 	if (--process->refcount > 0)
-		return TRUE;
+		return;
 
 	i_assert(process->destroyed);
-
 	i_free(process);
-	return FALSE;
 }
 
 static const char *
@@ -466,16 +495,17 @@ static void service_process_log(struct service_process *process,
 {
 	const char *data;
 
-	if (!default_fatal || process->service->log_fd[1] == -1) {
+	if (process->service->log_fd[1] == -1) {
 		i_error("%s", str);
 		return;
 	}
 
 	/* log it via the log process in charge of handling
 	   this process's logging */
-	data = t_strdup_printf("%d %s DEFAULT-FATAL %s\n",
+	data = t_strdup_printf("%d %s %s %s\n",
 			       process->service->log_process_internal_fd,
-			       dec2str(process->pid), str);
+			       dec2str(process->pid),
+			       default_fatal ? "DEFAULT-FATAL" : "FATAL", str);
 	if (write(process->service->list->master_log_fd[1],
 		  data, strlen(data)) < 0) {
 		i_error("write(log process) failed: %m");

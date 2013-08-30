@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -7,13 +7,13 @@
 #include "mkdir-parents.h"
 #include "str.h"
 #include "subscription-file.h"
+#include "mailbox-list-subscriptions.h"
 #include "mailbox-list-delete.h"
 #include "mailbox-list-maildir.h"
 
 #include <stdio.h>
 #include <sys/stat.h>
 
-#define MAILDIR_SUBFOLDER_FILENAME "maildirfolder"
 #define MAILDIR_GLOBAL_TEMP_PREFIX "temp."
 #define IMAPDIR_GLOBAL_TEMP_PREFIX ".temp."
 
@@ -29,6 +29,7 @@ static struct mailbox_list *maildir_list_alloc(void)
 	list = p_new(pool, struct maildir_mailbox_list, 1);
 	list->list = maildir_mailbox_list;
 	list->list.pool = pool;
+	list->sep = '.';
 
 	list->global_temp_prefix = MAILDIR_GLOBAL_TEMP_PREFIX;
 	list->temp_prefix = p_strconcat(pool, list->global_temp_prefix,
@@ -69,7 +70,8 @@ maildir_list_get_dirname_path(struct mailbox_list *list, const char *dir,
 	else if (list->name == imapdir_mailbox_list.name)
 		return t_strdup_printf("%s/%s", dir, name);
 
-	return t_strdup_printf("%s/%c%s", dir, list->hierarchy_sep, name);
+	return t_strdup_printf("%s/%c%s", dir,
+			       mailbox_list_get_hierarchy_sep(list), name);
 }
 
 static const char *
@@ -89,101 +91,31 @@ maildir_list_get_absolute_path(struct mailbox_list *list, const char *name)
 					     p+1);
 }
 
-static bool
-maildir_list_is_valid_common(struct mailbox_list *list, const char *name,
-			     size_t *len_r)
+static char maildir_list_get_hierarchy_sep(struct mailbox_list *_list)
 {
-	size_t len;
+	struct maildir_mailbox_list *list =
+		(struct maildir_mailbox_list *)_list;
 
-	/* check that there are no adjacent hierarchy separators */
-	for (len = 0; name[len] != '\0'; len++) {
-		if (name[len] == list->hierarchy_sep &&
-		    name[len+1] == list->hierarchy_sep)
-			return FALSE;
-	}
-
-	if (len == 0 || name[len-1] == '/')
-		return FALSE;
-
-	if (name[0] == list->hierarchy_sep ||
-	    name[len-1] == list->hierarchy_sep)
-		return FALSE;
-
-	*len_r = len;
-	return TRUE;
+	return list->sep;
 }
 
-static bool maildir_list_is_valid_common_nonfs(const char *name)
-{
-	if (*name == '~' || strchr(name, '/') != NULL)
-		return FALSE;
-
-	if (name[0] == '.' && (name[1] == '\0' ||
-			       (name[1] == '.' && name[2] == '\0'))) {
-		/* "." and ".." aren't allowed. */
-		return FALSE;
-	}
-	return TRUE;
-}
-
-static bool
-maildir_is_valid_existing_name(struct mailbox_list *list, const char *name)
-{
-	size_t len;
-
-	if (!maildir_list_is_valid_common(list, name, &len))
-		return FALSE;
-
-	if (list->mail_set->mail_full_filesystem_access)
-		return TRUE;
-
-	return maildir_list_is_valid_common_nonfs(name);
-}
-
-static bool
-maildir_is_valid_pattern(struct mailbox_list *list, const char *pattern)
-{
-	/* maildir code itself doesn't care about this, but we may get here
-	   from listing subscriptions to LAYOUT=fs namespace containing
-	   entries for a subscriptions=no LAYOUT=maildir++ namespace */
-	return maildir_is_valid_existing_name(list, pattern);
-}
-
-static bool
-maildir_is_valid_create_name(struct mailbox_list *list, const char *name)
-{
-	size_t len;
-
-	if (!maildir_list_is_valid_common(list, name, &len))
-		return FALSE;
-	if (len > MAILDIR_MAX_CREATE_MAILBOX_NAME_LENGTH)
-		return FALSE;
-
-	if (list->mail_set->mail_full_filesystem_access)
-		return TRUE;
-
-	if (!maildir_list_is_valid_common_nonfs(name))
-		return FALSE;
-	if (mailbox_list_name_is_too_large(name, list->hierarchy_sep))
-		return FALSE;
-
-	return TRUE;
-}
-
-static const char *
+static int
 maildir_list_get_path(struct mailbox_list *_list, const char *name,
-		      enum mailbox_list_path_type type)
+		      enum mailbox_list_path_type type, const char **path_r)
 {
 	const char *root_dir;
 
 	if (name == NULL) {
 		/* return root directories */
-		return mailbox_list_get_root_path(&_list->set, type);
+		return mailbox_list_set_get_root_path(&_list->set, type,
+						      path_r) ? 1 : 0;
 	}
 
 	if (_list->mail_set->mail_full_filesystem_access &&
-	    (*name == '/' || *name == '~'))
-		return maildir_list_get_absolute_path(_list, name);
+	    (*name == '/' || *name == '~')) {
+		*path_r = maildir_list_get_absolute_path(_list, name);
+		return 1;
+	}
 
 	root_dir = _list->set.root_dir;
 	switch (type) {
@@ -193,64 +125,43 @@ maildir_list_get_path(struct mailbox_list *_list, const char *name,
 	case MAILBOX_LIST_PATH_TYPE_ALT_DIR:
 	case MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX:
 		if (_list->set.alt_dir == NULL)
-			return NULL;
+			return 0;
 		root_dir = _list->set.alt_dir;
 		break;
 	case MAILBOX_LIST_PATH_TYPE_CONTROL:
 		if (_list->set.control_dir != NULL) {
-			return maildir_list_get_dirname_path(_list,
+			*path_r = maildir_list_get_dirname_path(_list,
 					       _list->set.control_dir, name);
+			return 1;
 		}
 		break;
 	case MAILBOX_LIST_PATH_TYPE_INDEX:
 		if (_list->set.index_dir != NULL) {
 			if (*_list->set.index_dir == '\0')
-				return "";
-			return maildir_list_get_dirname_path(_list,
+				return 0;
+			*path_r = maildir_list_get_dirname_path(_list,
 						_list->set.index_dir, name);
+			return 1;
 		}
 		break;
+	case MAILBOX_LIST_PATH_TYPE_INDEX_PRIVATE:
+		if (_list->set.index_pvt_dir == NULL)
+			return 0;
+		*path_r = maildir_list_get_dirname_path(_list,
+					_list->set.index_pvt_dir, name);
+		return 1;
 	}
 
 	if (type == MAILBOX_LIST_PATH_TYPE_ALT_DIR ||
 	    type == MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX) {
 		/* don't use inbox_path */
-	} else if (strcmp(name, "INBOX") == 0 && _list->set.inbox_path != NULL)
-		return _list->set.inbox_path;
-
-	return maildir_list_get_dirname_path(_list, root_dir, name);
-}
-
-static int
-maildir_list_get_mailbox_name_status(struct mailbox_list *_list,
-				     const char *name,
-				     enum mailbox_name_status *status)
-{
-	struct stat st;
-	const char *path;
-
-	path = mailbox_list_get_path(_list, name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-
-	if ((strcmp(name, "INBOX") == 0 &&
-	     (_list->ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) ||
-	    stat(path, &st) == 0) {
-		*status = MAILBOX_NAME_EXISTS_MAILBOX;
-		return 0;
+	} else if (strcmp(name, "INBOX") == 0 && _list->set.inbox_path != NULL) {
+		*path_r = _list->set.inbox_path;
+		return 1;
 	}
 
-	if (!mailbox_list_is_valid_create_name(_list, name)) {
-		*status = MAILBOX_NAME_INVALID;
-		return 0;
-	}
-
-	if (ENOTFOUND(errno) || errno == EACCES) {
-		*status = MAILBOX_NAME_VALID;
-		return 0;
-	} else {
-		mailbox_list_set_critical(_list, "stat(%s) failed: %m", path);
-		return -1;
-	}
+	*path_r = maildir_list_get_dirname_path(_list, root_dir, name);
+	return 1;
 }
 
 static const char *
@@ -269,6 +180,12 @@ static int maildir_list_set_subscribed(struct mailbox_list *_list,
 		(struct maildir_mailbox_list *)_list;
 	const char *path;
 
+	if (_list->set.subscription_fname == NULL) {
+		mailbox_list_set_error(_list, MAIL_ERROR_NOTPOSSIBLE,
+				       "Subscriptions not supported");
+		return -1;
+	}
+
 	path = t_strconcat(_list->set.control_dir != NULL ?
 			   _list->set.control_dir : _list->set.root_dir,
 			   "/", _list->set.subscription_fname, NULL);
@@ -277,117 +194,16 @@ static int maildir_list_set_subscribed(struct mailbox_list *_list,
 				       name, set);
 }
 
-static int
-maildir_list_create_maildirfolder_file(struct mailbox_list *list,
-				       const char *dir)
+static const char *
+mailbox_list_maildir_get_trash_dir(struct mailbox_list *_list)
 {
-	const char *path, *gid_origin;
-	mode_t mode, old_mask;
-	gid_t gid;
-	int fd;
-
-	/* Maildir++ spec wants that maildirfolder named file is created for
-	   all subfolders. */
-	mailbox_list_get_permissions(list, NULL, &mode, &gid, &gid_origin);
-
-	path = t_strconcat(dir, "/" MAILDIR_SUBFOLDER_FILENAME, NULL);
-	old_mask = umask(0);
-	fd = open(path, O_CREAT | O_WRONLY, mode);
-	umask(old_mask);
-	if (fd != -1) {
-		/* ok */
-	} else if (errno == ENOENT) {
-		mailbox_list_set_error(list, MAIL_ERROR_NOTFOUND,
-			"Mailbox was deleted while it was being created");
-		return -1;
-	} else {
-		mailbox_list_set_critical(list,
-			"open(%s, O_CREAT) failed: %m", path);
-		return -1;
-	}
-
-	if (gid != (gid_t)-1) {
-		if (fchown(fd, (uid_t)-1, gid) == 0) {
-			/* ok */
-		} else if (errno == EPERM) {
-			mailbox_list_set_critical(list, "%s",
-				eperm_error_get_chgrp("fchown", path,
-						      gid, gid_origin));
-		} else {
-			mailbox_list_set_critical(list,
-				"fchown(%s) failed: %m", path);
-		}
-	}
-	(void)close(fd);
-	return 0;
-}
-
-static int
-maildir_list_create_mailbox_dir(struct mailbox_list *list, const char *name,
-				enum mailbox_dir_create_type type)
-{
-	const char *path, *root_dir, *gid_origin, *p;
-	mode_t mode;
-	gid_t gid;
-	bool create_parent_dir;
-
-	if (type == MAILBOX_DIR_CREATE_TYPE_ONLY_NOSELECT) {
-		mailbox_list_set_error(list, MAIL_ERROR_NOTPOSSIBLE,
-				       "Can't create non-selectable mailbox");
-		return -1;
-	}
-
-	path = mailbox_list_get_path(list, name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	create_parent_dir = type == MAILBOX_DIR_CREATE_TYPE_MAILBOX &&
-		(list->flags & MAILBOX_LIST_FLAG_MAILBOX_FILES) != 0;
-	if (create_parent_dir) {
-		/* we only need to make sure that the parent directory exists */
-		p = strrchr(path, '/');
-		if (p == NULL)
-			return 0;
-		path = t_strdup_until(path, p);
-	}
-
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	mailbox_list_get_dir_permissions(list, NULL, &mode,
-					 &gid, &gid_origin);
-	if (mkdir_parents_chgrp(path, mode, gid, gid_origin) == 0) {
-		/* ok */
-	} else if (errno == EEXIST) {
-		if (create_parent_dir)
-			return 0;
-		if (type == MAILBOX_DIR_CREATE_TYPE_MAILBOX) {
-			if (strcmp(path, root_dir) == 0) {
-				/* even though the root directory exists,
-				   the mailbox might not */
-				return 0;
-			}
-		}
-
-		mailbox_list_set_error(list, MAIL_ERROR_EXISTS,
-				       "Mailbox already exists");
-		return -1;
-	} else if (mailbox_list_set_error_from_errno(list)) {
-		return -1;
-	} else {
-		mailbox_list_set_critical(list, "mkdir(%s) failed: %m", path);
-		return -1;
-	}
-	return create_parent_dir || strcmp(path, root_dir) == 0 ? 0 :
-		maildir_list_create_maildirfolder_file(list, path);
-}
-
-static const char *mailbox_list_maildir_get_trash_dir(struct mailbox_list *list)
-{
+	struct maildir_mailbox_list *list =
+		(struct maildir_mailbox_list *)_list;
 	const char *root_dir;
 
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_DIR);
+	root_dir = mailbox_list_get_root_forced(_list, MAILBOX_LIST_PATH_TYPE_DIR);
 	return t_strdup_printf("%s/%c%c"MAILBOX_LIST_MAILDIR_TRASH_DIR_NAME,
-			       root_dir, list->hierarchy_sep,
-			       list->hierarchy_sep);
+			       root_dir, list->sep, list->sep);
 }
 
 static int
@@ -404,8 +220,10 @@ maildir_list_delete_maildir(struct mailbox_list *list, const char *name)
 	if (ret == 0) {
 		/* we could actually use just unlink_directory()
 		   but error handling is easier this way :) */
-		path = mailbox_list_get_path(list, name,
-					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+		if (mailbox_list_get_path(list, name,
+					  MAILBOX_LIST_PATH_TYPE_MAILBOX,
+					  &path) <= 0)
+			i_unreached();
 		if (mailbox_list_delete_mailbox_nonrecursive(list, name,
 							     path, TRUE) < 0)
 			return -1;
@@ -416,16 +234,24 @@ maildir_list_delete_maildir(struct mailbox_list *list, const char *name)
 static int
 maildir_list_delete_mailbox(struct mailbox_list *list, const char *name)
 {
+	const char *path;
+	int ret;
+
 	if ((list->flags & MAILBOX_LIST_FLAG_MAILBOX_FILES) != 0) {
-		if (mailbox_list_delete_mailbox_file(list, name) < 0)
+		ret = mailbox_list_get_path(list, name,
+					    MAILBOX_LIST_PATH_TYPE_MAILBOX,
+					    &path);
+		if (ret < 0)
 			return -1;
+		i_assert(ret > 0);
+		ret = mailbox_list_delete_mailbox_file(list, name, path);
 	} else {
-		if (maildir_list_delete_maildir(list, name) < 0)
-			return -1;
+		ret = maildir_list_delete_maildir(list, name);
 	}
 
-	mailbox_list_delete_finish(list, name);
-	return 0;
+	if (ret == 0 || (list->props & MAILBOX_LIST_PROP_AUTOCREATE_DIRS) != 0)
+		mailbox_list_delete_finish(list, name);
+	return ret;
 }
 
 static int maildir_list_delete_dir(struct mailbox_list *list, const char *name)
@@ -435,13 +261,15 @@ static int maildir_list_delete_dir(struct mailbox_list *list, const char *name)
 
 	/* with maildir++ there aren't any non-selectable mailboxes.
 	   we'll always fail. */
-	path = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
+	if (mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR,
+				  &path) <= 0)
+		i_unreached();
 	if (stat(path, &st) == 0) {
 		mailbox_list_set_error(list, MAIL_ERROR_EXISTS,
 				       "Mailbox exists");
-	} else if (errno == ENOENT) {
+	} else if (errno == ENOENT || errno == ENOTDIR) {
 		mailbox_list_set_error(list, MAIL_ERROR_NOTFOUND,
-			T_MAIL_ERR_MAILBOX_NOT_FOUND(name));
+			T_MAILBOX_LIST_ERR_NOT_FOUND(list, name));
 	} else {
 		mailbox_list_set_critical(list, "stat(%s) failed: %m", path);
 	}
@@ -454,8 +282,9 @@ static int rename_dir(struct mailbox_list *oldlist, const char *oldname,
 {
 	const char *oldpath, *newpath;
 
-	oldpath = mailbox_list_get_path(oldlist, oldname, type);
-	newpath = mailbox_list_get_path(newlist, newname, type);
+	if (mailbox_list_get_path(oldlist, oldname, type, &oldpath) <= 0 ||
+	    mailbox_list_get_path(newlist, newname, type, &newpath) <= 0)
+		return 0;
 
 	if (strcmp(oldpath, newpath) == 0)
 		return 0;
@@ -474,12 +303,12 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 {
 	struct mailbox_list_iterate_context *iter;
         const struct mailbox_info *info;
-	ARRAY_DEFINE(names_arr, const char *);
+	ARRAY(const char *) names_arr;
 	const char *pattern, *oldpath, *newpath, *old_childname, *new_childname;
 	const char *const *names, *old_vname, *new_vname;
 	unsigned int i, count, old_vnamelen;
 	pool_t pool;
-	string_t *str;
+	char old_ns_sep;
 	int ret;
 
 	ret = 0;
@@ -491,14 +320,13 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 	pool = pool_alloconly_create("Maildir++ children list", 1024);
 	i_array_init(&names_arr, 64);
 
-	str = t_str_new(256);
-	old_vname = t_strdup(mail_namespace_get_vname(oldlist->ns, str, oldname));
+	old_vname = mailbox_list_get_vname(oldlist, oldname);
 	old_vnamelen = strlen(old_vname);
 
-	str_truncate(str, 0);
-	new_vname = t_strdup(mail_namespace_get_vname(newlist->ns, str, newname));
+	new_vname = mailbox_list_get_vname(newlist, newname);
 
-	pattern = t_strdup_printf("%s%c*", old_vname, oldlist->ns->sep);
+	old_ns_sep = mail_namespace_get_sep(oldlist->ns);
+	pattern = t_strdup_printf("%s%c*", old_vname, old_ns_sep);
 	iter = mailbox_list_iter_init(oldlist, pattern,
 				      MAILBOX_LIST_ITER_RETURN_NO_FLAGS |
 				      MAILBOX_LIST_ITER_RAW_LIST);
@@ -507,9 +335,9 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 
 		/* verify that the prefix matches, otherwise we could have
 		   problems with mailbox names containing '%' and '*' chars */
-		if (strncmp(info->name, old_vname, old_vnamelen) == 0 &&
-		    info->name[old_vnamelen] == oldlist->ns->sep) {
-			name = p_strdup(pool, info->name + old_vnamelen);
+		if (strncmp(info->vname, old_vname, old_vnamelen) == 0 &&
+		    info->vname[old_vnamelen] == old_ns_sep) {
+			name = p_strdup(pool, info->vname + old_vnamelen);
 			array_append(&names_arr, &name, 1);
 		}
 	}
@@ -521,7 +349,7 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 	}
 
 	for (i = 0; i < count; i++) {
-		old_childname = mail_namespace_get_storage_name(oldlist->ns,
+		old_childname = mailbox_list_get_storage_name(oldlist,
 					t_strconcat(old_vname, names[i], NULL));
 		if (strcmp(old_childname, new_vname) == 0) {
 			/* When doing RENAME "a" "a.b" we see "a.b" here.
@@ -529,12 +357,15 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 			continue;
 		}
 
-		new_childname = mail_namespace_get_storage_name(newlist->ns,
+		new_childname = mailbox_list_get_storage_name(newlist,
 					t_strconcat(new_vname, names[i], NULL));
-		oldpath = mailbox_list_get_path(oldlist, old_childname,
-						MAILBOX_LIST_PATH_TYPE_MAILBOX);
-		newpath = mailbox_list_get_path(newlist, new_childname,
-						MAILBOX_LIST_PATH_TYPE_MAILBOX);
+		if (mailbox_list_get_path(oldlist, old_childname,
+					  MAILBOX_LIST_PATH_TYPE_MAILBOX,
+					  &oldpath) <= 0 ||
+		    mailbox_list_get_path(newlist, new_childname,
+					  MAILBOX_LIST_PATH_TYPE_MAILBOX,
+					  &newpath) <= 0)
+			i_unreached();
 
 		/* FIXME: it's possible to merge two mailboxes if either one of
 		   them doesn't have existing root mailbox. We could check this
@@ -566,8 +397,7 @@ maildir_rename_children(struct mailbox_list *oldlist, const char *oldname,
 
 static int
 maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
-			    struct mailbox_list *newlist, const char *newname,
-			    bool rename_children)
+			    struct mailbox_list *newlist, const char *newname)
 {
 	const char *oldpath, *newpath, *root_path;
 	int ret;
@@ -575,13 +405,14 @@ maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 
 	/* NOTE: it's possible to rename a nonexistent mailbox which has
 	   children. In that case we should ignore the rename() error. */
-	oldpath = mailbox_list_get_path(oldlist, oldname,
-					MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	newpath = mailbox_list_get_path(newlist, newname,
-					MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	if (mailbox_list_get_path(oldlist, oldname,
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &oldpath) <= 0 ||
+	    mailbox_list_get_path(newlist, newname,
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &newpath) <= 0)
+		i_unreached();
 
-	root_path = mailbox_list_get_path(oldlist, NULL,
-					  MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	root_path = mailbox_list_get_root_forced(oldlist,
+						 MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	if (strcmp(oldpath, root_path) == 0) {
 		/* most likely INBOX */
 		mailbox_list_set_error(oldlist, MAIL_ERROR_NOTPOSSIBLE,
@@ -589,6 +420,25 @@ maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 					oldname));
 		return -1;
 	}
+
+	/* if we're renaming under another mailbox, require its permissions
+	   to be same as ours. */
+	if (strchr(newname, mailbox_list_get_hierarchy_sep(newlist)) != NULL) {
+		struct mailbox_permissions old_perm, new_perm;
+
+		mailbox_list_get_permissions(oldlist, oldname, &old_perm);
+		mailbox_list_get_permissions(newlist, newname, &new_perm);
+
+		if ((new_perm.file_create_mode != old_perm.file_create_mode ||
+		     new_perm.dir_create_mode != old_perm.dir_create_mode ||
+		     new_perm.file_create_gid != old_perm.file_create_gid)) {
+			mailbox_list_set_error(oldlist, MAIL_ERROR_NOTPOSSIBLE,
+				"Renaming not supported across conflicting "
+				"directory permissions");
+			return -1;
+		}
+	}
+
 
 	ret = rename(oldpath, newpath);
 	if (ret == 0 || errno == ENOENT) {
@@ -598,9 +448,7 @@ maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 				 MAILBOX_LIST_PATH_TYPE_INDEX);
 
 		found = ret == 0;
-		if (!rename_children)
-			ret = 0;
-		else T_BEGIN {
+		T_BEGIN {
 			ret = maildir_rename_children(oldlist, oldname,
 						      newlist, newname);
 		} T_END;
@@ -608,7 +456,7 @@ maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 			return -1;
 		if (!found && ret == 0) {
 			mailbox_list_set_error(oldlist, MAIL_ERROR_NOTFOUND,
-				T_MAIL_ERR_MAILBOX_NOT_FOUND(oldname));
+				T_MAILBOX_LIST_ERR_NOT_FOUND(oldlist, oldname));
 			return -1;
 		}
 
@@ -627,7 +475,6 @@ maildir_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 
 struct mailbox_list maildir_mailbox_list = {
 	.name = MAILBOX_LIST_NAME_MAILDIRPLUSPLUS,
-	.hierarchy_sep = '.',
 	.props = MAILBOX_LIST_PROP_NO_MAILDIR_NAME |
 		MAILBOX_LIST_PROP_NO_ALT_DIR |
 		MAILBOX_LIST_PROP_NO_NOSELECT,
@@ -635,13 +482,13 @@ struct mailbox_list maildir_mailbox_list = {
 
 	{
 		maildir_list_alloc,
+		NULL,
 		maildir_list_deinit,
 		NULL,
-		maildir_is_valid_pattern,
-		maildir_is_valid_existing_name,
-		maildir_is_valid_create_name,
+		maildir_list_get_hierarchy_sep,
+		mailbox_list_default_get_vname,
+		mailbox_list_default_get_storage_name,
 		maildir_list_get_path,
-		maildir_list_get_mailbox_name_status,
 		maildir_list_get_temp_prefix,
 		NULL,
 		maildir_list_iter_init,
@@ -649,17 +496,18 @@ struct mailbox_list maildir_mailbox_list = {
 		maildir_list_iter_deinit,
 		maildir_list_get_mailbox_flags,
 		NULL,
+		mailbox_list_subscriptions_refresh,
 		maildir_list_set_subscribed,
-		maildir_list_create_mailbox_dir,
 		maildir_list_delete_mailbox,
 		maildir_list_delete_dir,
-		maildir_list_rename_mailbox
+		mailbox_list_delete_symlink_default,
+		maildir_list_rename_mailbox,
+		NULL, NULL, NULL, NULL
 	}
 };
 
 struct mailbox_list imapdir_mailbox_list = {
 	.name = MAILBOX_LIST_NAME_IMAPDIR,
-	.hierarchy_sep = '.',
 	.props = MAILBOX_LIST_PROP_NO_MAILDIR_NAME |
 		MAILBOX_LIST_PROP_NO_ALT_DIR |
 		MAILBOX_LIST_PROP_NO_NOSELECT,
@@ -667,13 +515,13 @@ struct mailbox_list imapdir_mailbox_list = {
 
 	{
 		imapdir_list_alloc,
+		NULL,
 		maildir_list_deinit,
 		NULL,
-		maildir_is_valid_pattern,
-		maildir_is_valid_existing_name,
-		maildir_is_valid_create_name,
+		maildir_list_get_hierarchy_sep,
+		mailbox_list_default_get_vname,
+		mailbox_list_default_get_storage_name,
 		maildir_list_get_path,
-		maildir_list_get_mailbox_name_status,
 		maildir_list_get_temp_prefix,
 		NULL,
 		maildir_list_iter_init,
@@ -681,10 +529,12 @@ struct mailbox_list imapdir_mailbox_list = {
 		maildir_list_iter_deinit,
 		maildir_list_get_mailbox_flags,
 		NULL,
+		mailbox_list_subscriptions_refresh,
 		maildir_list_set_subscribed,
-		maildir_list_create_mailbox_dir,
 		maildir_list_delete_mailbox,
 		maildir_list_delete_dir,
-		maildir_list_rename_mailbox
+		mailbox_list_delete_symlink_default,
+		maildir_list_rename_mailbox,
+		NULL, NULL, NULL, NULL
 	}
 };

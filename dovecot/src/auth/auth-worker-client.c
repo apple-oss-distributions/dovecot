@@ -1,13 +1,15 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "base64.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "hex-binary.h"
 #include "str.h"
+#include "strescape.h"
+#include "process-title.h"
 #include "master-service.h"
 #include "auth-request.h"
 #include "auth-worker-client.h"
@@ -15,6 +17,10 @@
 #include <stdlib.h>
 
 #define OUTBUF_THROTTLE_SIZE (1024*10)
+
+#define CLIENT_STATE_HANDSHAKE "handshaking"
+#define CLIENT_STATE_IDLE "idling"
+#define CLIENT_STATE_STOP "waiting for shutdown"
 
 struct auth_worker_client {
 	int refcount;
@@ -24,23 +30,37 @@ struct auth_worker_client {
 	struct io *io;
 	struct istream *input;
 	struct ostream *output;
+	struct timeout *to_idle;
 
 	unsigned int version_received:1;
 	unsigned int dbhash_received:1;
+	unsigned int error_sent:1;
 };
 
 struct auth_worker_list_context {
 	struct auth_worker_client *client;
-	struct userdb_module *userdb;
+	struct auth_request *auth_request;
 	struct userdb_iterate_context *iter;
-	unsigned int id;
 	bool sending, sent, done;
 };
 
 struct auth_worker_client *auth_worker_client;
+static bool auth_worker_client_error = FALSE;
 
 static void auth_worker_input(struct auth_worker_client *client);
 static int auth_worker_output(struct auth_worker_client *client);
+
+void auth_worker_refresh_proctitle(const char *state)
+{
+	if (!global_auth_settings->verbose_proctitle || !worker)
+		return;
+
+	if (auth_worker_client_error)
+		state = "error";
+	else if (auth_worker_client == NULL)
+		state = "waiting for connection";
+	process_title_set(t_strdup_printf("worker: %s", state));
+}
 
 static void
 auth_worker_client_check_throttle(struct auth_worker_client *client)
@@ -69,7 +89,9 @@ worker_auth_request_new(struct auth_worker_client *client, unsigned int id,
 
 	for (; *args != NULL; args++) {
 		value = strchr(*args, '=');
-		if (value != NULL) {
+		if (value == NULL)
+			(void)auth_request_import(auth_request, *args, NULL);
+		else {
 			key = t_strdup_until(*args, value++);
 			(void)auth_request_import(auth_request, key, value);
 		}
@@ -82,48 +104,50 @@ worker_auth_request_new(struct auth_worker_client *client, unsigned int id,
 static void auth_worker_send_reply(struct auth_worker_client *client,
 				   string_t *str)
 {
-	if (shutdown_request)
-		o_stream_send_str(client->output, "SHUTDOWN\n");
-	o_stream_send(client->output, str_data(str), str_len(str));
+	if (worker_restart_request)
+		o_stream_nsend_str(client->output, "RESTART\n");
+	o_stream_nsend(client->output, str_data(str), str_len(str));
+}
+
+static void
+reply_append_extra_fields(string_t *str, struct auth_request *request)
+{
+	if (!auth_fields_is_empty(request->extra_fields)) {
+		str_append_c(str, '\t');
+		auth_fields_append(request->extra_fields, str, 0, 0);
+	}
+	if (request->userdb_reply != NULL &&
+	    auth_fields_is_empty(request->userdb_reply)) {
+		/* all userdb_* fields had NULL values. we'll still
+		   need to tell this to the master */
+		str_append(str, "\tuserdb_"AUTH_REQUEST_USER_KEY_IGNORE);
+	}
 }
 
 static void verify_plain_callback(enum passdb_result result,
 				  struct auth_request *request)
 {
 	struct auth_worker_client *client = request->context;
-	struct auth_stream_reply *reply;
 	string_t *str;
 
-	if (request->passdb_failure && result == PASSDB_RESULT_OK)
+	if (request->failed && result == PASSDB_RESULT_OK)
 		result = PASSDB_RESULT_PASSWORD_MISMATCH;
 
-	reply = auth_stream_reply_init(pool_datastack_create());
-	auth_stream_reply_add(reply, NULL, dec2str(request->id));
+	str = t_str_new(128);
+	str_printfa(str, "%u\t", request->id);
 
 	if (result == PASSDB_RESULT_OK)
-		auth_stream_reply_add(reply, "OK", NULL);
-	else {
-		auth_stream_reply_add(reply, "FAIL", NULL);
-		auth_stream_reply_add(reply, NULL,
-				      t_strdup_printf("%d", result));
-	}
+		str_append(str, "OK");
+	else
+		str_printfa(str, "FAIL\t%d", result);
 	if (result != PASSDB_RESULT_INTERNAL_FAILURE) {
-		auth_stream_reply_add(reply, NULL, request->user);
-		auth_stream_reply_add(reply, NULL,
-				      request->passdb_password == NULL ? "" :
-				      request->passdb_password);
-		if (request->extra_fields != NULL) {
-			const char *fields =
-				auth_stream_reply_export(request->extra_fields);
-			auth_stream_reply_import(reply, fields);
-		}
-		if (request->extra_cache_fields != NULL) {
-			const char *fields =
-				auth_stream_reply_export(request->extra_cache_fields);
-			auth_stream_reply_import(reply, fields);
-		}
+		str_append_c(str, '\t');
+		str_append_tabescaped(str, request->user);
+		str_append_c(str, '\t');
+		if (request->passdb_password != NULL)
+			str_append_tabescaped(str, request->passdb_password);
+		reply_append_extra_fields(str, request);
 	}
-	str = auth_stream_reply_get_str(reply);
 	str_append_c(str, '\n');
 	auth_worker_send_reply(client, str);
 
@@ -188,40 +212,23 @@ lookup_credentials_callback(enum passdb_result result,
 			    struct auth_request *request)
 {
 	struct auth_worker_client *client = request->context;
-	struct auth_stream_reply *reply;
 	string_t *str;
 
-	if (request->passdb_failure && result == PASSDB_RESULT_OK)
+	if (request->failed && result == PASSDB_RESULT_OK)
 		result = PASSDB_RESULT_PASSWORD_MISMATCH;
 
-	reply = auth_stream_reply_init(pool_datastack_create());
-	auth_stream_reply_add(reply, NULL, dec2str(request->id));
+	str = t_str_new(128);
+	str_printfa(str, "%u\t", request->id);
 
-	if (result != PASSDB_RESULT_OK) {
-		auth_stream_reply_add(reply, "FAIL", NULL);
-		auth_stream_reply_add(reply, NULL,
-				      t_strdup_printf("%d", result));
-	} else {
-		auth_stream_reply_add(reply, "OK", NULL);
-		auth_stream_reply_add(reply, NULL, request->user);
-
-		str = t_str_new(64);
-		str_printfa(str, "{%s.b64}", request->credentials_scheme);
+	if (result != PASSDB_RESULT_OK)
+		str_printfa(str, "FAIL\t%d", result);
+	else {
+		str_append(str, "OK\t");
+		str_append_tabescaped(str, request->user);
+		str_printfa(str, "\t{%s.b64}", request->credentials_scheme);
 		base64_encode(credentials, size, str);
-		auth_stream_reply_add(reply, NULL, str_c(str));
-
-		if (request->extra_fields != NULL) {
-			const char *fields =
-				auth_stream_reply_export(request->extra_fields);
-			auth_stream_reply_import(reply, fields);
-		}
-		if (request->extra_cache_fields != NULL) {
-			const char *fields =
-				auth_stream_reply_export(request->extra_cache_fields);
-			auth_stream_reply_import(reply, fields);
-		}
+		reply_append_extra_fields(str, request);
 	}
-	str = auth_stream_reply_get_str(reply);
 	str_append_c(str, '\n');
 	auth_worker_send_reply(client, str);
 
@@ -333,7 +340,6 @@ lookup_user_callback(enum userdb_result result,
 		     struct auth_request *auth_request)
 {
 	struct auth_worker_client *client = auth_request->context;
-	struct auth_stream_reply *reply = auth_request->userdb_reply;
 	string_t *str;
 
 	str = t_str_new(128);
@@ -347,7 +353,7 @@ lookup_user_callback(enum userdb_result result,
 		break;
 	case USERDB_RESULT_OK:
 		str_append(str, "OK\t");
-		str_append(str, auth_stream_reply_export(reply));
+		auth_fields_append(auth_request->userdb_reply, str, 0, 0);
 		if (auth_request->userdb_lookup_failed)
 			str_append(str, "\ttempfail");
 		break;
@@ -415,14 +421,17 @@ static void list_iter_deinit(struct auth_worker_list_context *ctx)
 	i_assert(client->io == NULL);
 
 	str = t_str_new(32);
-	if (ctx->userdb->iface->iterate_deinit(ctx->iter) < 0)
-		str_printfa(str, "%u\tFAIL\n", ctx->id);
+	if (ctx->auth_request->userdb->userdb->iface->
+	    		iterate_deinit(ctx->iter) < 0)
+		str_printfa(str, "%u\tFAIL\n", ctx->auth_request->id);
 	else
-		str_printfa(str, "%u\tOK\n", ctx->id);
+		str_printfa(str, "%u\tOK\n", ctx->auth_request->id);
 	auth_worker_send_reply(client, str);
 
 	client->io = io_add(client->fd, IO_READ, auth_worker_input, client);
+	o_stream_uncork(ctx->client->output);
 	o_stream_set_flush_callback(client->output, auth_worker_output, client);
+	auth_request_unref(&ctx->auth_request);
 	auth_worker_client_unref(&client);
 	i_free(ctx);
 }
@@ -442,8 +451,8 @@ static void list_iter_callback(const char *user, void *context)
 
 	T_BEGIN {
 		str = t_str_new(128);
-		str_printfa(str, "%u\t*\t%s\n", ctx->id, user);
-		o_stream_send(ctx->client->output, str_data(str), str_len(str));
+		str_printfa(str, "%u\t*\t%s\n", ctx->auth_request->id, user);
+		o_stream_nsend(ctx->client->output, str_data(str), str_len(str));
 	} T_END;
 
 	if (ctx->sending) {
@@ -455,9 +464,18 @@ static void list_iter_callback(const char *user, void *context)
 	do {
 		ctx->sending = TRUE;
 		ctx->sent = FALSE;
-		ctx->userdb->iface->iterate_next(ctx->iter);
+		T_BEGIN {
+			ctx->auth_request->userdb->userdb->iface->
+				iterate_next(ctx->iter);
+		} T_END;
+		if (o_stream_get_buffer_used_size(ctx->client->output) > OUTBUF_THROTTLE_SIZE) {
+			if (o_stream_flush(ctx->client->output) < 0) {
+				ctx->done = TRUE;
+				break;
+			}
+		}
 	} while (ctx->sent &&
-		 o_stream_get_buffer_used_size(ctx->client->output) == 0);
+		 o_stream_get_buffer_used_size(ctx->client->output) <= OUTBUF_THROTTLE_SIZE);
 	ctx->sending = FALSE;
 	if (ctx->done)
 		list_iter_deinit(ctx);
@@ -471,8 +489,10 @@ static int auth_worker_list_output(struct auth_worker_list_context *ctx)
 		list_iter_deinit(ctx);
 		return 1;
 	}
-	if (ret > 0)
-		ctx->userdb->iface->iterate_next(ctx->iter);
+	if (ret > 0) T_BEGIN {
+		ctx->auth_request->userdb->userdb->iface->
+			iterate_next(ctx->iter);
+	} T_END;
 	return 1;
 }
 
@@ -497,16 +517,23 @@ auth_worker_handle_list(struct auth_worker_client *client,
 
 	ctx = i_new(struct auth_worker_list_context, 1);
 	ctx->client = client;
-	ctx->id = id;
-	ctx->userdb = userdb->userdb;
+	ctx->auth_request = worker_auth_request_new(client, id, args + 1);
+	ctx->auth_request->userdb = userdb;
+	if (ctx->auth_request->user == NULL ||
+	    ctx->auth_request->service == NULL) {
+		i_error("BUG: LIST had missing parameters");
+		auth_request_unref(&ctx->auth_request);
+		i_free(ctx);
+		return FALSE;
+	}
 
 	io_remove(&ctx->client->io);
+	o_stream_cork(ctx->client->output);
 	o_stream_set_flush_callback(ctx->client->output,
 				    auth_worker_list_output, ctx);
-	client->refcount++;
-	ctx->iter = ctx->userdb->iface->
-		iterate_init(userdb->userdb, list_iter_callback, ctx);
-	ctx->userdb->iface->iterate_next(ctx->iter);
+	ctx->iter = ctx->auth_request->userdb->userdb->iface->
+		iterate_init(ctx->auth_request, list_iter_callback, ctx);
+	ctx->auth_request->userdb->userdb->iface->iterate_next(ctx->iter);
 	return TRUE;
 }
 
@@ -517,13 +544,14 @@ auth_worker_handle_line(struct auth_worker_client *client, const char *line)
 	unsigned int id;
 	bool ret = FALSE;
 
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	if (args[0] == NULL || args[1] == NULL || args[2] == NULL ||
 	    str_to_uint(args[0], &id) < 0) {
 		i_error("BUG: Invalid input: %s", line);
 		return FALSE;
 	}
 
+	auth_worker_refresh_proctitle(args[1]);
 	if (strcmp(args[1], "PASSV") == 0)
 		ret = auth_worker_handle_passv(client, id, args + 2);
 	else if (strcmp(args[1], "PASSL") == 0)
@@ -538,6 +566,7 @@ auth_worker_handle_line(struct auth_worker_client *client, const char *line)
 		i_error("BUG: Auth-worker received unknown command: %s",
 			args[1]);
 	}
+	auth_worker_refresh_proctitle(CLIENT_STATE_IDLE);
         return ret;
 }
 
@@ -606,6 +635,7 @@ static void auth_worker_input(struct auth_worker_client *client)
 			return;
 		}
 		client->dbhash_received = TRUE;
+		auth_worker_refresh_proctitle(CLIENT_STATE_IDLE);
 	}
 
         client->refcount++;
@@ -620,6 +650,8 @@ static void auth_worker_input(struct auth_worker_client *client)
 			break;
 		}
 	}
+	if (client->to_idle != NULL)
+		timeout_reset(client->to_idle);
 	auth_worker_client_unref(&client);
 }
 
@@ -639,10 +671,17 @@ static int auth_worker_output(struct auth_worker_client *client)
 	return 1;
 }
 
+static void
+auth_worker_client_idle_kill(struct auth_worker_client *client ATTR_UNUSED)
+{
+	auth_worker_client_send_shutdown();
+}
+
 struct auth_worker_client *
 auth_worker_client_create(struct auth *auth, int fd)
 {
         struct auth_worker_client *client;
+	unsigned int idle_kill_secs;
 
 	client = i_new(struct auth_worker_client, 1);
 	client->refcount = 1;
@@ -652,10 +691,21 @@ auth_worker_client_create(struct auth *auth, int fd)
 	client->input = i_stream_create_fd(fd, AUTH_WORKER_MAX_LINE_LENGTH,
 					   FALSE);
 	client->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	o_stream_set_flush_callback(client->output, auth_worker_output, client);
 	client->io = io_add(fd, IO_READ, auth_worker_input, client);
+	auth_worker_refresh_proctitle(CLIENT_STATE_HANDSHAKE);
+
+	idle_kill_secs = master_service_get_idle_kill_secs(master_service);
+	if (idle_kill_secs > 0) {
+		client->to_idle = timeout_add(idle_kill_secs * 1000,
+					      auth_worker_client_idle_kill,
+					      client);
+	}
 
 	auth_worker_client = client;
+	if (auth_worker_client_error)
+		auth_worker_client_send_error();
 	return client;
 }
 
@@ -670,6 +720,8 @@ void auth_worker_client_destroy(struct auth_worker_client **_client)
 	i_stream_close(client->input);
 	o_stream_close(client->output);
 
+	if (client->to_idle != NULL)
+		timeout_remove(&client->to_idle);
 	if (client->io != NULL)
 		io_remove(&client->io);
 
@@ -678,6 +730,7 @@ void auth_worker_client_destroy(struct auth_worker_client **_client)
 	auth_worker_client_unref(&client);
 
 	auth_worker_client = NULL;
+	auth_worker_refresh_proctitle("");
 	master_service_client_connection_destroyed(master_service);
 }
 
@@ -693,4 +746,33 @@ void auth_worker_client_unref(struct auth_worker_client **_client)
 	i_stream_unref(&client->input);
 	o_stream_unref(&client->output);
 	i_free(client);
+}
+
+void auth_worker_client_send_error(void)
+{
+	auth_worker_client_error = TRUE;
+	if (auth_worker_client != NULL &&
+	    !auth_worker_client->error_sent) {
+		o_stream_nsend_str(auth_worker_client->output, "ERROR\n");
+		auth_worker_client->error_sent = TRUE;
+	}
+	auth_worker_refresh_proctitle("");
+}
+
+void auth_worker_client_send_success(void)
+{
+	auth_worker_client_error = FALSE;
+	if (auth_worker_client != NULL &&
+	    auth_worker_client->error_sent) {
+		o_stream_nsend_str(auth_worker_client->output, "SUCCESS\n");
+		auth_worker_client->error_sent = FALSE;
+	}
+	auth_worker_refresh_proctitle(CLIENT_STATE_IDLE);
+}
+
+void auth_worker_client_send_shutdown(void)
+{
+	if (auth_worker_client != NULL)
+		o_stream_nsend_str(auth_worker_client->output, "SHUTDOWN\n");
+	auth_worker_refresh_proctitle(CLIENT_STATE_STOP);
 }

@@ -1,7 +1,35 @@
 /*
- *  Contains: Cyrus to Dovecot maildir mail migration
- *	Written by: Michale Dasenbrock
- *  Copyright:  © 2008-2011 Apple Inc., All rights reserved.
+ * Contains: Cyrus to Dovecot maildir mail migration
+ * Written by: Michale Dasenbrock
+ *
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without  
+ * modification, are permitted provided that the following conditions  
+ * are met:
+ * 
+ * 1.  Redistributions of source code must retain the above copyright  
+ * notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above  
+ * copyright notice, this list of conditions and the following  
+ * disclaimer in the documentation and/or other materials provided  
+ * with the distribution.
+ * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
+ * contributors may be used to endorse or promote products derived  
+ * from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
+ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
+ * SUCH DAMAGE.
  *
  * To Do:
  *	- Gather stats for messages migrated
@@ -11,682 +39,201 @@
  * Not For Open Source
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-#include <dirent.h>
-#include <unistd.h>
-#include <sys/param.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <arpa/inet.h>
-#include <sys/syslog.h>
-#include <getopt.h>
+#import	<stdio.h>
+#import	<stdlib.h>
+#import	<string.h>
+#import	<assert.h>
+#import	<dirent.h>
+#import	<unistd.h>
+#import	<sys/param.h>
+#import	<sys/stat.h>
+#import	<sys/time.h>
+#import	<arpa/inet.h>
+#import	<sys/syslog.h>
+#import	<getopt.h>
 
 #import <Foundation/NSObject.h>
-#include <Foundation/Foundation.h>
-#include <Foundation/NSString.h>
-#include <OpenDirectory/NSOpenDirectory.h>
-#include <OpenDirectory/OpenDirectoryPriv.h>
-#include <DirectoryService/DirServicesTypes.h>
-#include <DirectoryService/DirServicesConst.h>
+#import	<Foundation/Foundation.h>
+#import	<Foundation/NSString.h>
+#import	<ServerFoundation/XSTask.h>
+#import	<OpenDirectory/NSOpenDirectory.h>
+#import	<OpenDirectory/OpenDirectoryPriv.h>
+#import	<DirectoryService/DirServicesTypes.h>
+#import	<DirectoryService/DirServicesConst.h>
 
-#include "cvt_mail.h"
+#import	"cvt_mail.h"
 
-#define	VERSION	"OS X 2.0"
-
-// -- Function Prototypes -------------------------------------------
-
-int cvt_mail_data ( int argc, char **argv );
-int set_user_mail_opts ( int argc, char **argv );
-int set_dovecot_keywords ( const char *in_cy_header_path, char *in_dest_path );
-const char *map_guid( const char *in_user );
-const char *map_userid( const char *in_guid );
-NSDictionary *get_mail_attribute ( const char *in_guid );
-void rename_mailboxes( const char *g_dest_dir );
-void fix_mailboxes		( const char *g_dest_dir );
-void fix_message_dates	( NSString *in_dir );
-void map_mailbox_to_guid ( const char *in_path, const char *in_user );
-void set_migration_flag ( const char *in_guid );
-void set_migration_flags ( BOOL in_set );
-void log_message ( int in_log_lvl, NSString *in_msg, NSError *in_ns_err );
-NSDate *get_message_date( NSString *nsStr_in_path );
-NSDictionary *get_alt_data_stores ( int in_print );
-
-void list_auto_forwards( const char *in_guid );
-void set_auto_forward( const char *guid, const char *fwd_addr );
-void reset_auto_forward( const char *in_guid );
-
-void list_alt_data_stores( const char *in_guid );
-void set_alt_data_store( const char *guid, const char *fwd_addr );
-void reset_alt_data_stores( const char *in_guid );
-void set_alt_data_store_tag ( const char *tag, const char *path );
-void reset_alt_data_store_tag ( const char *in_tag );
-
-void set_opts_usage ( int in_exit_code );
+#define	VERSION	"2.1"
 
 // ------------------------------------------------------------------
 
-int			g_debug			= 0;
 long		g_count			= 0;
 long long	g_size			= 0LL;
-char		*g_account		= NULL;
-char		*g_cyrus_db_dir	= "/var/imap";
-char		*g_dest_dir		= "/Library/Server/Mail/Data/mail";
-char		*g_user_dir		= "/Library/Server/Mail/Data/users";
 FILE		*g_maildirsize	= NULL;
+
+NSString *g_user_id = nil;
+NSString *g_spool_dir = nil;
+NSString *g_src_db_dir = @"/var/imap";
+NSString *g_migrate_opt = @"copy";
 
 NSAutoreleasePool	*gPool = nil;
 
-// Global cyrus spool path, will append "/user"
-char	g_cyrus_spool_dir[ PATH_MAX + 1 ];
+// globals
+NSString *g_config_file = IMAP_CONF_FILE;
+NSString *g_imap_bins_dir = IMAP_BINS_DIR;
 
-// Global flags
-int	c_flag	= 0;
-int	e_flag	= 0;
-int	f_flag	= 0;
-int	i_flag	= 0;
-int	j_flag	= 0;
-int	k_flag	= 0;
-int	m_flag	= 0;
-int	r_flag	= 0;
-int	u_flag	= 0;
-int	x_flag	= 0;
+// user opts
+int	g_user_opts = kNO_FLAGS;
 
-// Global seen file data
-struct s_seen_data *g_seen_file	= NULL;
+// tunable output level. maps to syslog levels
+int g_verbose = LOG_ERR;
+
+// -----------------------------------------------------------------------------
+//	print_string ()
+
+void print_string ( int in_level, const char *in_format, ... )
+{
+	// log level check
+	if ( in_level <= g_verbose ) {
+		va_list args;
+		va_start( args, in_format );
+		vfprintf( stdout, in_format, args );
+		va_end( args );
+	}
+} // print_string
 
 // ------------------------------------------------------------------
-//
-
-int main ( int argc, char **argv )
-{
-	gPool = [[NSAutoreleasePool alloc] init];
-
-	if ( geteuid() != 0 ) {
-		fprintf( stdout, "%s must be run as root\n", argv[0] );
-		exit(0);
-	}
-
-	if ( strcasestr(argv[0], "cvt_mail_data" ) ) {
-		cvt_mail_data( argc, argv );
-		exit(0);
-	} else if ( strcasestr(argv[0], "set_user_mail_opts" ) ) {
-		set_user_mail_opts( argc, argv );
-		exit(0);
-	}
-
-	return( 0 );
-	[gPool release];
-}
-
-
-int set_user_mail_opts ( int argc, char **argv )
-{
-	char ch;
-	int opt_index = 0;
-	int long_val  = 0;
-
-	char *tag		= NULL;
-	char *path		= NULL;
-	char *user_id	= NULL;
-	char *user_guid	= NULL;
-	char *fwd_addr	= NULL;
-	char *alt_store	= NULL;
-	struct option long_options[] = {
-		{"alt_store", 1, &long_val, 'a'},
-		{"auto_fwd", 1, &long_val, 'f'},
-		{"user_guid", 1, &long_val, 'g'},
-		{"path", 1, &long_val, 'p'},
-		{"tag", 1, &long_val, 't'},
-		{"user_id", 1, &long_val, 'u'},
-		{0, 0, 0, 0 }
-	};
-
-	if ( argc == 1 )
-		set_opts_usage(0);
-
-	while ((ch = getopt_long(argc, argv, "ha:f:g:p:t:u:", long_options, &opt_index)) != -1) {
-		switch (ch) {
-			case 'a':
-				alt_store = optarg;
-				break;
-
-			case 'f':
-				fwd_addr = optarg;
-				break;
-
-			case 'g':
-				user_guid = optarg;
-				break;
-
-			case 'p':
-				path = optarg;
-				break;
-
-			case 't':
-				tag = optarg;
-				break;
-
-			case 'u':
-				user_id = optarg;
-				break;
-
-			case 0:
-				switch ( long_val ) {
-					case 'a':
-						alt_store = optarg;
-						break;
-
-					case 'f':
-						fwd_addr = optarg;
-						break;
-
-					case 'g':
-						user_guid = optarg;
-						break;
-
-					case 'p':
-						path = optarg;
-						break;
-
-					case 't':
-						tag = optarg;
-						break;
-
-					case 'u':
-						user_id = optarg;
-						break;
-				}
-				break;
-			case 'h':
-			default:
-				set_opts_usage(0);
-		}
-	}
-
-	if ( fwd_addr ) {
-		const char *guid = NULL;
-		if ( !strcasecmp(fwd_addr, "list") ) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			list_auto_forwards( guid );
-			return(0);
-		} else if ( !strcasecmp(fwd_addr, "reset") ) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			if ( !guid )
-				set_opts_usage(1);
-
-			reset_auto_forward( guid );
-		} else if (user_id || user_guid) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			if ( !guid )
-				set_opts_usage(1);
-
-			set_auto_forward( guid, fwd_addr );
-		} else
-			set_opts_usage(1);
-	} else if ( alt_store ) {
-		const char *guid = NULL;
-		if ( !strcasecmp(alt_store, "list") ) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			list_alt_data_stores( guid );
-			return(0);
-		} else if ( !strcasecmp(alt_store, "list-tags") ) {
-			get_alt_data_stores(1);
-		} else if ( !strcasecmp(alt_store, "set-tag") ) {
-			if ( !path || !tag )
-				set_opts_usage(1);
-
-			set_alt_data_store_tag( tag, path );
-			return(0);
-		} else if ( !strcasecmp(alt_store, "reset-tag") ) {
-			if ( !tag )
-				set_opts_usage(1);
-
-			reset_alt_data_store_tag( tag );
-			return(0);
-		} else if ( !strcasecmp(alt_store, "reset") ) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			if ( !guid )
-				set_opts_usage(1);
-
-			reset_alt_data_stores( guid );
-		} else if (user_id || user_guid) {
-			if ( user_id )
-				guid = map_guid( user_id );
-			else if ( user_guid )
-				guid = user_guid;
-
-			if ( !guid )
-				set_opts_usage(1);
-
-			set_alt_data_store( guid, alt_store );
-		} else
-			set_opts_usage(1);
-	}
-	return(0);
-}
-
-int cvt_mail_data ( int argc, char **argv )
-{
-	int	ch;
-	char *value = NULL;
-	char *tmp_cyrus_spool_dir = "/var/spool/imap";
-
-	gPool = [[NSAutoreleasePool alloc] init];
-
-	if ( geteuid() != 0 ) {
-		fprintf( stdout, "%s must be run as root\n", argv[0] );
-		exit(0);
-	}
-
-	while ( (ch = getopt(argc, argv, "cemgva:d:f:j:k:r:s:i:t:u:x:")) != EOF ) {
-		switch( ch ) {
-			case 'a':
-				// User account ID
-				g_account = optarg;
-				break;
-
-			case 'd':
-				// Cyrus imap database directory
-				g_cyrus_db_dir = optarg;
-				break;
-
-			case 'i':
-				// User account ID
-				g_account = optarg;
-				i_flag++;
-				break;
-
-			case 'r':
-				// User account ID
-				g_dest_dir = optarg;
-				r_flag++;
-				break;
-
-			case 's':
-				// Cyrus imap data spool directory
-				tmp_cyrus_spool_dir = optarg;
-				break;
-
-			case 't':
-				// Destination maildir data directory
-				g_dest_dir = optarg;
-				break;
-
-			case 'u':
-				// User account ID
-				g_account = optarg;
-				u_flag++;
-				break;
-
-			case 'c':
-				// 'C'opy flag
-				c_flag = 1;
-				break;
-
-			case 'e':
-				// D'e'lete flag
-				e_flag = 1;
-				break;
-
-			case 'm':
-				// 'M'ove flag
-				m_flag = 1;
-				break;
-
-			case 'f':
-				// Fix directory UIDs
-				g_dest_dir = optarg;
-				f_flag = 1;
-				break;
-
-			case 'v':
-				fprintf( stdout, "%s: Version: %s\n", argv[0], VERSION );
-				[gPool release];
-				exit( 0 );
-				break;
-
-			case 'g':
-				g_debug++;
-				break;
-
-			case 'j':
-				value = optarg;
-				j_flag++;
-				break;
-
-			case 'k':
-				value = optarg;
-				k_flag++;
-				break;
-
-			case 'x':
-				// Fix message received dates
-				g_dest_dir = optarg;
-				x_flag = 1;
-				break;
-
-			case '?':
-			case 'h':
-			default:
-				usage( 0 );	
-		}
-	}
-	argc -= optind;
-	argv += optind;
-
-	// ------------------------------------------------------------------
-	// Print GUID for user account
-
-	if ( i_flag ) {
-		if ( g_account != NULL ) {
-			const char *map = map_guid( g_account );
-			if ( map != NULL )
-				fprintf( stdout, "%s\n", map );
-			else
-				fprintf( stdout, "No GUID found for: %s\n", g_account );
-
-			[gPool release];
-			exit( 0 );
-		} else {
-			fprintf( stdout, "*** Error: Empty user account ID\n" );
-			usage(1);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Print GUID for user account
-
-	if ( u_flag ) {
-		if ( g_account != NULL ) {
-			const char *map = map_userid( g_account );
-			if ( map != NULL )
-				fprintf( stdout, "%s\n", map );
-			else
-				fprintf( stdout, "No user id found for: %s\n", g_account );
-
-			[gPool release];
-			exit( 0 );
-		} else {
-			fprintf( stdout, "*** Error: Empty user account ID\n" );
-			usage(1);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Rename user directories to associated GUIDs
-
-	if ( r_flag ) {
-		if ( g_dest_dir != NULL ) {
-			rename_mailboxes( g_dest_dir );
-
-			[gPool release];
-			exit( 0 );
-		} else {
-			fprintf( stdout, "*** Error: Empty directory\n" );
-			usage(1);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Rename user directories to associated GUIDs
-
-	if ( f_flag ) {
-		if ( g_dest_dir != NULL ) {
-			fix_mailboxes( g_dest_dir );
-
-			[gPool release];
-			exit( 0 );
-		} else {
-			fprintf( stdout, "*** Error: empty directory\n" );
-			usage(1);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Set user migration flag
-
-	if ( j_flag ) {
-		if ( !value ) {
-			fprintf( stdout, "*** Error: missing required argument to \'j\' option\n" );
-			usage(1);
-		}
-
-		set_migration_flag( value );
-		[gPool release];
-		exit( 0 );
-	}
-
-	// ------------------------------------------------------------------
-	// Reset user migration flags
-
-	if ( k_flag ) {
-		int flag = 0;
-		if ( !value ) {
-			fprintf( stdout, "*** Error: missing required argument to \'k\' option\n" );
-			usage(1);
-		}
-
-		if ( !strcmp( value, "set" ) )
-			flag = 1;
-		else if ( strcmp( value, "reset" ) ) {
-			fprintf( stdout, "*** Error: bad argument to \'k\' option\n" );
-			usage(1);
-		}
-
-		set_migration_flags( flag );
-		[gPool release];
-		exit( 0 );
-	}
-
-	// ------------------------------------------------------------------
-	// Rename user directories to associated GUIDs
-
-	if ( x_flag ) {
-		if ( g_dest_dir != NULL ) {
-			fix_message_dates( [NSString stringWithUTF8String: g_dest_dir] );
-
-			[gPool release];
-			exit( 0 );
-		} else {
-			fprintf( stdout, "*** Error: Empty directory\n" );
-			usage(1);
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Do arg verification
-
-	// Verify cyrus database path
-	if ( g_cyrus_db_dir == NULL ) {
-		fprintf( stdout, "*** Error: Empty cyrus database path\n" );
-		usage(1);
-	} else {
-		if ( verify_path( g_cyrus_db_dir ) != 0 ) {
-			fprintf( stdout, "*** Error: Invalid cyrus database path: %s\n", g_cyrus_db_dir );
-			usage(1);
-		}
-	}
-
-	// Verify cyrus spool path
-	if ( tmp_cyrus_spool_dir == NULL ) {
-		fprintf( stdout, "*** Error: Empty cyrus data spool path\n" );
-		usage(1);
-	} else {
-		if ( verify_path( tmp_cyrus_spool_dir ) != 0 ) {
-			fprintf( stdout, "*** Error: Invalid cyrus database path: %s\n", tmp_cyrus_spool_dir );
-			usage(1);
-		}
-	}
-
-	// Verify maildir destination spool path
-	if ( g_dest_dir == NULL ) {
-		fprintf( stdout, "*** Error: Empty destination directory\n" );
-		usage(1);
-	} else {
-		if ( verify_path( g_dest_dir ) != 0 ) {
-			fprintf( stdout, "*** Error: Invalid destination directory: %s\n", g_dest_dir );
-			usage(1);
-		}
-	}
-
-	// Verify user account ID
-	if ( g_account == NULL )
-	{
-		fprintf( stdout, "*** Error: Empty user account ID\n" );
-		usage(1);
-	} else {
-		// Verify user path by appending /user/account to spool path
-		snprintf( g_cyrus_spool_dir, PATH_MAX, "%s/user/%s", tmp_cyrus_spool_dir, g_account );
-
-		if ( verify_path( g_cyrus_spool_dir ) != 0 ) {
-			fprintf( stdout, "*** Error: Could not verify user account path: %s\n", g_cyrus_spool_dir );
-			usage(1);
-		}
-
-		// Set global spool path to <spool path>/user
-		snprintf( g_cyrus_spool_dir, PATH_MAX, "%s/user", tmp_cyrus_spool_dir );
-	}
-
-	if ( (c_flag +  e_flag + m_flag) == 0 )
-		c_flag = 1;
-	else if ( (c_flag +  e_flag + m_flag) != 1 ) {
-		fprintf( stdout, "*** Error: You can only choose of these options [-c, -e or -m]\n" );
-		usage(1);
-	}
-
-	chdir( g_cyrus_spool_dir );
-	scan_account( g_cyrus_spool_dir, g_dest_dir, g_account );
-	free_seen_file();
-
-	fprintf( stdout, "-------------\n" );
-	fprintf( stdout, "- totals for: %s\n",  g_account );
-	fprintf( stdout, "  total: messages: %lu size: %llu bytes\n",  g_count, g_size );
-
-	if ( g_maildirsize != NULL ) {
-		fclose( g_maildirsize );
-		g_maildirsize = NULL;
-	}
-
-	if ( g_debug ) {
-		fprintf( stdout, "Finished migrating user account\n" );
-	}
-
-	return( 0 );
-} // main
-
-
-// ------------------------------------------------------------------
-//
+//	set_opts_usage ()
 
 void set_opts_usage ( int in_exit_code )
 {
 	if ( in_exit_code )
 		fprintf( stdout, "Error: Missing required argument\n");
 	
-	fprintf( stdout, "\nUsage:\n");
-	fprintf( stdout, "  set_user_mail_opts [options]\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store list\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store list-tags\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store set-tag -t, --tag <tag> -p, --path <path>\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store reset-tag -t, --tag <tag> \n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store <store tag> -u, --user_id <user id>\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store <store tag> -g, --user_guid <user guid>\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store reset -u, --user_id <user id>\n");
-	fprintf( stdout, "  set_user_mail_opts -a, --alt_store reset -g, --user_guid <user guid>\n");
+	fprintf( stdout, "Usage: set_user_mail_opts [options]\n");
+	fprintf( stdout, "Options:\n");
+	fprintf( stdout, " -a, --alt_store list\n");
+	fprintf( stdout, " -a, --alt_store list-tags\n");
+	fprintf( stdout, " -a, --alt_store set-tag -t, --tag <tag> -p, --path <path>\n");
+	fprintf( stdout, " -a, --alt_store reset-tag -t, --tag <tag> \n");
+	fprintf( stdout, " -a, --alt_store <store tag> -u, --user_id <user id>\n");
+	fprintf( stdout, " -a, --alt_store <store tag> -g, --user_guid <user guid>\n");
+	fprintf( stdout, " -a, --alt_store reset -u, --user_id <user id>\n");
+	fprintf( stdout, " -a, --alt_store reset -g, --user_guid <user guid>\n");
 
-	fprintf( stdout, "  set_user_mail_opts -f, --auto_fwd list\n");
-	fprintf( stdout, "  set_user_mail_opts -f, --auto_fwd <email addr> -u, --user_id <user id>\n");
-	fprintf( stdout, "  set_user_mail_opts -f, --auto_fwd <email addr> -g, --user_guid <user guid>\n");
-	fprintf( stdout, "  set_user_mail_opts -f, --auto_fwd reset -u, --user_id <user id>\n");
-	fprintf( stdout, "  set_user_mail_opts -f, --auto_fwd reset -g, --user_guid <user guid>\n");
+	fprintf( stdout, " -f, --auto_fwd list\n");
+	fprintf( stdout, " -f, --auto_fwd <email addr> -u, --user_id <user id>\n");
+	fprintf( stdout, " -f, --auto_fwd <email addr> -g, --user_guid <user guid>\n");
+	fprintf( stdout, " -f, --auto_fwd reset -u, --user_id <user id>\n");
+	fprintf( stdout, " -f, --auto_fwd reset -g, --user_guid <user guid>\n");
 
 	fprintf( stdout, "\nOptions:\n");
-	fprintf( stdout, "  -a, --alt_store list        list all account with alternate mail store locations set\n");
-	fprintf( stdout, "  -a, --alt_store list-tags   list all alternate mail store locations with tags\n");
-	fprintf( stdout, "  -a, --alt_store <store tag> -u, --user_id <user id>\n");
-	fprintf( stdout, "                              set <user id> to alternate mail store <store tag>\n");
-	fprintf( stdout, "  -a, --alt_store <store tag> -g, --user_guid <user guid>\n");
-	fprintf( stdout, "                              set <user guid> to alternate mail store <store tag>\n");
-	fprintf( stdout, "  -a, --alt_store reset       -u, --user_id <user id>\n");
-	fprintf( stdout, "                              reset <user id> to default mail store <store tag>\n");
-	fprintf( stdout, "  -a, --alt_store reset       -g, --user_guid <user guid>\n");
-	fprintf( stdout, "                              reset <user guid> to default mail store <store tag>\n");
+	fprintf( stdout, " -a, --alt_store list        list all account with alternate mail store locations set\n");
+	fprintf( stdout, " -a, --alt_store list-tags   list all alternate mail store locations with tags\n");
+	fprintf( stdout, " -a, --alt_store <store tag> -u, --user_id <user id>\n");
+	fprintf( stdout, "                             set <user id> to alternate mail store <store tag>\n");
+	fprintf( stdout, " -a, --alt_store <store tag> -g, --user_guid <user guid>\n");
+	fprintf( stdout, "                             set <user guid> to alternate mail store <store tag>\n");
+	fprintf( stdout, " -a, --alt_store reset       -u, --user_id <user id>\n");
+	fprintf( stdout, "                             reset <user id> to default mail store <store tag>\n");
+	fprintf( stdout, " -a, --alt_store reset       -g, --user_guid <user guid>\n");
+	fprintf( stdout, "                             reset <user guid> to default mail store <store tag>\n");
 
-	fprintf( stdout, "  -f, --auto_fwd list         list all account with email autoforwarding enabled\n");
-	fprintf( stdout, "  -f, --auto_fwd <email addr> -u, --user_id <user id>\n");
-	fprintf( stdout, "                              set <user id> to autoforward to <email addr>\n");
-	fprintf( stdout, "  -f, --auto_fwd <email addr> -g, --user_guid <user guid>\n");
-	fprintf( stdout, "                              set <user guid> to autoforward to <email addr>\n");
-	fprintf( stdout, "  -f, --auto_fwd reset        -u, --user_id <user id>\n");
-	fprintf( stdout, "                              reset <user id> to no email autoforwarding\n");
-	fprintf( stdout, "  -f, --auto_fwd reset        -g, --user_guid <user guid>\n");
-	fprintf( stdout, "                              reset <user guid> to no email autoforwarding\n");
+	fprintf( stdout, " -f, --auto_fwd list         list all account with email autoforwarding enabled\n");
+	fprintf( stdout, " -f, --auto_fwd <email addr> -u, --user_id <user id>\n");
+	fprintf( stdout, "                             set <user id> to autoforward to <email addr>\n");
+	fprintf( stdout, " -f, --auto_fwd <email addr> -g, --user_guid <user guid>\n");
+	fprintf( stdout, "                             set <user guid> to autoforward to <email addr>\n");
+	fprintf( stdout, " -f, --auto_fwd reset        -u, --user_id <user id>\n");
+	fprintf( stdout, "                             reset <user id> to no email autoforwarding\n");
+	fprintf( stdout, " -f, --auto_fwd reset        -g, --user_guid <user guid>\n");
+	fprintf( stdout, "                             reset <user guid> to no email autoforwarding\n");
 
 	[gPool release];
 	exit( in_exit_code );
 } // set_opts_usage
 
 // ------------------------------------------------------------------
-//
+//	mail_data_tool_usage ()
+
+void mail_data_tool_usage ( int in_exit_code )
+{
+	fprintf(stdout, "Usage: mail_data_tool [options] [-p path]\n");
+
+	fprintf(stdout, "Options:\n");
+	fprintf( stdout, " -e, --rename-mailboxes   Rename mail store mailboxes from UID to GUID\n");
+	fprintf( stdout, " -f, --fix-permissions    Fix mail data store mailbox permissions\n");
+	fprintf( stdout, " -g, --get-guid <UID>     Get GUID from user ID\n");
+	fprintf( stdout, " -r, --repair-sent-dates  Repair message sent dates\n");
+	fprintf( stdout, " -m, --make-UID-map       Maps UIDs to mailbox GUIDs\n");
+	fprintf( stdout, " -u, --get-user-id <GUID> Get user ID from GUID\n");
+	fprintf( stdout, " -v, --verbose            Increase output level\n" );
+
+	fprintf(stdout, "Path:\n");
+	fprintf( stdout, " -p, --path               Set path when not using default\n");
+
+	[gPool release];
+	exit( in_exit_code );
+} // mail_data_tool_usage
+
+// ------------------------------------------------------------------
+//	usage ()
 
 void usage ( int in_exit_code )
 {
-	fprintf( stdout, "\nUsage: cvt_mail_data -a <acct_id> [options]\n");
+	fprintf(stdout, "Usage: cvt_mail_data [options]\n");
+	fprintf(stdout, "Options:\n");
 
-	fprintf( stdout, "    Required\n" );
-	fprintf( stdout, "      -a <user account>     user ID of account to be migrated\n" );
-	fprintf( stdout, "\n" );
-	fprintf( stdout, "    Default: (override if necessary)\n" );
-	fprintf( stdout, "      -d <db dir>           path to cyrus imap database (default: %s)\n", g_cyrus_db_dir );
-	fprintf( stdout, "      -s <spool dir>        path to cyrus imap data spool (default: /var/spool/imap)\n" );
-	fprintf( stdout, "      -t <destination dir>  path to dovecot maildir directory (default: %s)\n", g_dest_dir );
-	fprintf( stdout, "\n" );
-	fprintf( stdout, "    Choose one:\n" );
-	fprintf( stdout, "      -c                    copy mail messages to new destination leaving original (default)\n" );
-	fprintf( stdout, "      -e                    copy mail messages to new destination deleting original\n" );
-	fprintf( stdout, "      -m                    move mail messages to new destination\n" );
-	fprintf( stdout, "\n" );
-	fprintf( stdout, "    Optional:\n" );
-	fprintf( stdout, "      -g                    debug mode\n\n" );
-	fprintf( stdout, "    Single Function:\n" );
-	fprintf( stdout, "      -i <user account>     print GUID for user account\n" );
-	fprintf( stdout, "      -u <GUID>             print user account for GUID\n" );
-	fprintf( stdout, "      -r <dir>              rename mailboxes to GUID in directory <dir>\n" );
-	fprintf( stdout, "      -V                    print version\n" );
-	fprintf( stdout, "      -h                    print this message\n\n" );
+	fprintf( stdout, " -a <user ID>   user ID of account to be migrated\n" );
+	fprintf( stdout, " -b <imap bin>  path to imapd binaries (default: %s)\n", [g_imap_bins_dir UTF8String] );
+	fprintf( stdout, " -c <imap conf> path to imapd.conf config file (default: %s)\n", [g_config_file UTF8String] );
+	fprintf( stdout, " -d <db dir>    path to source mail database dir (default: %s)\n", SRC_MAIL_DB_DIR );
+	fprintf( stdout, " -s <src dir>   path to source mail data dir (default: %s)\n", SRC_MAIL_DATA_DIR );
+	fprintf( stdout, " -t <dest dir>  path to destination mail data dir (default: %s)\n", DST_MAIL_DATA_DIR );
+	fprintf( stdout, " -o [copy/move] copy or move mail messages to new destination (default: copy)\n" );
+	fprintf( stdout, " -v             increase output level\n" );
 
 	[gPool release];
 	exit( in_exit_code );
 }
 
 // ------------------------------------------------------------------
-//
-// verify_path ()
+//	exit_with_usage ()
 
-int verify_path ( const char *in_path )
+void exit_with_usage ( int in_exit_code, const char *in_exit_str )
+{
+	if ( in_exit_str )
+		fprintf( stdout, "%s\n", in_exit_str );
+
+	usage( in_exit_code );
+} // exit_with_usage
+
+// ------------------------------------------------------------------
+//	exit_with_error ()
+
+void exit_with_error ( int in_exit_code )
+{
+	[gPool release];
+	exit( in_exit_code );
+} // exit_with_error
+
+// ------------------------------------------------------------------
+//	exit_with_error_string ()
+
+void exit_with_error_string ( int in_exit_code, const char *in_err_str )
+{
+	fprintf( stdout, "%s\n", in_err_str );
+	[gPool release];
+	exit( in_exit_code );
+} // exit_with_error_string
+
+#pragma mark -
+
+// ------------------------------------------------------------------
+//	verify_cstr_path ()
+//	- deprecated
+
+int verify_cstr_path ( const char *in_path )
 {
 	DIR	*dir	= NULL;
 	
@@ -697,7 +244,299 @@ int verify_path ( const char *in_path )
 
 	return( 1 );
 
+} // verify_cstr_path
+
+// ------------------------------------------------------------------
+//	verify_file ()
+
+void verify_file ( NSString *in_file_path )
+{
+	if ( !in_file_path || ![in_file_path length] ||
+			![[NSFileManager defaultManager] fileExistsAtPath: in_file_path] ) {
+		print_string(LOG_ERR, "Error: file does not exist: %s\n", [in_file_path UTF8String]);
+		exit_with_error( 1 );
+	}
+} // verify_file
+
+// ------------------------------------------------------------------
+//	verify_path ()
+
+void verify_path ( NSString *in_dir_path )
+{
+	BOOL is_dir = NO;
+	if ( !in_dir_path || ![in_dir_path length] ||
+			![[NSFileManager defaultManager] fileExistsAtPath: in_dir_path isDirectory: &is_dir] || !is_dir ) {
+		print_string(LOG_ERR, "Error: invalid path: %s\n", [in_dir_path UTF8String]);
+		exit_with_error( 1 );
+	}
 } // verify_path
+
+// ------------------------------------------------------------------
+//	verify_arg ()
+
+void verify_arg ( NSString *in_arg )
+{
+	if ( !in_arg || ![in_arg length] )
+		exit_with_error_string( 1, "Error: missing or empty required argument" );
+} // verify_arg
+
+#pragma mark -
+
+// ------------------------------------------------------------------
+// map_guid ()
+//	-- deprecated: use get_guid_for_uid()
+
+const char *map_guid ( const char *in_user )
+{
+	NSString *name_str = nil;
+
+	ODNode *od_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
+	if ( !od_search_node )
+		return( NULL );
+
+	ODQuery *od_query = [ODQuery  queryWithNode: od_search_node
+								 forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
+									  attribute: @kDSNAttrRecordName
+									  matchType: kODMatchEqualTo
+									queryValues: [NSString stringWithUTF8String: in_user]
+							   returnAttributes: [NSArray arrayWithObject: @kDS1AttrGeneratedUID]
+								 maximumResults: 1
+										  error: nil];
+	if ( od_query ) {
+		NSArray *records = [od_query resultsAllowingPartial: NO error: nil];
+		if ( records && [records count] ) {
+			ODRecord *od_record = [records objectAtIndex: 0];
+			if ( od_record ) {
+				// get the real name
+				NSArray *values = [od_record valuesForAttribute: @kDS1AttrGeneratedUID error: nil];
+				if ( values != nil )
+					name_str = [values objectAtIndex: 0];
+			}
+		}
+	}
+
+	if ( name_str && [name_str length] )
+		return( [name_str UTF8String] );
+
+	return( NULL );
+} // map_guid
+
+// ------------------------------------------------------------------
+//	get_guid_for_uid ()
+
+NSString *get_guid_for_uid ( NSString *in_uid )
+{
+	NSString *name_str = nil;
+
+	ODNode *od_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
+	if ( !od_search_node )
+		return( nil );
+
+	ODQuery *od_query = [ODQuery  queryWithNode: od_search_node
+								 forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
+									  attribute: @kDSNAttrRecordName
+									  matchType: kODMatchEqualTo
+									queryValues: in_uid
+							   returnAttributes: [NSArray arrayWithObject: @kDS1AttrGeneratedUID]
+								 maximumResults: 1
+										  error: nil];
+	if ( od_query ) {
+		NSArray *records = [od_query resultsAllowingPartial: NO error: nil];
+		if ( records && [records count] ) {
+			ODRecord *od_record = [records objectAtIndex: 0];
+			if ( od_record ) {
+				// get the real name
+				NSArray *values = [od_record valuesForAttribute: @kDS1AttrGeneratedUID error: nil];
+				if ( values != nil )
+					name_str = [values objectAtIndex: 0];
+			}
+		}
+	}
+
+	return( name_str );
+} // get_guid_for_uid
+
+// ------------------------------------------------------------------
+// map_userid ()
+//	- deprecated: use get_guid_for_uid ()
+
+const char *map_userid ( const char *in_guid )
+{
+	NSString *name_str = nil;
+
+	ODNode *od_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
+	if ( !od_search_node )
+		return( NULL );
+
+	ODQuery *od_query = [ODQuery  queryWithNode: od_search_node
+								 forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
+									  attribute: @kDS1AttrGeneratedUID
+									  matchType: kODMatchEqualTo
+									queryValues: [NSString stringWithUTF8String: in_guid]
+							   returnAttributes: [NSArray arrayWithObject: @kDSNAttrRecordName]
+								 maximumResults: 1
+										  error: nil];
+	if ( od_query != nil ) {
+		NSArray *od_records	= [od_query resultsAllowingPartial: NO error: nil];
+		if ( (od_records != nil) && [od_records count] ) {
+			ODRecord *od_record = [od_records objectAtIndex: 0];
+			if ( od_record ) {
+				// get the real name
+				NSArray *values = [od_record valuesForAttribute: @kDSNAttrRecordName error: nil];
+				if ( values )
+					name_str = [values objectAtIndex: 0];
+			}
+		}
+	}
+
+	if ( name_str && [name_str length] )
+		return( [name_str UTF8String] );
+
+	return( NULL );
+} // map_userid
+
+// ------------------------------------------------------------------
+// get_uid_for_guid ()
+
+NSString *get_uid_for_guid ( NSString *in_guid )
+{
+	NSString *name_str = nil;
+
+	ODNode *od_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
+	if ( !od_search_node )
+		return( nil );
+
+	ODQuery *od_query = [ODQuery  queryWithNode: od_search_node
+								 forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
+									  attribute: @kDS1AttrGeneratedUID
+									  matchType: kODMatchEqualTo
+									queryValues: in_guid
+							   returnAttributes: [NSArray arrayWithObject: @kDSNAttrRecordName]
+								 maximumResults: 1
+										  error: nil];
+	if ( od_query ) {
+		NSArray *od_records	= [od_query resultsAllowingPartial: NO error: nil];
+		if ( od_records && [od_records count] ) {
+			ODRecord *od_record = [od_records objectAtIndex: 0];
+			if ( od_record ) {
+				// get the real name
+				NSArray *values = [od_record valuesForAttribute: @kDSNAttrRecordName error: nil];
+				if ( values )
+					name_str = [values objectAtIndex: 0];
+			}
+		}
+	}
+
+	return( name_str );
+} // get_uid_for_guid
+
+#pragma mark -
+
+// ------------------------------------------------------------------
+//	map_mailbox_to_guid ()
+
+void map_mailbox_to_guid ( NSString *in_path, NSString *in_uid )
+{
+	NSString *guid_str = get_guid_for_uid( in_uid );
+	if ( !guid_str ) {
+		print_string( LOG_ERR, "No GUID found for: %s\n", [in_uid UTF8String] );
+		return;
+	}
+
+	NSError *ns_err = nil;
+	NSFileManager *file_mgr	= [NSFileManager defaultManager];
+	NSString *dst_path = [in_path stringByAppendingPathComponent: guid_str];
+	NSString *src_path = [in_path stringByAppendingPathComponent: in_uid];
+	if ( ![file_mgr moveItemAtPath: src_path toPath: dst_path error: &ns_err] )
+		print_string( LOG_ERR, "Unable to rename path: %s to: %s\n",  [src_path UTF8String], [dst_path UTF8String] );
+	else
+		print_string( LOG_INFO, "Mapping mailbox: %s to: %s\n",  [src_path UTF8String], [dst_path UTF8String] );
+} // map_mailbox_to_guid
+
+// ------------------------------------------------------------------
+//	make_guid_uid_map ()
+
+void make_guid_uid_map ( NSString *in_path )
+{
+	int i = 0;
+	NSError *ns_err = nil;
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
+	NSDictionary  *dir_attrs = [NSDictionary dictionaryWithObjectsAndKeys :
+										@"_dovecot", NSFileOwnerAccountName,
+										@"mail", NSFileGroupOwnerAccountName,
+										[NSNumber numberWithUnsignedLong: 0700], NSFilePosixPermissions, nil];
+
+	// make dest map dir
+	NSString *map_path = [in_path stringByAppendingPathComponent: @"users"];
+	BOOL is_dir = NO;
+	if ( ![file_mgr fileExistsAtPath: map_path isDirectory: &is_dir] || !is_dir ) {
+		if ( ![file_mgr createDirectoryAtPath: map_path withIntermediateDirectories: NO attributes: dir_attrs error: &ns_err] && ns_err ) {
+			print_string( LOG_ERR, "Error: cannot create directory %s (%s)\n", [map_path UTF8String], [[ns_err localizedDescription]UTF8String] );
+			return;
+		}
+	}
+
+	// read GUID mailbox names
+	NSArray *mailboxes = [file_mgr contentsOfDirectoryAtPath: in_path error: nil];
+	int count = [mailboxes count];
+
+	for ( i = 0; i < count; i++ ) {
+		// full mailbox path to rename
+		NSString *guid = [mailboxes objectAtIndex: i];
+		NSString *uid = get_uid_for_guid( guid );
+
+		// skip map directory
+		if ( [guid isEqualToString: @"users"] )
+			continue;
+
+		if ( uid ) {
+			NSString *src_path = [NSString stringWithFormat: @"../%@", guid];
+			NSString *dst_path = [map_path stringByAppendingPathComponent: uid];
+			if ( ![file_mgr createSymbolicLinkAtPath: dst_path withDestinationPath: src_path error: &ns_err] && ns_err )
+				print_string( LOG_WARNING, "Error: cannot create map directory: %s (%s)\n", [dst_path UTF8String], [[ns_err localizedDescription]UTF8String] );
+		} else
+			print_string( LOG_WARNING, "Error: cannot create map directory: %s/<user-id> (No UID found for GUID: %s)\n", [map_path UTF8String], [guid UTF8String] );
+	}
+
+} // make_guid_uid_map
+
+// ------------------------------------------------------------------
+//	rename_mailboxes ()
+
+void rename_mailboxes ( NSString *in_path )
+{
+	int i;
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
+	NSArray *mailboxes = [file_mgr contentsOfDirectoryAtPath: in_path error: nil];
+	int count = [mailboxes count];
+
+	for ( i = 0; i < count; i++ ) {
+		// full mailbox path to rename
+		NSString *mb_path = [in_path stringByAppendingPathComponent: [mailboxes objectAtIndex: i]];
+
+		// directories only
+		BOOL is_dir = NO;
+		if ( [file_mgr fileExistsAtPath: mb_path isDirectory: &is_dir] && is_dir )
+			map_mailbox_to_guid( in_path, [mailboxes objectAtIndex: i] );
+	}
+} // rename_mailboxes
+
+#pragma mark -
+
+// -----------------------------------------------------------------
+//	set_attributes
+
+void set_attributes ( NSString *in_path, NSString *in_owner, NSString *in_group, int in_perms )
+{
+	NSDictionary *nsDict_attrs = [NSDictionary dictionaryWithObjectsAndKeys :
+									in_owner, NSFileOwnerAccountName,
+									in_group, NSFileGroupOwnerAccountName,
+									[NSNumber numberWithUnsignedLong: in_perms], NSFilePosixPermissions, nil];
+
+	[[NSFileManager defaultManager] setAttributes: nsDict_attrs ofItemAtPath: in_path error: nil];
+} // set_attributes
+
+#pragma mark -
 
 // ------------------------------------------------------------------
 // fts_escape ()
@@ -751,164 +590,289 @@ static void set_fts_update_index_file ( const char * in_src_path, const char *in
 
 	snprintf( path, PATH_MAX, "/var/db/dovecot.fts.update/%s.%s", account, mailbox );
 
-	if ( g_debug )
-		fprintf( stdout, "creating fts update index file: %s\n", path );
+	print_string( LOG_DEBUG, "creating fts update index file: %s\n", path );
 
 	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if ( (fd < 0) && (errno != EEXIST) )
-		fprintf( stdout, "fts: open(%s, O_CREAT) failed: %m", path );
+		print_string( LOG_ERR, "fts: open(%s, O_CREAT) failed: %m\n", path );
 } // set_fts_update_index_file
 
+#pragma mark -
+
 // ------------------------------------------------------------------
-// scan_account ()
+//	mailbox_make_uniqueid ()
+//
+//	Function from cyrus mailbox.c
+//
 
-int scan_account ( char *in_cy_spool_dir, char *in_dst_root, char *in_acct_dir )
+void mailbox_make_uniqueid ( char *name, unsigned long in_uidvalidity, char *uniqueid )
 {
-	DIR			   *p_dir		= NULL;
-	struct dirent  *dir_entry;
-	struct stat		stat_buf;
+	u_int32_t hash = 0;
 
-	static int is_root_mailbox				= 1;
-	static char src_path	[ PATH_MAX + 1 ]	= "";
-	static char dst_path	[ PATH_MAX + 1 ]	= "";
-	static char full_path	[ PATH_MAX + 1 ]	= "";
-	static char src_mb_path	[ PATH_MAX + 1 ]	= "";
+	while (*name) {
+		hash *= 251;
+		hash += *name++;
+		hash %= PRIME;
+	}
+	sprintf( uniqueid, "%08lx%08lx", (unsigned long)hash, in_uidvalidity );
+} // mailbox_make_uniqueid
 
-	char *cc = NULL;
-	int rc = 0;
-	const char *guid_map = NULL;
-	const char *dst_acct = NULL;
+#pragma mark -
 
-	if ( is_root_mailbox ) {
-		if ( verify_path( in_acct_dir ) != 0 ) {
-			fprintf( stdout, "*** Warning: unable to verify mailbox path: %s\n", in_acct_dir );
-			[gPool release];
-			exit(1);
-		}
+// ------------------------------------------------------------------
+//	read_seen_file ()
 
-		char	seen_path[ PATH_MAX + 1 ];
-		snprintf( seen_path, PATH_MAX, "%s/user/%c/%s.seen.flat", g_cyrus_db_dir, g_account[0], g_account );
+int read_seen_file ( NSString *in_seen_file, struct s_seen_data **out_seen_data )
+{
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
 
-		read_seen_file( seen_path );
-		if ( !g_seen_file ) {
-			if ( g_debug ) {
-				fprintf( stdout, "*** Warning: No seen file found for for: %s\n", g_account ); }
+	// sanity check
+	if ( !in_seen_file || ![file_mgr fileExistsAtPath: in_seen_file] )
+		return( -1 );
+
+	// make out data blob
+	*out_seen_data = malloc( sizeof(struct s_seen_data) );
+	if ( !*out_seen_data ) {
+		print_string( LOG_ERR, "%s: memory allocation error\n",  __FUNCTION__ );
+		return( -1 );
+	}
+	// set to default
+	(*out_seen_data)->seen_count = -1;
+	(*out_seen_data)->uid_flag = -1;
+
+	// read seen file
+	NSString *seen_data = [NSString stringWithContentsOfFile: in_seen_file encoding: NSUTF8StringEncoding error: nil];
+
+	NSScanner *data_scnr = [NSScanner scannerWithString: seen_data];
+	[data_scnr setCaseSensitive: YES];
+	[data_scnr setCharactersToBeSkipped: nil];
+
+	// scan seen file
+	int i = 0;
+	NSCharacterSet	*cs_EOL = [NSCharacterSet characterSetWithCharactersInString: @"\r\n"];
+	while ( ![data_scnr isAtEnd] ) {
+		NSString *line_str = nil;
+		[data_scnr scanUpToCharactersFromSet: cs_EOL intoString: &line_str];
+		[data_scnr scanCharactersFromSet: cs_EOL intoString: nil];
+
+		NSArray *tokens = [line_str componentsSeparatedByCharactersInSet: [NSCharacterSet characterSetWithCharactersInString: @"\t"]];
+
+		// if we have valid tokens
+		if ( [tokens count] ) {
+			// save mailbox uid tag
+			(*out_seen_data)->seen_array[i].mbox_uid = cpy_str( [[tokens objectAtIndex: 0]UTF8String] );
+			(*out_seen_data)->seen_array[i].mbox_uid_str = [[[tokens objectAtIndex: 0]copy]retain];
+
+			// tokenize other bits
+			tokens = [[tokens objectAtIndex: 1] componentsSeparatedByCharactersInSet: [NSCharacterSet characterSetWithCharactersInString: @" \t"]];
+
+			// we only want the seen uids
+			if( [tokens count] == 5 ) {
+				(*out_seen_data)->seen_array[i].seen_uids = cpy_str( [[tokens objectAtIndex: 4]UTF8String] );
+				(*out_seen_data)->seen_array[i].seen_uids_str = [[[tokens objectAtIndex: 4]copy]retain];
+			} else {
+				(*out_seen_data)->seen_array[i].seen_uids = cpy_str( "" );
+				(*out_seen_data)->seen_array[i].seen_uids_str = nil;
+			}
+			i++;
 		}
 	}
 
-	// Drop in if it's a directory
-	if ( (stat( in_acct_dir, &stat_buf ) == 0) &&
-		 ((stat_buf.st_mode & S_IFMT) == S_IFDIR) )
-	{
-		// Add '/' if we now have a path name
-		if ( strlen( src_path ) != 0 )
-			strcat( src_path, "/" );
+	(*out_seen_data)->seen_count = i;
 
-		// Append source mailbox to path
-		strcat( src_path, in_acct_dir );
+	return( 0 );
+} // read_seen_file
 
-		// Mailboxes are separate with a '.'
-		if ( strlen( dst_path ) != 0 )
-			strcat( dst_path, "." );
+// ------------------------------------------------------------------
+//	parse_seen_data ()
 
-		// Append destination mailbox name, either account ID or GUID if it exists
-		if ( is_root_mailbox && (guid_map = map_guid( in_acct_dir )) != NULL )
-			dst_acct = guid_map;
-		else
-			dst_acct = in_acct_dir;
+int parse_seen_data ( const char *in_mailbox,
+					  const unsigned long in_uidvalidity,
+					  struct s_seen_data *in_seen_data )
+{
+	int		index		= 0;
+	char   *left_str	= NULL;
+	char   *right_str	= NULL;
+	char   *tuple_str	= NULL;
+	char   *token_str	= NULL;
 
-		strcat( dst_path, dst_acct );
+	if ( !in_seen_data ) {
+		print_string( LOG_DEBUG, "No seen data found for %s\n", in_mailbox );
+		return( -1 );
+	}
 
-		// Append a '/' to the base mailbox name
-		//	We should only hit this once per account
-		if ( !strcmp( dst_path, dst_acct) )
-			strcat( dst_path, "/" );
+	char mbox[PATH_MAX + 1];
+	snprintf( mbox, PATH_MAX, "user.%s", in_mailbox );
 
-		src_mb_path[0]='\0';
-		strcat( src_mb_path, in_cy_spool_dir );
-		strcat( src_mb_path, "/" );
-		strcat( src_mb_path, src_path );
+	// Make mailbox uid
+	char uniqueid[17];
+	mailbox_make_uniqueid( mbox, in_uidvalidity, uniqueid );
 
-		// Make the full path
-		snprintf( full_path, PATH_MAX, "%s/%s", in_dst_root, dst_path );
+	// Find the seen line for this mailbox
+	int i;
+	in_seen_data->uid_flag = -1;
+	for ( i = 0; i < in_seen_data->seen_count; i++ ) {
+		if ( strcmp( uniqueid, in_seen_data->seen_array[ i ].mbox_uid ) == 0 )
+			in_seen_data->uid_flag = i;
+	}
 
-		// create maildir directories
-		create_maildir_dirs( in_dst_root, dst_path, is_root_mailbox );
+	if ( (in_seen_data->uid_flag) >= 0 && (in_seen_data->seen_count != -1) ) {
+		if ( (tuple_str = cpy_str( in_seen_data->seen_array[ in_seen_data->uid_flag ].seen_uids )) ) {
+			// Scan across seen string parsing out seen uid's
+			//	ie. 3:4,8:9,11:12,15:16,20  or 1,3,5,7,9,11
 
-		// Migrate cyrus quota info
-		if ( is_root_mailbox )
-			set_quota( in_dst_root, dst_path );
+			// Comma separated token string
+			token_str = strtok( tuple_str, "," );
 
-		// Set subscribed mailboxes
-		if ( is_root_mailbox )
-			set_subscribe( in_dst_root, dst_path );
+			i = 0;
+			while ( token_str ) {
+				// Bail if we have exceeded max range
+				assert( i < CYRUS_SEENMAX );
+				
+				char *str = cpy_str( token_str );
 
-		// copy and/or migrate the mailfiles
-		migrate_mail( src_mb_path, full_path, is_root_mailbox );
+				// Look for a ':' separator
+				char *p = strchr( str, ':' );
+				index = -1;
+				if ( p != NULL )
+					index = p - str;
 
-		// create update index file for background processing
-		set_fts_update_index_file( src_path, dst_path );
+				// If ':' was not found
+				if ( index == -1 ) {
+					left_str = cpy_str( str );
+					right_str = cpy_str( str );
+				} else {
+					// We found the ':', get uid min/max values
+					if ( index >= strlen( str ) )
+						left_str = cpy_str( str );
+					else if ( index <= 0 )
+						left_str = NULL;
+					else {
+						left_str = malloc( index + 1 );
+						if ( left_str != NULL ) {
+							memset( left_str, 0, (size_t)index + 1 );
+							memcpy( left_str, str, (size_t)index );
+						}
+					}
 
-		if ( is_root_mailbox )
-			is_root_mailbox = 0;
+					if ( index >= strlen( str ) )
+						right_str = NULL;
+					else if ( index < 0 )
+						right_str = cpy_str( str );
+					else {
+						size_t str_len = ( strlen( str ) - index - 1 );
+						right_str = malloc( str_len + 1 );
+						if ( right_str != NULL )
+						{
+							memset( right_str, 0, str_len + 1 );
+							memcpy( right_str, str +(index + 1), str_len );
 
-		// Scan mailboxes
-		if ( chdir( in_acct_dir ) == 0 ) {
-			if ( (p_dir = opendir( "." )) ) {
-				// Recursively scan across all mailboxes 
-				while( (dir_entry = readdir(p_dir)) ) {
-					// Skip the '.' & '..' directories
-					if ( strcmp( dir_entry->d_name, "." ) &&  strcmp( dir_entry->d_name, "..") )
-						scan_account( in_cy_spool_dir, in_dst_root, dir_entry->d_name );
+						}
+					}
 				}
-				closedir( p_dir );
+
+				in_seen_data->uid_array[ i ].uid_min = atol( left_str );
+				in_seen_data->uid_array[ i ].uid_max = atol( right_str );
+				i++;
+
+				// Free the strings
+				if ( str ) {
+					free( str );
+					str = NULL;
+				}
+
+				if ( left_str ) {
+					free( left_str );
+					left_str = NULL;
+				}
+
+				if ( right_str ) {
+					free( right_str );
+					right_str = NULL;
+				}
+
+				// next token
+				token_str = strtok( NULL, "," );
 			}
 
-			// Backing out, terminate source mailbox path
-			if ( (cc = strrchr( src_path, '/' )) )
-				*cc = '\0';
-
-			// Backing out, terminate destination mailbox path
-			if ( (cc = strrchr( dst_path, '.')) )
-				*cc='\0';
-
-			chdir( ".." );
+			free( tuple_str );
+			in_seen_data->uid_count = i;
 		}
+		else
+			in_seen_data->uid_count = -1;
 	}
 
-	return( rc );
-} // scan_account
-
+	return( 0 );
+} // parse_seen_data
 
 // ------------------------------------------------------------------
-//
-// set_quota ()
+//	is_seen ()
 
-int set_quota ( char *in_dst_root, char *in_dir )
+int is_seen ( unsigned long in_uid, struct s_seen_data *in_seen_data )
+{
+	if ( !in_seen_data || (in_seen_data->uid_flag == -1) )
+		return( 0 );
+
+	int i;
+	for ( i = 0; i < in_seen_data->uid_count; i++ ) {
+		if ( (in_uid >= in_seen_data->uid_array[i].uid_min) &&
+				(in_uid <= in_seen_data->uid_array[i].uid_max) )
+			return( 1 );
+	}
+
+	return( 0 );
+} // is_seen
+
+// ------------------------------------------------------------------
+//	free_seen_data ()
+
+void free_seen_data ( struct s_seen_data *in_seen_data )
+{
+	if ( !in_seen_data )
+		return;
+
+	int i;
+	for ( i = 0; i < in_seen_data->seen_count; i++ ) {
+		if ( in_seen_data->seen_array[i].mbox_uid )
+			free( in_seen_data->seen_array[i].mbox_uid );
+		if ( in_seen_data->seen_array[i].mbox_uid_str )
+			[in_seen_data->seen_array[i].mbox_uid_str release];
+
+		if ( in_seen_data->seen_array[i].seen_uids )
+			free( in_seen_data->seen_array[i].seen_uids );
+		if ( in_seen_data->seen_array[i].seen_uids_str )
+			[in_seen_data->seen_array[i].seen_uids_str release];
+	}
+	free( in_seen_data );
+} // free_seen_data
+
+// ------------------------------------------------------------------
+//	set_quota ()
+
+int set_quota ( NSString *in_dst_root, char *in_dir )
 {
 	FILE		*src_file	= NULL;
 	long long	max_quota	= 0;
 	char		*p_line		= NULL;
-	char		src_path[ PATH_MAX + 1 ];
 	char		dst_path[ PATH_MAX + 1 ];
 
 	// Get source path from base path + first letter of account name + account name
 	//	ie. /var/imap/quota/j/user.joe
-	snprintf( src_path, PATH_MAX, "%s/quota/%c/user.%s", g_cyrus_db_dir, g_account[0], g_account );
+	NSString *src_path = [NSString stringWithFormat: @"%@/quota/%@/user.%@", g_src_db_dir, [g_user_id substringToIndex: 1], g_user_id];
 
 	// Create destination path from target directory + directory name
-	snprintf( dst_path, PATH_MAX, "%s/%s/maildirsize", in_dst_root, in_dir );
+	snprintf( dst_path, PATH_MAX, "%s/%s/maildirsize", [in_dst_root UTF8String], in_dir );
 
 	// Open soruce file
-	src_file = fopen( src_path, "r" );
-	if ( src_file == NULL ) {
-		fprintf( stdout, "*** Warning: Could not open quota file: %s\n", src_path );
+	src_file = fopen( [src_path UTF8String], "r" );
+	if ( !src_file ) {
+		print_string( LOG_WARNING, "Warning: Could not open quota file: %s\n", src_path );
 		return( -1 );
 	}
 
 	g_maildirsize = fopen( dst_path, "w" );
-	if ( g_maildirsize == NULL ) {
-		fprintf( stdout, "*** Warning: Could not open quota file: %s\n", dst_path );
+	if ( !g_maildirsize ) {
+		print_string( LOG_WARNING, "Warning: Could not open quota file: %s\n", dst_path );
 		fclose( src_file );
 		return( -1 );
 	}
@@ -928,7 +892,7 @@ int set_quota ( char *in_dst_root, char *in_dir )
 	}
 
 	// set max quota in .../maildirsize file
-	fprintf( stdout, "Setting mail quota to: %lld (bytes)\n", max_quota );
+	print_string( LOG_INFO, "Setting mail quota to: %lld (bytes)\n", max_quota );
 	fprintf( g_maildirsize, "%lldS\n", max_quota );
 
 	fclose( src_file );
@@ -937,351 +901,80 @@ int set_quota ( char *in_dst_root, char *in_dir )
 
 } // set_quota
 
-
 // ------------------------------------------------------------------
-//
-// set_subscribe ()
+//	set_subscribe ()
 
-int set_subscribe ( char *in_dst_root, char *in_dir )
+void set_subscribe ( NSString *in_dst_path )
 {
-	int		len			= 0;
-	char   *tab_char	= NULL;
-	FILE	*src_file;
-	FILE	*dst_file;
-	char   *line_buf	= NULL;
-	char	src_path[ PATH_MAX + 1 ];
-	char	dst_path[ PATH_MAX + 1 ];
+	// mutable string for new subscribed data
+	NSMutableString *new_sub_data = [[[NSMutableString alloc] init]autorelease];
 
-	// Get source path from base path + first letter of account name + account name
+	// get source path from base path + first letter of account name + account name
 	//	ie. /var/imap/user/j/joe.sub
-	snprintf( src_path, PATH_MAX, "%s/user/%c/%s.sub", g_cyrus_db_dir, g_account[0], g_account );
+	NSString *src_path = [NSString stringWithFormat: @"%@/user/%@/%@.sub", g_src_db_dir, [g_user_id substringToIndex: 1], g_user_id];
 
-	// Create destination path from target directory + directory name
-	snprintf( dst_path, PATH_MAX, "%s/%s/subscriptions", in_dst_root, in_dir );
+	// read .sub file
+	NSString *sub_data = [NSString stringWithContentsOfFile: src_path encoding: NSUTF8StringEncoding error: nil];
 
-	// Get length of: "user." + acct name + '.'
-	len = strlen( g_account ) + 6;
+	// parse sub file for subscribed mailboxes
+	NSString *user_tag = [NSString stringWithFormat: @"user.%@.", g_user_id];
 
-	// Open soruce file
-	src_file = fopen( src_path, "r" );
-	if ( src_file == NULL ) {
-		fprintf( stdout, "*** Warning: Could not open subscribe file: %s\n", src_path );
-		return( -1 );
-	}
+	NSScanner *sub_data_scnr = [NSScanner scannerWithString: sub_data];
+	[sub_data_scnr setCaseSensitive: YES];
+	[sub_data_scnr setCharactersToBeSkipped: nil];
 
-	dst_file = fopen( dst_path, "w" );
-	if ( dst_file == NULL ) {
-		fprintf( stdout, "*** Warning: Could not open subscribe file: %s\n", dst_path );
-		fclose( src_file );
-		return( -1 );
-	}
+	// Get first Received: header
+	NSCharacterSet	*cs_WS = [NSCharacterSet whitespaceCharacterSet];
+	NSCharacterSet	*cs_EOL = [NSCharacterSet characterSetWithCharactersInString: @"\r\n"];
+	while ( ![sub_data_scnr isAtEnd] ) {
+		NSString *line_str = nil;
+		[sub_data_scnr scanUpToCharactersFromSet: cs_EOL intoString: &line_str];
+		[sub_data_scnr scanCharactersFromSet: cs_EOL intoString: nil];
 
-	while ( (line_buf = read_line( src_file )) != NULL ) {
-		if ( strlen( line_buf ) > 0 ) {
-			tab_char = strrchr( &line_buf[len], '\t' );
-			if ( tab_char )
-				*tab_char = '\0';
+		if ( [line_str hasPrefix: user_tag] ) {
+			line_str = [line_str substringFromIndex: [user_tag length]];
+			line_str = [line_str stringByTrimmingCharactersInSet: cs_WS];
+			[new_sub_data appendString: [NSString stringWithFormat: @"%@\n", line_str]];
 		}
-		// Write just the mailbox name
-		fprintf( dst_file, "%s\n", &line_buf[len] );
-
-		free( line_buf );
-		line_buf = NULL;
 	}
 
-	fclose( dst_file );
-	fclose( src_file );
-
-	return( 0 );
-
+	// subscriptions dest file path
+	NSString *dst_path = [in_dst_path stringByAppendingPathComponent: @"subscriptions"];
+	[new_sub_data writeToFile: dst_path atomically: YES encoding: NSUTF8StringEncoding error: nil];
+	set_attributes ( dst_path, @"_dovecot", @"mail", 0600 );
 } // set_subscribe
 
-
 // ------------------------------------------------------------------
-//
 // create_maildir_dirs ()
 
-int create_maildir_dirs ( char *root, char *dir, int is_root )
+int create_maildir_dirs ( NSString *in_path )
 {
-	char	mb_root[ PATH_MAX + 1 ];
-	char	mb_cur[ PATH_MAX + 1 ];
-	char	mb_new[ PATH_MAX + 1 ];
-	char	mb_tmp[ PATH_MAX + 1 ];
-	char	mb_mdir[ PATH_MAX + 1 ];
+	NSError *ns_err = nil;
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
+	NSDictionary  *dir_attrs = [NSDictionary dictionaryWithObjectsAndKeys :
+										@"_dovecot", NSFileOwnerAccountName,
+										@"mail", NSFileGroupOwnerAccountName,
+										[NSNumber numberWithUnsignedLong: 0700], NSFilePosixPermissions, nil];
 
-	snprintf( mb_root, PATH_MAX, "%s/%s", root, dir );
-	snprintf( mb_cur, PATH_MAX, "%s/cur", mb_root );
-	snprintf( mb_new, PATH_MAX, "%s/new", mb_root );
-	snprintf( mb_tmp, PATH_MAX, "%s/tmp", mb_root );
-	snprintf( mb_mdir, PATH_MAX, "%s/maildirfolder", mb_root );
-
-	mkdir( mb_root, S_IRWXU );
-	mkdir( mb_cur, S_IRWXU );
-	mkdir( mb_new, S_IRWXU );
-	mkdir( mb_tmp, S_IRWXU );
-
-	if ( !is_root ) {
-		FILE	*a_file = NULL;
-
-		a_file = fopen( mb_mdir, "w");
-		if ( a_file != NULL )
-			fclose( a_file );
+	int i = 0;
+	NSString *a_path = in_path;
+	NSArray *an_array = [NSArray arrayWithObjects: @"/", @"cur", @"new", @"tmp", nil];
+	int cnt = [an_array count];
+	for ( i = 0; i < cnt; i++ ) {
+		a_path = [in_path stringByAppendingPathComponent: [an_array objectAtIndex: i]];
+		if ( ![file_mgr fileExistsAtPath: a_path] ) {
+			if ( ![file_mgr createDirectoryAtPath: a_path withIntermediateDirectories: NO attributes: dir_attrs error: &ns_err] && ns_err ) {
+				print_string( LOG_ERR, "Error: cannot create directory %s (%s)\n", [a_path UTF8String], [[ns_err localizedDescription]UTF8String] );
+				return( -1 );
+			}
+		}
 	}
 		
 	return( 0 );
-
 } // create_maildir_dirs
 
-
 // ------------------------------------------------------------------
-//
-// migrate_message ()
-
-int migrate_message ( char *in_src, unsigned long in_date, char *in_dst, char *in_flags, unsigned long *out_size )
-{
-	NSError			*nsError	= nil;
-	NSString		*nsStr_dst	= nil;
-	struct stat		file_stat;
-	struct timeval	time_val[ 2 ];
-	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
-
-	stat( in_src, &file_stat );
-	*out_size = file_stat.st_size;
-
-	// Destination path name
-	nsStr_dst = [NSString stringWithFormat: @"%s%llu%s", in_dst, file_stat.st_size, in_flags ];
-	if ( c_flag == 1 || e_flag == 1 ) {
-		if ( g_debug )
-			fprintf( stdout, "copying: %s to: %s\n", in_src, [nsStr_dst UTF8String] );
-
-		if ( [nsFileMgr copyItemAtPath: [NSString stringWithUTF8String: in_src] toPath: nsStr_dst error: &nsError ] == NO )
-			fprintf( stdout, "Error: Failed to move: %s (%s)\n", in_src, [[nsError localizedFailureReason] UTF8String] );
-
-		if ( e_flag == 1 ) {
-			if ( [nsFileMgr removeItemAtPath: [NSString stringWithUTF8String: in_src] error: &nsError ] == NO )
-				fprintf( stdout, "Error: Failed to delete: %s (%s)\n", in_src, [[nsError localizedFailureReason] UTF8String] );
-		}
-	} else {
-		if ( g_debug )
-			fprintf( stdout, "moving: %s  to: %s\n", in_src, [nsStr_dst UTF8String] );
-
-		if ( [nsFileMgr moveItemAtPath: [NSString stringWithUTF8String: in_src] toPath: nsStr_dst error: &nsError ] == NO )
-			fprintf( stdout, "Error: Failed to move: %s (%s)\n", in_src, [[nsError localizedFailureReason] UTF8String] );
-	}
-
-	// fix file mod times, this is the imap "received time"
-	time_val[ 0 ].tv_sec = file_stat.st_atime;
-	time_val[ 1 ].tv_sec = in_date;
-	utimes( [nsStr_dst UTF8String], time_val );
-	
-	return( 0 );
-
-} // migrate_message
-
-
-// ------------------------------------------------------------------
-//
-// migrate_mail ()
-
-int migrate_mail ( char *in_src_path, char *in_dest_path, int is_root )
-{
-	unsigned int	i			= 0;
-	unsigned long	ver			= 0;
-	unsigned int	len			= 0;
-	unsigned long	msg_size	= 0;
-	long long		total_bytes	= 0LL;
-	long			total_msgs	= 0;
-	char		   *mb_path		= NULL;
-	FILE		   *hdr_file	= NULL;
-	FILE		   *uid_file	= NULL;
-	DIR			   *p_dir		= NULL;
-	struct dirent  *dir_entry;
-	char			keyword		  [ 2 ];
-	char			dst_file_path [ PATH_MAX + 1 ];
-	char			src_mb_path   [ PATH_MAX + 1 ];
-	char			cy_index_path [ PATH_MAX + 1 ];
-	char			cy_header_path[ PATH_MAX + 1 ];
-	char			src_msg_path  [ PATH_MAX + 1 ];
-	char			msg_flags_str [ PATH_MAX + 1 ];
-
-	struct index_header		cy_header;
-	struct index_entry		cy_index_entry;
-
-	if ( g_debug ) {
-		fprintf( stdout, "Migrating mailbox: %s  to: %s\n",  in_src_path, in_dest_path ); }
-
-	// Get cyrus mailbox index file path
-	snprintf( cy_index_path, PATH_MAX, "%s/cyrus.index", in_src_path );
-
-	// Get cyrus mailbox header file path
-	snprintf( cy_header_path, PATH_MAX, "%s/cyrus.header", in_src_path );
-
-	// Get the cyrus index version
-	if ( (hdr_file = fopen( cy_index_path, "r")) ) {
-		unsigned long	uidvalidity = 0;
-
-		// get the version number for the cyrus minor_version in header
-		memset( &cy_header, 0, sizeof( cy_header ) );
-		fread( &cy_header, 3*4, 1, hdr_file );
-
-		ver = ntohl( cy_header.minor_version );
-		fseek( hdr_file, 0, SEEK_SET );
-
-		if ( g_debug ) {
-			fprintf( stdout, "cyrus index version: %lu\n", ver ); }
-
-		// check for the only two we care about
-		switch ( ver ) {
-			case 2:
-				fread( &cy_header, 44, 1, hdr_file );
-				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
-				break;
-			case 3:
-				fread( &cy_header, 56, 1, hdr_file );
-				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
-				break;
-			case 4:
-				fread( &cy_header, 76, 1, hdr_file );
-				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
-				break;
-			case 6:
-				fread( &cy_header, 80, 1, hdr_file );
-				uidvalidity = (unsigned long)ntohl(cy_header.uidvalidity);
-				break;
-			case 9:
-				fread( &cy_header, 96, 1, hdr_file );
-				uidvalidity = (unsigned long)ntohl(cy_header.uidvalidity);
-				break;
-			default:
-				fprintf( stdout, "Unsupported cyrus mailbox header version: %lu\n",  ver );
-				[gPool release];
-				exit(1);
-		}
-
-		sprintf( dst_file_path, "%s/dovecot-uidlist", in_dest_path );
-		uid_file = fopen( dst_file_path, "w" );
-		if ( uid_file == NULL ) {
-			fprintf( stdout, "*** Error: could not open: %s\n",  dst_file_path );
-			[gPool release];
-			exit(1);
-		}
-
-		// Copy over uid data from cyrus to maildir mailbox
-		fprintf( uid_file, "1 %lu %lu\n", uidvalidity, (unsigned long)ntohl(cy_header.last_uid) + 1 );
-
-		// Parse cyrus seen db file
-		strlcpy( src_mb_path, in_src_path, PATH_MAX );
-		len = strlen( g_cyrus_spool_dir );
-
-		// Just get the relative mailbox path
-		mb_path = src_mb_path + len;
-
-		// Convert any /'s to .'s in the mailbox path name
-		for ( len = 0; len < strlen( mb_path ); len++ ) {
-			if ( mb_path[ len ]=='/' )
-				mb_path[ len ]='.';
-		}
-		mb_path++;
-
-		// Do the seen file parsing
-		parse_seen_file( mb_path, uidvalidity );
-
-		memset( &cy_index_entry, 0, sizeof( cy_index_entry ) );
-		fseek( hdr_file, htonl(cy_header.start_offset), SEEK_SET );
-
-		// Scan through the cyrus header file and migrate a mail file for each entry
-		while( fread( &cy_index_entry, ntohl( cy_header.record_size ), 1, hdr_file) ) {
-			// Make target file path
-			sprintf( dst_file_path, "%s/cur/%lu.cyrus.%lu,S=",
-									 in_dest_path,
-									(unsigned long)ntohl( cy_index_entry.internaldate ),
-									(unsigned long)ntohl( cy_index_entry.uid ) );
-
-			// Set maildir flags
-			strlcpy( msg_flags_str, ":2,", PATH_MAX );
-
-			// Draft flag
-			if ( (ntohl(cy_index_entry.system_flags) & FLAG_DRAFT) )
-				strcat( msg_flags_str, "D" );
-
-			// Flagged flag
-			if ( (ntohl(cy_index_entry.system_flags) & FLAG_FLAGGED) )
-				 strcat( msg_flags_str, "F" );
-
-			// Draft flag
-			if ( (ntohl(cy_index_entry.system_flags) & FLAG_ANSWERED) )
-				 strcat( msg_flags_str, "R" );
-
-			// Seen flag
-			if ( is_seen( (unsigned long)(ntohl(cy_index_entry.uid))) )
-				strcat( msg_flags_str, "S" );
-
-			// Draft flag
-			if ( (ntohl(cy_index_entry.system_flags) & FLAG_DELETED) )
-				 strcat( msg_flags_str, "T" );
-
-			// Set dovecot keywords
-			keyword[ 1 ] = '\0';
-			for ( i = 0; i < MAX_USER_FLAGS && i <= 'z'-'a'; i++) {
-				if ( (htonl( cy_index_entry.user_flags[i / 8 ]) & (1 << (i % 8))) != 0 ) {
-					keyword[ 0 ] = 'a' + i;
-					strcat( msg_flags_str, keyword );
-				}
-			}
-
-			// Full source path
-			sprintf( src_msg_path, "%s/%lu.", in_src_path, (unsigned long)ntohl(cy_index_entry.uid) );
-
-			// Now do the actual copy/move of the cyrus mail file
-			migrate_message( src_msg_path, (unsigned long)ntohl(cy_index_entry.internaldate), dst_file_path, msg_flags_str, &msg_size );
-
-			// Set uid in dovecot dovecot-uidlist
-			fprintf( uid_file, "%lu %s%lu\n", (unsigned long)ntohl(cy_index_entry.uid), strrchr(dst_file_path, '/') + 1, msg_size );
-
-			total_bytes += msg_size;
-			total_msgs++;
-		}
-
-		if ( total_bytes != 0 ) {
-			if ( g_maildirsize != NULL )
-				fprintf( g_maildirsize, "%-13lld %-13ld\n", total_bytes, total_msgs );
-		}
-
-		fprintf( stdout, "- mailbox: %s\n",  in_src_path );
-		fprintf( stdout, "  messages: %lu size: %llu bytes\n",  total_msgs, total_bytes );
-
-		g_count += total_msgs;
-		g_size += total_bytes;
-
-		fclose( hdr_file );
-		fclose( uid_file );
-	} else {
-		// Hmmmm, no cyrus.index file here
-		//	Do we even want to mess with this mailbox or just log it and move on....
-		//	For now, check for mail and log that there may be un-migrated messages
-
-		// Checking if there may be mail here
-		if ( (p_dir = opendir(in_src_path)) ) {
-			while ( (dir_entry = readdir(p_dir)) ) {
-				if ( (dir_entry->d_name[strlen( dir_entry->d_name ) - 1] == '.') && (dir_entry->d_name[0] != '.') ) {
-					// There may be messages here
-					fprintf( stdout, "*** Warning: Missing cyrus index file and mailbox may cntain messages in: %s\n",  in_src_path );
-					break;
-				}
-			}
-			closedir( p_dir );
-		}
-	}
-
-	// Now let's write us some dovecot keywords
-	return( set_dovecot_keywords( cy_header_path, in_dest_path ) );
-
-} // migrate_mail
-
-
-// ------------------------------------------------------------------
-//
-// set_dovecot_keywords ()
+//	set_dovecot_keywords ()
 
 int set_dovecot_keywords ( const char *in_cy_header_path, char *in_dest_path )
 {
@@ -1313,7 +1006,7 @@ int set_dovecot_keywords ( const char *in_cy_header_path, char *in_dest_path )
 			if ( keyword != NULL ) {
 				keyword_file = fopen( dst_file_path, "w" );
 				if ( keyword_file == NULL ) {
-					fprintf( stdout, "*** Error: could not open: %s\n",  dst_file_path );
+					print_string( LOG_ERR, "Error: could not open: %s\n",  dst_file_path );
 					return( 1 );
 				}
 
@@ -1332,252 +1025,379 @@ int set_dovecot_keywords ( const char *in_cy_header_path, char *in_dest_path )
 	}
 
 	return( 0 );
-
 } // set_dovecot_keywords
 
-
 // ------------------------------------------------------------------
-//
-// read_seen_file ()
+//	migrate_message ()
 
-int read_seen_file ( const char *in_seen_file )
+int migrate_message ( char *in_src, unsigned long in_date, char *in_dst, char *in_flags, unsigned long *out_size )
 {
-	int		i			=- 1;
-	char   *token		= NULL;
-	FILE   *fp_seen		= NULL;
-	char   *line_buf	= NULL;
+	NSError *ns_err	= nil;
+	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
 
-	struct s_seen_data *out_seen_file;
+	// get file size
+	struct stat file_stat;
+	stat( in_src, &file_stat );
+	*out_size = file_stat.st_size;
 
-	// Open the seen file
-	if ( in_seen_file ) {
-		fp_seen = fopen( in_seen_file, "r" );
-		if ( fp_seen == NULL )
-			return( 1 );
-	}
+	// Destination path name
+	NSString *dst_path = [NSString stringWithFormat: @"%s%llu%s", in_dst, file_stat.st_size, in_flags ];
+	if ( [g_migrate_opt isEqualToString: @"copy"] ) {
+		print_string( LOG_INFO, "copying: %s to: %s\n", in_src, [dst_path UTF8String] );
 
-	out_seen_file = malloc( sizeof(struct s_seen_data) );
-	if ( out_seen_file == NULL ) {
-		if ( g_debug != 0 )
-			fprintf( stdout, "%s: memory allocation error\n",  __FUNCTION__ );
-
-		fclose( fp_seen );
-		return( 1 );
-	}
-
-	out_seen_file->seen_count = -1;
-	out_seen_file->uid_flag = -1;
-
-	while ( (line_buf = read_line( fp_seen )) != NULL ) {
-		if ( strlen( line_buf ) )
-			i++;
+		if ( ![nsFileMgr copyItemAtPath: [NSString stringWithUTF8String: in_src] toPath: dst_path error: &ns_err ] )
+			print_string( LOG_ERR, "Error: Failed to move: %s (%s)\n", in_src, [[ns_err localizedFailureReason] UTF8String] );
 		else
-			continue;
+			set_attributes( dst_path, @"_dovecot", @"mail", 0600 );
+	} else {
+		print_string( LOG_INFO, "moving: %s  to: %s\n", in_src, [dst_path UTF8String] );
 
-		// parse the cyrus seen file
-		token = strtok( line_buf, " \t" );
-
-		out_seen_file->seen_array[ i ].mbox_uid = cpy_str( token );
-
-		token = strtok( NULL, " \t" );
-		token = strtok( NULL, " \t" );
-		token = strtok( NULL, " \t" );
-		token = strtok( NULL, " \t" );
-		token = strtok( NULL, " \t" );
-
-		if ( token )
-			out_seen_file->seen_array[i].seen_uids = cpy_str( token );
+		if ( [nsFileMgr moveItemAtPath: [NSString stringWithUTF8String: in_src] toPath: dst_path error: &ns_err ] == NO )
+			print_string( LOG_ERR, "Error: Failed to move: %s (%s)\n", in_src, [[ns_err localizedFailureReason] UTF8String] );
 		else
-			out_seen_file->seen_array[i].seen_uids = cpy_str( "" );
-
-		free( line_buf );
-		line_buf = NULL;
+			set_attributes( dst_path, @"_dovecot", @"mail", 0600 );
 	}
 
-	if ( i >= 0 )
-		out_seen_file->seen_count = i + 1;
-
-	fclose( fp_seen );
-
-	g_seen_file = out_seen_file;
-
+	// fix file mod times, this is the imap "received time"
+	struct timeval time_val[2];
+	time_val[0].tv_sec = file_stat.st_atime;
+	time_val[1].tv_sec = in_date;
+	utimes( [dst_path UTF8String], time_val );
+	
 	return( 0 );
-
-} // read_seen_file
-
+} // migrate_message
 
 // ------------------------------------------------------------------
-//
-// parse_seen_file ()
+// migrate_mail ()
 
-int parse_seen_file ( const char *in_mailbox, const unsigned long in_uidvalidity )
+int migrate_mail ( char *in_src_path, char *in_dest_path, int is_root, struct s_seen_data *in_seen_data )
 {
-	int		i			= 0;
-	int		index		= 0;
-	char   *p			= NULL;
-	size_t	str_len		= 0;
-	char   *str			= NULL;
-	char   *left_str	= NULL;
-	char   *right_str	= NULL;
-	char   *tuple_str	= NULL;
-	char   *token_str	= NULL;
+	char	src_mb_path   [ PATH_MAX + 1 ];
+	char	cy_index_path [ PATH_MAX + 1 ];
+	char	cy_header_path[ PATH_MAX + 1 ];
+	char	src_msg_path  [ PATH_MAX + 1 ];
+	char	msg_flags_str [ PATH_MAX + 1 ];
 
-	char mbox		[ PATH_MAX + 1 ];
-	char uniqueid	[ 17 ];
+	print_string( LOG_DEBUG, "Migrating mailbox: %s  to: %s\n",  in_src_path, in_dest_path );
 
-	if ( g_seen_file == NULL ) {
-		if ( g_debug != 0 )
-			fprintf( stdout, "No seen file found for %s\n", in_mailbox );
+	// Get cyrus mailbox index file path
+	snprintf( cy_index_path, PATH_MAX, "%s/cyrus.index", in_src_path );
 
-		return( 1 );
-	}
+	// Get cyrus mailbox header file path
+	snprintf( cy_header_path, PATH_MAX, "%s/cyrus.header", in_src_path );
 
-	snprintf( mbox, PATH_MAX, "user.%s", in_mailbox );
+	// read cyrus index version
+	FILE *hdr_file = NULL;
+	if ( (hdr_file = fopen( cy_index_path, "r")) ) {
+		unsigned long	uidvalidity = 0;
 
-	// Make mailbox uid
-	mailbox_make_uniqueid( mbox, in_uidvalidity, uniqueid );
+		// get the version number for the cyrus minor_version in header
+		struct index_header cy_header;
+		memset( &cy_header, 0, sizeof( cy_header ) );
+		fread( &cy_header, 3*4, 1, hdr_file );
 
-	// Find the seen line for this mailbox
-	g_seen_file->uid_flag = -1;
-	for ( i = 0; i < g_seen_file->seen_count; i++ ) {
-		if ( strcmp( uniqueid, g_seen_file->seen_array[ i ].mbox_uid ) == 0 )
-			g_seen_file->uid_flag = i;
-	}
+		unsigned long ver = ntohl( cy_header.minor_version );
+		fseek( hdr_file, 0, SEEK_SET );
 
-	if ( (g_seen_file->uid_flag) >= 0 && (g_seen_file->seen_count != -1) ) {
-		if ( (tuple_str = cpy_str( g_seen_file->seen_array[ g_seen_file->uid_flag ].seen_uids )) ) {
-			// Scan across seen string parsing out seen uid's
-			//	ie. 3:4,8:9,11:12,15:16,20  or 1,3,5,7,9,11
+		print_string( LOG_DEBUG, "cyrus index version: %lu\n", ver );
 
-			// Comma separated token string
-			token_str = strtok( tuple_str, "," );
+		// check for the only two we care about
+		switch ( ver ) {
+			case 2:
+				fread( &cy_header, 44, 1, hdr_file );
+				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
+				break;
+			case 3:
+				fread( &cy_header, 56, 1, hdr_file );
+				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
+				break;
+			case 4:
+				fread( &cy_header, 76, 1, hdr_file );
+				uidvalidity = (unsigned long)ntohl(cy_header.pop3_last_login);
+				break;
+			case 6:
+				fread( &cy_header, 80, 1, hdr_file );
+				uidvalidity = (unsigned long)ntohl(cy_header.uidvalidity);
+				break;
+			case 9:
+				fread( &cy_header, 96, 1, hdr_file );
+				uidvalidity = (unsigned long)ntohl(cy_header.uidvalidity);
+				break;
+			default:
+				exit_with_error_string( 1, [[NSString stringWithFormat:
+												@"Unsupported cyrus mailbox header version: %lu\n", ver]UTF8String] );
+		}
 
-			i = 0;
-			while ( token_str ) {
-				// Bail if we have exceeded max range
-				assert( i < CYRUS_SEENMAX );
-				
-				str = cpy_str( token_str );
+		char dst_file_path[PATH_MAX + 1];
+		sprintf( dst_file_path, "%s/dovecot-uidlist", in_dest_path );
+		FILE *uid_file = fopen( dst_file_path, "w" );
+		if ( !uid_file )
+			exit_with_error_string( 1, [[NSString stringWithFormat: @"Error: could not open: %s\n", dst_file_path]UTF8String] );
 
-				// Look for a ':' separator
-				p = strchr( str, ':' );
-				index = -1;
-				if ( p != NULL )
-					index = p - str;
+		// Copy over uid data from cyrus to maildir mailbox
+		fprintf( uid_file, "1 %lu %lu\n", uidvalidity, (unsigned long)ntohl(cy_header.last_uid) + 1 );
 
-				// If ':' was not found
-				if ( index == -1 ) {
-					left_str = cpy_str( str );
-					right_str = cpy_str( str );
-				} else {
-					// We found the ':', get uid min/max values
-					if ( index >= strlen( str ) )
-						left_str = cpy_str( str );
-					else if ( index <= 0 )
-						left_str = NULL;
-					else {
-						left_str = malloc( index + 1 );
-						if ( left_str != NULL ) {
-							memset( left_str, 0, (size_t)index + 1 );
-							memcpy( left_str, str, (size_t)index );
-						}
-					}
+		// Parse cyrus seen db file
+		strlcpy( src_mb_path, in_src_path, PATH_MAX );
 
-					if ( index >= strlen( str ) )
-						right_str = NULL;
-					else if ( index < 0 )
-						right_str = cpy_str( str );
-					else {
-						str_len = ( strlen( str ) - index - 1 );
-						right_str = malloc( str_len + 1 );
-						if ( right_str != NULL )
-						{
-							memset( right_str, 0, str_len + 1 );
-							memcpy( right_str, str +(index + 1), str_len );
+		// Just get the relative mailbox path
+		unsigned int len = [g_spool_dir length];
+		char *mb_path = src_mb_path + len;
 
-						}
-					}
+		// Convert any /'s to .'s in the mailbox path name
+		for ( len = 0; len < strlen( mb_path ); len++ ) {
+			if ( mb_path[ len ]=='/' )
+				mb_path[ len ]='.';
+		}
+		mb_path++;
+
+		// do seen file data parsing
+		parse_seen_data( mb_path, uidvalidity, in_seen_data );
+
+		struct index_entry cy_index_entry;
+		memset( &cy_index_entry, 0, sizeof( cy_index_entry ) );
+		fseek( hdr_file, htonl(cy_header.start_offset), SEEK_SET );
+
+		long total_msgs = 0;
+		long long total_bytes = 0LL;
+
+		// Scan through the cyrus header file and migrate a mail file for each entry
+		while( fread( &cy_index_entry, ntohl( cy_header.record_size ), 1, hdr_file) ) {
+			// Make target file path
+			sprintf( dst_file_path, "%s/cur/%lu.cyrus.%lu,S=",
+									 in_dest_path,
+									(unsigned long)ntohl( cy_index_entry.internaldate ),
+									(unsigned long)ntohl( cy_index_entry.uid ) );
+
+			// Set maildir flags
+			strlcpy( msg_flags_str, ":2,", PATH_MAX );
+
+			// Draft flag
+			if ( (ntohl(cy_index_entry.system_flags) & FLAG_DRAFT) )
+				strcat( msg_flags_str, "D" );
+
+			// Flagged flag
+			if ( (ntohl(cy_index_entry.system_flags) & FLAG_FLAGGED) )
+				 strcat( msg_flags_str, "F" );
+
+			// Draft flag
+			if ( (ntohl(cy_index_entry.system_flags) & FLAG_ANSWERED) )
+				 strcat( msg_flags_str, "R" );
+
+			// Seen flag
+			if ( is_seen( (unsigned long)(ntohl(cy_index_entry.uid)), in_seen_data) )
+				strcat( msg_flags_str, "S" );
+
+			// Draft flag
+			if ( (ntohl(cy_index_entry.system_flags) & FLAG_DELETED) )
+				 strcat( msg_flags_str, "T" );
+
+			// Set dovecot keywords
+			int i;
+			char keyword[2] = {'\0', '\0'};
+			for ( i = 0; i < MAX_USER_FLAGS && i <= 'z'-'a'; i++) {
+				if ( (htonl( cy_index_entry.user_flags[i / 8 ]) & (1 << (i % 8))) != 0 ) {
+					keyword[ 0 ] = 'a' + i;
+					strcat( msg_flags_str, keyword );
 				}
-
-				g_seen_file->uid_array[ i ].uid_min = atol( left_str );
-				g_seen_file->uid_array[ i ].uid_max = atol( right_str );
-				i++;
-
-				// Free the strings
-				if ( str ) {
-					free( str );
-					str = NULL;
-				}
-
-				if ( left_str ) {
-					free( left_str );
-					left_str = NULL;
-				}
-
-				if ( right_str ) {
-					free( right_str );
-					right_str = NULL;
-				}
-
-				// next token
-				token_str = strtok( NULL, "," );
 			}
 
-			free( tuple_str );
-			g_seen_file->uid_count = i;
+			// Full source path
+			sprintf( src_msg_path, "%s/%lu.", in_src_path, (unsigned long)ntohl(cy_index_entry.uid) );
+
+			// Now do the actual copy/move of the cyrus mail file
+			unsigned long msg_size = 0;
+			migrate_message( src_msg_path, (unsigned long)ntohl(cy_index_entry.internaldate), dst_file_path, msg_flags_str, &msg_size );
+
+			// Set uid in dovecot dovecot-uidlist
+			fprintf( uid_file, "%lu %s%lu\n", (unsigned long)ntohl(cy_index_entry.uid), strrchr(dst_file_path, '/') + 1, msg_size );
+
+			total_bytes += msg_size;
+			total_msgs++;
 		}
+
+		if ( total_bytes != 0 ) {
+			if ( g_maildirsize != NULL )
+				fprintf( g_maildirsize, "%-13lld %-13ld\n", total_bytes, total_msgs );
+		}
+
+		print_string( LOG_INFO, "- mailbox: %s\n",  in_src_path );
+		print_string( LOG_INFO, "  messages: %lu size: %llu bytes\n",  total_msgs, total_bytes );
+
+		g_count += total_msgs;
+		g_size += total_bytes;
+
+		fclose( hdr_file );
+		fclose( uid_file );
+
+		set_attributes ( [NSString stringWithFormat: @"%s/dovecot-uidlist", in_dest_path], @"_dovecot", @"mail", 0600 );
+	} else {
+		// Hmmmm, no cyrus.index file here
+		//	Do we even want to mess with this mailbox or just log it and move on....
+		//	For now, check for mail and log that there may be un-migrated messages
+
+		// Checking if there may be mail here
+		DIR *p_dir = NULL;
+		if ( (p_dir = opendir(in_src_path)) ) {
+			struct dirent  *dir_entry;
+			while ( (dir_entry = readdir(p_dir)) ) {
+				if ( (dir_entry->d_name[strlen( dir_entry->d_name ) - 1] == '.') && (dir_entry->d_name[0] != '.') ) {
+					// There may be messages here
+					print_string( LOG_WARNING, "Warning: Missing cyrus index file and mailbox may cntain messages in: %s\n",  in_src_path );
+					break;
+				}
+			}
+			closedir( p_dir );
+		}
+	}
+
+	// Now let's write us some dovecot keywords
+	return( set_dovecot_keywords( cy_header_path, in_dest_path ) );
+
+} // migrate_mail
+
+// ------------------------------------------------------------------
+// scan_account ()
+
+int scan_account ( NSString *in_cy_spool_dir,
+				   NSString *in_dst_root,
+				   NSString *in_acct_dir,
+				   struct s_seen_data *in_seen_data )
+{
+	DIR			   *p_dir		= NULL;
+	struct dirent  *dir_entry;
+	struct stat		stat_buf;
+
+	static int is_root_mailbox = 1;
+	static char src_path	[ PATH_MAX + 1 ]	= "";
+	static char dst_path	[ PATH_MAX + 1 ]	= "";
+	static char full_path	[ PATH_MAX + 1 ]	= "";
+	static char src_mb_path	[ PATH_MAX + 1 ]	= "";
+
+	char *cc = NULL;
+	int rc = 0;
+	const char *dst_acct = NULL;
+
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
+
+	if ( is_root_mailbox ) {
+		if ( verify_cstr_path( [in_acct_dir UTF8String] ) != 0 ) {
+			print_string( LOG_WARNING, "Warning: unable to verify mailbox path: %s\n", [in_acct_dir UTF8String] );
+			[gPool release];
+			exit(1);
+		}
+
+		// check for flat seen file
+		NSString *seen_file = [NSString stringWithFormat: @"%@/user/%@/%@.seen.flat", g_src_db_dir, [g_user_id substringToIndex: 1], g_user_id];
+		if ( ![file_mgr fileExistsAtPath: seen_file] ) {
+			// see if skiplist seen file exists
+			NSString *skiplist_seen = [NSString stringWithFormat: @"%@/user/%@/%@.seen", g_src_db_dir, [g_user_id substringToIndex: 1], g_user_id];
+			if ( [file_mgr fileExistsAtPath: skiplist_seen] ) {
+				NSString *err_str = nil;
+				NSString *result_str = nil;
+				NSString *cvt_cyrusdb = [NSString stringWithFormat: @"%@/cvt_cyrusdb", g_imap_bins_dir];
+				NSString *imapd_conf = [NSString stringWithFormat: @"%@/imapd.conf", g_config_file];
+				NSArray *args = [NSArray arrayWithObjects: @"-C", imapd_conf, skiplist_seen, @"skiplist", seen_file, @"flat", nil];
+				XSRunTask( cvt_cyrusdb, args, nil, &result_str, &err_str, nil );
+				if ( err_str && [err_str length] )
+					print_string(LOG_ERR, "error creating flat seen file from %s: %s", [skiplist_seen UTF8String], [err_str UTF8String] );
+				if ( result_str && [result_str length] )
+					print_string(LOG_INFO, "cvt_cyrusdb: %s", [result_str UTF8String] );
+			}
+		}
+
+		read_seen_file( seen_file, &in_seen_data );
+		if ( !in_seen_data )
+			print_string( LOG_WARNING, "Warning: No seen file found for for: %s\n", [g_user_id UTF8String] );
+	}
+
+	// Drop in if it's a directory
+	if ( (stat( [in_acct_dir UTF8String], &stat_buf ) == 0) && ((stat_buf.st_mode & S_IFMT) == S_IFDIR) ) {
+		// Add '/' if we now have a path name
+		if ( strlen( src_path ) != 0 )
+			strcat( src_path, "/" );
+
+		// Append source mailbox to path
+		strcat( src_path, [in_acct_dir UTF8String] );
+
+		// Mailboxes are separate with a '.'
+		if ( strlen( dst_path ) != 0 )
+			strcat( dst_path, "." );
+
+
+		// Append destination mailbox name, either account ID or GUID if it exists
+		NSString *guid_str = get_guid_for_uid( in_acct_dir );
+		if ( is_root_mailbox && ((guid_str = get_guid_for_uid(in_acct_dir)) != nil) )
+			dst_acct = [guid_str UTF8String];
 		else
-			g_seen_file->uid_count = -1;
+			dst_acct = [in_acct_dir UTF8String];
+
+		strcat( dst_path, dst_acct );
+
+		// Append a '/' to the base mailbox name
+		//	We should only hit this once per account
+		if ( !strcmp( dst_path, dst_acct) )
+			strcat( dst_path, "/" );
+
+		src_mb_path[0]='\0';
+		strcat( src_mb_path, [in_cy_spool_dir UTF8String] );
+		strcat( src_mb_path, "/" );
+		strcat( src_mb_path, src_path );
+
+		// Make the full path
+		snprintf( full_path, PATH_MAX, "%s/%s", [in_dst_root UTF8String], dst_path );
+
+		// create maildir directories
+		create_maildir_dirs( [NSString stringWithUTF8String: full_path] );
+
+		// Migrate cyrus quota info
+		if ( is_root_mailbox )
+			set_quota( in_dst_root, dst_path );
+
+		// Set subscribed mailboxes
+		if ( is_root_mailbox )
+			set_subscribe( [NSString stringWithUTF8String: full_path] );
+
+		// copy and/or migrate the mailfiles
+		migrate_mail( src_mb_path, full_path, is_root_mailbox, in_seen_data );
+
+		// create update index file for background processing
+		set_fts_update_index_file( src_path, dst_path );
+
+		if ( is_root_mailbox )
+			is_root_mailbox = 0;
+
+		// Scan mailboxes
+		if ( chdir( [in_acct_dir UTF8String] ) == 0 ) {
+			if ( (p_dir = opendir( "." )) ) {
+				// Recursively scan across all mailboxes 
+				while( (dir_entry = readdir(p_dir)) ) {
+					// Skip the '.' & '..' directories
+					if ( strcmp( dir_entry->d_name, "." ) &&  strcmp( dir_entry->d_name, "..") )
+						scan_account( in_cy_spool_dir, in_dst_root,  [NSString stringWithUTF8String: dir_entry->d_name], in_seen_data );
+				}
+				closedir( p_dir );
+			}
+
+			// Backing out, terminate source mailbox path
+			if ( (cc = strrchr( src_path, '/' )) )
+				*cc = '\0';
+
+			// Backing out, terminate destination mailbox path
+			if ( (cc = strrchr( dst_path, '.')) )
+				*cc='\0';
+
+			chdir( ".." );
+		}
 	}
 
-	return( 0 );
-} // parse_seen_file
+	return( rc );
+} // scan_account
 
-
-// ------------------------------------------------------------------
-//
-// is_seen ()
-
-int is_seen ( unsigned long in_uid )
-{
-	int i;
-
-	if ( g_seen_file == NULL )
-		return( 0 );
-
-	if ( g_seen_file->uid_flag == -1 )
-		return( 0 );
-
-	for ( i = 0; i < g_seen_file->uid_count; i++ ) {
-		if ( (in_uid >= g_seen_file->uid_array[ i ].uid_min) && (in_uid <= g_seen_file->uid_array[ i ].uid_max) )
-			return( 1 );
-	}
-	return( 0 );
-} // is_seen
-
+#pragma mark -
 
 // ------------------------------------------------------------------
-//
-// free_seen_file ()
-
-void free_seen_file ( void )
-{
-	int i;
-
-	if ( g_seen_file == NULL )
-		return;
-
-	for ( i = 0; i < g_seen_file->seen_count; i++ ) {
-		free( g_seen_file->seen_array[ i ].mbox_uid );
-		free( g_seen_file->seen_array[ i ].seen_uids );
-	}
-	free( g_seen_file );
-} // free_seen_file
-
-
-// ------------------------------------------------------------------
-//
-// read_line ()
+//	read_line ()
 
 char *read_line ( FILE *in_file )
 {
@@ -1594,8 +1414,7 @@ char *read_line ( FILE *in_file )
 
 			if ( line_len >= buf_size ) {
 				buf_size += 4096;
-				if ( g_debug != 0 )
-					fprintf( stdout, "%s: realloc buffer: current size: %d -- new size: %d\n", __FUNCTION__, line_len, buf_size );
+				print_string( LOG_DEBUG, "%s: realloc buffer: current size: %d -- new size: %d\n", __FUNCTION__, line_len, buf_size );
 
 				out_buf = realloc( out_buf, buf_size );
 				if ( out_buf == NULL )
@@ -1621,10 +1440,8 @@ char *read_line ( FILE *in_file )
 	return( NULL );
 } // read_line
 
-
 // ------------------------------------------------------------------
-//
-// cpy_str ()
+//	cpy_str ()
 
 char * cpy_str ( const char *in_str )
 {
@@ -1635,59 +1452,19 @@ char * cpy_str ( const char *in_str )
 		len = strlen( in_str ) + 1;
 		out_str = malloc( len );
 		if ( out_str == NULL ) {
-			if ( g_debug != 0 )
-				fprintf( stdout, "%s: memory allocation error\n",  __FUNCTION__ );
+			print_string( LOG_DEBUG, "%s: memory allocation error\n",  __FUNCTION__ );
 		} else
 			strlcpy( out_str, in_str,  len );
 	}
 	return( out_str );
 } // cpy_str
 
+#pragma mark -
 
 // ------------------------------------------------------------------
-//
-// mailbox_make_uniqueid ()
-//
-//	Function from cyrus mailbox.c
-//
+// set_dovecot_dir_and_file_attributes ()
 
-void mailbox_make_uniqueid ( char *name, unsigned long in_uidvalidity, char *uniqueid )
-{
-	u_int32_t hash = 0;
-
-	while (*name) {
-		hash *= 251;
-		hash += *name++;
-		hash %= PRIME;
-	}
-	sprintf( uniqueid, "%08lx%08lx", (unsigned long)hash, in_uidvalidity );
-} // mailbox_make_uniqueid
-
-
-// ------------------------------------------------------------------
-//
-
-void rename_mailboxes ( const char *g_dest_dir )
-{
-	DIR				*p_dir		= NULL;
-	struct dirent	*dir_entry;
-
-	if ( (p_dir = opendir( g_dest_dir )) ) {
-		// Recursively scan across all mailboxes 
-		while( (dir_entry = readdir(p_dir)) ) {
-			// Skip the '.' & '..' directories
-			if ( strcmp( dir_entry->d_name, "." ) &&  strcmp( dir_entry->d_name, "..") )
-				map_mailbox_to_guid( g_dest_dir, dir_entry->d_name );
-		}
-		closedir( p_dir );
-	}
-} // rename_mailboxes
-
-
-// ------------------------------------------------------------------
-//
-
-void set_attribute ( NSString *in_path )
+void set_dovecot_dir_and_file_attributes ( NSString *in_path )
 {
 	BOOL			is_dir		= NO;
 	NSError			*nsError	= nil;
@@ -1713,40 +1490,38 @@ void set_attribute ( NSString *in_path )
 		while ( (nsStr_name = [nsEnum nextObject]) ) {
 			nsStr_path = [in_path stringByAppendingPathComponent: nsStr_name];
 			if ( [nsFileMgr fileExistsAtPath: nsStr_path isDirectory : &is_dir ] && is_dir )
-				set_attribute( nsStr_path );
+				set_dovecot_dir_and_file_attributes( nsStr_path );
 			else
 				[nsFileMgr setAttributes: nsDict_file ofItemAtPath: nsStr_path error: &nsError];
 		}
 	}
 	else
 		[nsFileMgr setAttributes: nsDict_file ofItemAtPath: nsStr_path error: &nsError];
-} // set_attribute
-
+} // set_dovecot_dir_and_file_attributes
 
 // ------------------------------------------------------------------
+//	fix_data_store_dir_file_attributes ()
 
-void fix_mailboxes ( const char *g_dest_dir )
+void fix_data_store_dir_file_attributes ( NSString *in_path )
 {
-	DIR				*p_dir		= NULL;
-	NSString		*nsStr_path	= nil;
-	struct dirent	*dir_entry;
+	int i;
+	NSFileManager *file_mgr = [NSFileManager defaultManager];
+	NSArray *mailboxes = [file_mgr contentsOfDirectoryAtPath: in_path error: nil];
+	int count = [mailboxes count];
 
-	if ( (p_dir = opendir( g_dest_dir )) ) {
-		// Recursively scan across all mailboxes 
-		while ( (dir_entry = readdir(p_dir)) ) {
-			// Skip the '.' & '..' directories
-			if ( strcmp( dir_entry->d_name, "." ) &&  strcmp( dir_entry->d_name, "..") ) {
-				nsStr_path = [NSString stringWithFormat: @"%@/%@", [NSString stringWithUTF8String: g_dest_dir],
-																  [NSString stringWithUTF8String: dir_entry->d_name]];
-				set_attribute ( nsStr_path );
-			}
-		}
-		closedir( p_dir );
+	for ( i = 0; i < count; i++ ) {
+		BOOL is_dir = NO;
+		// full mailbox path to rename
+		NSString *mb_path = [in_path stringByAppendingPathComponent: [mailboxes objectAtIndex: i]];
+
+		// directories only
+		if ( [file_mgr fileExistsAtPath: mb_path isDirectory: &is_dir] && is_dir )
+			set_dovecot_dir_and_file_attributes( mb_path );
 	}
-} // fix_mailboxes
-
+} // fix_data_store_dir_file_attributes
 
 // -----------------------------------------------------------------
+//	write_settings
 
 void write_settings ( NSDictionary *in_dict )
 {
@@ -1759,411 +1534,236 @@ void write_settings ( NSDictionary *in_dict )
 												nil];
 
 	[[NSFileManager defaultManager] setAttributes: nsDict_attrs ofItemAtPath: MAIL_USER_SETTINGS_PLIST error: nil];
-} // set_attributes
-
-// -----------------------------------------------------------------
-
-void set_attributes ( NSString *in_path, NSString *in_owner, NSString *in_group, int in_perms )
-{
-	NSDictionary *nsDict_attrs	= [NSDictionary dictionaryWithObjectsAndKeys :
-									in_owner, NSFileOwnerAccountName,
-									in_group, NSFileGroupOwnerAccountName,
-									[NSNumber numberWithUnsignedLong: in_perms], NSFilePosixPermissions,
-									nil];
-
-	[[NSFileManager defaultManager] setAttributes: nsDict_attrs ofItemAtPath: in_path error: nil];
-} // set_attributes
+} // write_settings
 
 // ------------------------------------------------------------------
+//	is_index_file ()
 
-void set_migration_flag ( const char *in_guid )
+BOOL is_index_file ( NSString *in_msg_path )
 {
-	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
+	// get file name from path
+	NSString *file_name = [in_msg_path lastPathComponent];
+	if ( !file_name )
+		return( NO );
 
-	if ( ![nsFileMgr fileExistsAtPath: MAIL_USER_SETTINGS_PLIST] ) {
-		log_message( LOG_ERR, [NSString stringWithFormat: @"missing migration file: %@", MAIL_USER_SETTINGS_PLIST], nil );
-		return;
-	}
+	if ( [file_name isEqualToString: @"dovecot.index"] ||
+			[file_name isEqualToString: @"dovecot.index.log"] ||
+				[file_name isEqualToString: @"dovecot.index.cache"] )
+		return( YES );
 
-	// get the guid user list from mailusersettings.plist
-	NSMutableDictionary	*users = [NSMutableDictionary dictionaryWithContentsOfFile: MAIL_USER_SETTINGS_PLIST];
-	if ( !users )
-		users = [[[NSMutableDictionary alloc] init]autorelease];
-
-	// look for the individual GUID and set migration flag and mail attribute
-	NSMutableDictionary *user = [users objectForKey: [NSString stringWithUTF8String: in_guid]];
-	if (user)
-		[user setObject: kXMLValueAcctMigrated forKey: kXMLKeyMigrationFlag];
-	else
-		[users setObject: [NSMutableDictionary dictionaryWithObjectsAndKeys:
-							kXMLValueAcctMigrated, kXMLKeyMigrationFlag, nil]
-				forKey: [NSString stringWithUTF8String: in_guid]];
-
-	// get mail attribute from od
-	NSDictionary *mail_attribute = get_mail_attribute(in_guid);
-	if (mail_attribute) {
-		user = [users objectForKey: [NSString stringWithUTF8String: in_guid]];
-		if (user)
-			[user addEntriesFromDictionary: mail_attribute];
-	}
-
-	write_settings( users );
-} // set_migration_flag
-
+	return( NO );
+} // is_index_file
 
 // ------------------------------------------------------------------
-//
+//	is_msg_file ()
 
-void set_migration_flags ( BOOL in_set )
+BOOL is_msg_file ( NSString *in_msg_path )
 {
-	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
+	// remove message file name
+	NSString *tmp_path = [in_msg_path stringByDeletingLastPathComponent];
+	if ( !tmp_path )
+		return( NO );
 
-	if ( ![nsFileMgr fileExistsAtPath: MAIL_USER_SETTINGS_PLIST] ) {
-		log_message( LOG_ERR, [NSString stringWithFormat: @"missing migration file: %@", MAIL_USER_SETTINGS_PLIST], nil );
-		return;
+	// get where message lives: new, cur, or tmp
+	NSString *container = [tmp_path lastPathComponent];
+	if ( !container )
+		return( NO );
+
+	if ( [container isEqualToString: @"new"] ||
+			[container isEqualToString: @"cur"] ||
+				[container isEqualToString: @"tmp"] )
+		return( YES );
+
+	return( NO );
+} // is_msg_file
+
+// ------------------------------------------------------------------
+//	get_date_str ()
+
+NSString *get_date_str ( NSString *in_date )
+{
+	NSString *out_r = nil;
+	NSCharacterSet	*cs_WS = [NSCharacterSet whitespaceCharacterSet];
+
+	NSString *tmp_str = [in_date copy];
+	while ( [tmp_str rangeOfString: @";" options: NSLiteralSearch].location != NSNotFound ) {
+		NSScanner *line_scnr = [NSScanner scannerWithString: tmp_str];
+		[line_scnr setCaseSensitive: YES];
+		[line_scnr setCharactersToBeSkipped: nil];
+
+		if ( [line_scnr scanUpToString: @";" intoString: nil ] ) {
+			[line_scnr scanString: @";" intoString: nil ];
+			[line_scnr scanCharactersFromSet: cs_WS intoString: nil];
+
+			[line_scnr scanUpToString: @"\r\n" intoString: &out_r];
+			tmp_str = [NSString stringWithString: out_r];
+		}
 	}
+	return( out_r );
+} // get_date_str
 
-	NSMutableDictionary	*users = [NSMutableDictionary dictionaryWithContentsOfFile: MAIL_USER_SETTINGS_PLIST];
-	if ( !users )
-		return;
+// ------------------------------------------------------------------
+//	get_message_date ()
 
-	NSMutableDictionary *user = nil;
-	NSEnumerator *enumerator = [users objectEnumerator];
-	while ( (user = [enumerator nextObject]) ) {
-		if ( in_set )
-			[user setObject: kXMLValueAcctMigrated forKey: kXMLKeyMigrationFlag];
+NSDate *get_message_date ( NSString *in_msg_path )
+{
+	BOOL hit = NO;
+	BOOL done = NO;
+	NSMutableString	*rcvd_header = [[[NSMutableString alloc] init]autorelease];
+	NSCharacterSet	*cs_EOL = [NSCharacterSet characterSetWithCharactersInString: @"\r\n"];
+	NSCharacterSet	*cs_WS = [NSCharacterSet whitespaceCharacterSet];
+
+	NSError *ns_err = nil;
+	NSString *msg_data = [NSString stringWithContentsOfFile: in_msg_path encoding: NSASCIIStringEncoding error: &ns_err];
+	if ( !msg_data ) {
+		if ( ns_err && ([[ns_err localizedFailureReason] length]) )
+			print_string( LOG_ERR, "read failed for: %s (%s)\n", [in_msg_path UTF8String], [[ns_err localizedFailureReason] UTF8String] );
 		else
-			[user setObject: kXMLValueAcctNotMigrated forKey: kXMLKeyMigrationFlag];
-	}
-	write_settings( users );
-} // set_migration_flags
-
-
-// ------------------------------------------------------------------
-//
-
-void fix_message_dates ( NSString *nsStr_in_path )
-{
-	BOOL			is_dir		= NO;
-	NSError			*nsErr		= nil;
-	NSArray			*nsArry		= nil;
-	NSString		*nsStr_path	= nil;
-	NSString		*nsStr_name	= nil;
-	NSEnumerator	*nsEnum		= nil;
-	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
-
-	if ( [nsFileMgr fileExistsAtPath: nsStr_in_path isDirectory: &is_dir] ) {
-		if ( is_dir == YES ) {
-			nsArry = [nsFileMgr contentsOfDirectoryAtPath: nsStr_in_path error: &nsErr];
-			nsEnum = [nsArry objectEnumerator];
-			while ( (nsStr_name = [nsEnum nextObject]) ) {
-				nsStr_path = [nsStr_in_path stringByAppendingPathComponent: nsStr_name ];
-				fix_message_dates( nsStr_path );
-			}
-		} else {
-			NSMutableDictionary *nsMutDict = [NSMutableDictionary dictionaryWithDictionary:
-													[nsFileMgr attributesOfItemAtPath: nsStr_in_path error: &nsErr]];
-			if ( nsMutDict != nil ) {
-				NSDate *nsDate = [nsMutDict objectForKey: @"NSFileModificationDate" ];
-				if ( nsDate != nil ) {
-					NSDate *nsDate_new = get_message_date( nsStr_in_path );
-					if ( nsDate_new != nil ) {
-						[nsMutDict setObject: nsDate_new forKey: @"NSFileModificationDate"];
-						[nsFileMgr setAttributes: nsMutDict ofItemAtPath: nsStr_in_path error: &nsErr];
-					}
-				} 
-			}
-		}
-	}
-	nsArry = [nsFileMgr contentsOfDirectoryAtPath: nsStr_in_path error: &nsErr];
-} // fix_message_dates
-
-
-// ------------------------------------------------------------------
-//
-
-void map_mailbox_to_guid ( const char *in_path, const char *in_user )
-{
-	BOOL			is_dir				= NO;
-	const char		*guid_map_str		= NULL;
-	NSError			*nsError			= nil;
-	NSString		*nsStr_user			= [NSString stringWithUTF8String: in_user];
-	NSString		*nsStr_path			= [NSString stringWithUTF8String: in_path];
-	NSString		*nsStr_guid			= nil;
-	NSString		*nsStr_new_path		= nil;
-	NSString		*nsStr_cur_path		= nil;
-	NSFileManager	*nsFileMgr	= [NSFileManager defaultManager];
-
-	nsStr_cur_path = [nsStr_path stringByAppendingPathComponent: nsStr_user];
-	if ( [nsFileMgr fileExistsAtPath: nsStr_cur_path isDirectory : &is_dir ] && is_dir ) {
-		if ( (guid_map_str = map_guid( in_user )) != NULL )
-			nsStr_guid = [NSString stringWithUTF8String: guid_map_str];
-
-		if ( nsStr_guid != nil ) {
-			nsStr_new_path = [nsStr_path stringByAppendingPathComponent: nsStr_guid];
-			if ( [ nsFileMgr moveItemAtPath: nsStr_cur_path toPath: nsStr_new_path error: &nsError ] == NO )
-				fprintf( stdout, "Unable to rename path: %s to: %s\n",  [nsStr_cur_path UTF8String], [nsStr_new_path UTF8String] );
-			else
-				fprintf( stdout, "Mapping mailbox: %s to: %s\n",  [nsStr_cur_path UTF8String], [nsStr_new_path UTF8String] );
-		} else
-			fprintf( stdout, "No GUID found for: %s \n", in_user );
-	} else
-		fprintf( stdout, "Error: %s is missing or is not a directory\n",  [nsStr_cur_path UTF8String] );
-} // map_mailbox_to_guid
-
-
-// ------------------------------------------------------------------
-//
-
-const char *map_guid ( const char *in_user )
-{
-	ODQuery		*od_query			= nil;
-	ODNode		*ds_search_node		= nil;
-	ODRecord	*od_record			= nil;
-	NSArray		*nsArray_values		= nil;
-	NSArray		*nsArray_records	= nil;
-	NSString	*nsStr_name			= nil;
-
-	ds_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
-	if ( ds_search_node != nil ) {
-		od_query = [ODQuery  queryWithNode: ds_search_node
-							forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
-								 attribute: @kDSNAttrRecordName
-								 matchType: kODMatchEqualTo
-							   queryValues: [NSString stringWithUTF8String: in_user]
-						  returnAttributes: [NSArray arrayWithObject: @kDS1AttrGeneratedUID]
-							maximumResults: 1
-									 error: nil];
-		if ( od_query != nil ) {
-			nsArray_records	= [od_query resultsAllowingPartial: NO error: nil];
-			if ( (nsArray_records != nil) && [nsArray_records count] ) {
-				od_record = [nsArray_records objectAtIndex: 0];
-				if ( od_record != nil ) {
-					// get the real name
-					nsArray_values = [od_record valuesForAttribute: @kDS1AttrGeneratedUID error: nil];
-					if ( nsArray_values != nil )
-						nsStr_name = [nsArray_values objectAtIndex: 0];
-				}
-			}
-		}
+			print_string( LOG_ERR, "read failed for: %s\n", [in_msg_path UTF8String] );
+		return( nil );
 	}
 
-	if ( (nsStr_name != nil) && [nsStr_name length] )
-		return( [nsStr_name UTF8String] );
+	NSScanner *msg_scnr = [NSScanner scannerWithString: msg_data];
+	[msg_scnr setCaseSensitive: YES];
+	[msg_scnr setCharactersToBeSkipped: nil];
 
-	return( NULL );
-} // map_guid
-
-
-// ------------------------------------------------------------------
-//
-
-const char *map_userid ( const char *in_guid )
-{
-	ODQuery		*od_query			= nil;
-	ODNode		*ds_search_node		= nil;
-	ODRecord	*od_record			= nil;
-	NSArray		*nsArray_values		= nil;
-	NSArray		*nsArray_records	= nil;
-	NSString	*nsStr_name			= nil;
-
-	ds_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
-	if ( ds_search_node != nil ) {
-		od_query = [ODQuery  queryWithNode: ds_search_node
-							forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
-								 attribute: @kDS1AttrGeneratedUID
-								 matchType: kODMatchEqualTo
-							   queryValues: [NSString stringWithUTF8String: in_guid]
-						  returnAttributes: [NSArray arrayWithObject: @kDSNAttrRecordName]
-							maximumResults: 1
-									 error: nil];
-		if ( od_query != nil ) {
-			nsArray_records	= [od_query resultsAllowingPartial: NO error: nil];
-			if ( (nsArray_records != nil) && [nsArray_records count] ) {
-				od_record = [nsArray_records objectAtIndex: 0];
-				if ( od_record != nil ) {
-					// get the real name
-					nsArray_values = [od_record valuesForAttribute: @kDSNAttrRecordName error: nil];
-					if ( nsArray_values != nil )
-						nsStr_name = [nsArray_values objectAtIndex: 0];
-				}
-			}
-		}
-	}
-
-	if ( (nsStr_name != nil) && [nsStr_name length] )
-		return( [nsStr_name UTF8String] );
-
-	return( NULL );
-} // map_userid
-
-// ------------------------------------------------------------------
-//
-
-NSDictionary *get_mail_attribute ( const char *in_guid )
-{
-	NSDictionary *out_dict = nil;
-
-	ODNode *ds_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: nil];
-	if ( ds_search_node == nil )
-		return( NULL );
-
-	ODQuery *od_query = [ODQuery  queryWithNode: ds_search_node
-								 forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
-									  attribute: @kDS1AttrGeneratedUID
-									  matchType: kODMatchEqualTo
-								    queryValues: [NSString stringWithUTF8String: in_guid]
-							   returnAttributes: [NSArray arrayWithObject: @kDS1AttrMailAttribute]
-								 maximumResults: 1
-										  error: nil];
-	if ( od_query != nil ) {
-		NSArray *records = [od_query resultsAllowingPartial: NO error: nil];
-		if ( (records != nil) && [records count] ) {
-			ODRecord *od_record = [records objectAtIndex: 0];
-			if ( od_record != nil ) {
-				// get the real name
-				NSArray *values = [od_record valuesForAttribute: @kDS1AttrMailAttribute error: nil];
-				if ( values && [values count] ) {
-					NSData *data = [[values objectAtIndex: 0] dataUsingEncoding:NSUTF8StringEncoding];
-					NSPropertyListFormat format;
-					out_dict = [NSPropertyListSerialization propertyListFromData: data
-								mutabilityOption: NSPropertyListImmutable format: &format errorDescription: nil];
-				}
-			}
-		}
-	}
-
-	return( out_dict );
-} // get_mail_attribute
-
-// ------------------------------------------------------------------
-//
-
-void log_message ( int in_log_lvl, NSString *in_msg, NSError *in_ns_err )
-{
-	const char *cc_tag	= "Info:";
-
-	if ( in_log_lvl == LOG_ERR )
-		cc_tag = "Error:";
-	else if ( in_log_lvl == LOG_WARNING )
-		cc_tag = "Warning:";
-
-	if ( (in_ns_err != nil) && ([[in_ns_err localizedFailureReason] length]) )
-		syslog( in_log_lvl, "%s %s (%s)", cc_tag, [in_msg UTF8String], [[in_ns_err localizedFailureReason] UTF8String] );
-	else
-		syslog( in_log_lvl, "%s %s", cc_tag, [in_msg UTF8String] );
-} // log_message
-
-
-// ------------------------------------------------------------------
-//
-
-NSString *get_date_str ( NSString *nsStr_in_date )
-{
-	NSString	*nsStr			= nil;
-	NSString	*nsStr_out		= nil;
-	NSScanner	*nsScann_line	= nil;
-	NSCharacterSet	*ws_charSet	= [NSCharacterSet whitespaceCharacterSet];
-
-	nsStr = [NSString stringWithString: nsStr_in_date];
-
-	while ( [nsStr rangeOfString: @";" options: NSLiteralSearch].location != NSNotFound ) {
-		nsScann_line = [NSScanner scannerWithString: nsStr];
-		[nsScann_line setCaseSensitive: YES];
-		[nsScann_line setCharactersToBeSkipped: nil];
-
-		if ( [nsScann_line scanUpToString: @";" intoString: nil ] )
-		{
-			[nsScann_line scanString: @";" intoString: nil ];
-			[nsScann_line scanCharactersFromSet: ws_charSet intoString: nil];
-
-			[nsScann_line scanUpToString: @"\r\n" intoString: &nsStr_out];
-			nsStr = [NSString stringWithString: nsStr_out];
-		}
-	}
-	return( nsStr_out );
-} // 
-
-// ------------------------------------------------------------------
-//
-
-NSDate *get_message_date ( NSString *nsStr_in_path )
-{
-	BOOL			hit				= NO;
-	BOOL			done			= NO;
-	NSDate			*nsDate_out		= nil;
-	NSError			*nsErr			= nil;
-	NSScanner		*nsScann_data	= nil;
-	NSScanner		*nsScann_line	= nil;
-	NSString		*nsStr_tmp		= nil;
-	NSString		*nsStr_line		= nil;
-	NSString		*nsStr_msg_data	= nil;
-	NSString		*nsStr_date		= nil;
-	NSDateFormatter *date_fmt		= [[NSDateFormatter alloc] init];
-	NSMutableString	*sMutStr_header	= [NSMutableString stringWithString: @""];
-	NSCharacterSet	*eol_charSet	= [NSCharacterSet characterSetWithCharactersInString: @"\r\n"];
-	NSCharacterSet	*ws_charSet		= [NSCharacterSet whitespaceCharacterSet];
-
-	nsStr_msg_data = [NSString stringWithContentsOfFile: nsStr_in_path encoding: NSUTF8StringEncoding error: &nsErr];
-	if ( nsStr_msg_data == nil )
+	NSString *hdr_data = nil;
+	[msg_scnr scanUpToString: @"\n\n" intoString: &hdr_data];
+	if ( !hdr_data || ![hdr_data length] )
 		return( nil );
 
-	nsScann_data = [NSScanner scannerWithString: nsStr_msg_data];
-	[nsScann_data setCaseSensitive: YES];
-	[nsScann_data setCharactersToBeSkipped: nil];
+	NSScanner *hdr_scnr = [NSScanner scannerWithString: hdr_data];
+	[hdr_scnr setCaseSensitive: YES];
+	[hdr_scnr setCharactersToBeSkipped: nil];
 
 	// Get first Received: header
-	while ( ![nsScann_data isAtEnd] & !done )
-	{
-		[nsScann_data scanUpToCharactersFromSet: eol_charSet intoString: &nsStr_line];
-		[nsScann_data scanCharactersFromSet: eol_charSet intoString: nil];
+	while ( ![hdr_scnr isAtEnd] & !done ) {
+		NSString *line_str = nil;
+		[hdr_scnr scanUpToCharactersFromSet: cs_EOL intoString: &line_str];
+		[hdr_scnr scanCharactersFromSet: cs_EOL intoString: nil];
 
-		if ( [nsStr_line hasPrefix: @"Received:"] && (hit == NO) ) {
+		if ( [line_str hasPrefix: @"Received:"] && !hit ) {
 			hit = YES;
-			[sMutStr_header appendString: nsStr_line];
+			[rcvd_header appendString: line_str];
 		} else if ( hit == YES ) {
-			if ( [nsStr_line hasPrefix: @" "] || [nsStr_line hasPrefix: @"\t"] )
-			{
-				nsScann_line = [NSScanner scannerWithString: nsStr_line];
-				[nsScann_line setCaseSensitive: YES];
-				[nsScann_line setCharactersToBeSkipped: nil];
+			if ( [line_str hasPrefix: @" "] || [line_str hasPrefix: @"\t"] ) {
+				NSString *tmp_str = nil;
+				NSScanner *line_scnr = [NSScanner scannerWithString: line_str];
+				[line_scnr setCaseSensitive: YES];
+				[line_scnr setCharactersToBeSkipped: nil];
 
-				[nsScann_line scanCharactersFromSet: ws_charSet intoString: nil];
-				[nsScann_line scanUpToString: @"EOL" intoString: &nsStr_tmp];
+				[line_scnr scanCharactersFromSet: cs_WS intoString: nil];
+				[line_scnr scanUpToString: @"EOL" intoString: &tmp_str];
 
-				[sMutStr_header appendString: @" "];
-				[sMutStr_header appendString: nsStr_tmp];
+				[rcvd_header appendString: @" "];
+				[rcvd_header appendString: tmp_str];
 			} else {
-				[sMutStr_header appendString: @"\r\n"];
+				[rcvd_header appendString: @"\r\n"];
 				break;
 			}
 		}
 	}
 
-	if ( [sMutStr_header length] == 0 )
+	NSString *date_str = nil;
+	if ( [rcvd_header length] ) {
+		date_str = get_date_str( rcvd_header );
+	}
+
+	// failed to get the date string because either Received: header doesn't exist
+	//	or invalid/missing date string in Received: header
+	//	get the date from the Date header
+	if ( !date_str ) {
+		NSScanner *hdr_scnr = [NSScanner scannerWithString: hdr_data];
+		[hdr_scnr setCaseSensitive: YES];
+		[hdr_scnr setCharactersToBeSkipped: nil];
+
+		// Get first Received: header
+		while ( ![hdr_scnr isAtEnd] && !done ) {
+			NSString *line_str = nil;
+			[hdr_scnr scanUpToCharactersFromSet: cs_EOL intoString: &line_str];
+			[hdr_scnr scanCharactersFromSet: cs_EOL intoString: nil];
+
+			if ( [line_str hasPrefix: @"Date:"] ) {
+				NSScanner *line_scnr = [NSScanner scannerWithString: line_str];
+				[line_scnr setCaseSensitive: YES];
+				[line_scnr setCharactersToBeSkipped: nil];
+				
+				[line_scnr scanString: @"Date:" intoString: nil ];
+				[line_scnr scanUpToString: @"" intoString: &date_str];
+				date_str = [[date_str stringByTrimmingCharactersInSet: cs_WS]copy];
+
+				print_string( LOG_INFO, "date str from     Date header: %s  : %s\n", [date_str UTF8String], [[in_msg_path lastPathComponent] UTF8String] );
+				done = YES;
+			}
+		}
+	} else
+		print_string( LOG_DEBUG, "date str from Received header: %s  : %s\n", [date_str UTF8String], [[in_msg_path lastPathComponent] UTF8String] );
+
+	// bail if no date string can be found
+	if ( !date_str ) {
+		print_string( LOG_DEBUG, "No date information in received header fournd for: %s\n", [[in_msg_path lastPathComponent] UTF8String] );
 		return( nil );
+	}
 
-	// parse Received: header and extract date
-
-	nsStr_date = get_date_str( sMutStr_header );
-	if ( nsStr_date == nil )
-		return( nil );
-
+	NSDateFormatter *date_fmt = [[NSDateFormatter alloc] init];
 	[date_fmt setFormatterBehavior:NSDateFormatterBehavior10_4];
-	if ( [nsStr_date rangeOfString: @"(" options: NSLiteralSearch].location == NSNotFound )
+	if ( [date_str rangeOfString: @"(" options: NSLiteralSearch].location == NSNotFound )
 		[date_fmt setDateFormat: @"EEE, dd MMM yyyy HH:m:ss vvvv"];
-	else if ( isdigit([nsStr_date characterAtIndex: 1]) )
+	else if ( isdigit([date_str characterAtIndex: 1]) )
 		[date_fmt setDateFormat: @"dd MMM yyyy HH:m:ss vvvv (zzz)"];
 	else
 		[date_fmt setDateFormat: @"EEE, dd MMM yyyy HH:m:ss vvvv (zzz)"];
 
-	nsDate_out = [date_fmt dateFromString: nsStr_date];
-
-	return( nsDate_out );
-	
+	return( [date_fmt dateFromString: date_str] );
 } // get_message_date
 
 // ------------------------------------------------------------------
+//	fix_message_dates ()
+
+void fix_message_dates ( NSString *in_path )
+{
+	BOOL is_dir = NO;
+	NSError *ns_err = nil;
+	NSFileManager *nsFileMgr = [NSFileManager defaultManager];
+
+	if ( [nsFileMgr fileExistsAtPath: in_path isDirectory: &is_dir] ) {
+		if ( is_dir ) {
+			NSArray *dir_ent_arry = [nsFileMgr contentsOfDirectoryAtPath: in_path error: &ns_err];
+			NSEnumerator *ns_enum = [dir_ent_arry objectEnumerator];
+			NSString *dir_entry	= nil;
+			while ( (dir_entry = [ns_enum nextObject]) ) {
+				NSString *a_path = [in_path stringByAppendingPathComponent: dir_entry];
+				fix_message_dates( a_path );
+			}
+		} else {
+			if ( is_msg_file(in_path) ) {
+				NSMutableDictionary *attr_dict = [NSMutableDictionary dictionaryWithDictionary:
+													[nsFileMgr attributesOfItemAtPath: in_path error: &ns_err]];
+				NSDate *ns_date = [attr_dict objectForKey: @"NSFileModificationDate"];
+				if ( ns_date ) {
+					NSDate *ns_date_new = get_message_date( in_path );
+					if ( ns_date_new != nil ) {
+						[attr_dict setObject: ns_date_new forKey: @"NSFileModificationDate"];
+						[nsFileMgr setAttributes: attr_dict ofItemAtPath: in_path error: &ns_err];
+					}
+				} 
+			} else if ( is_index_file(in_path) ) {
+				print_string( LOG_DEBUG, "cleaning index file: %s\n", [in_path UTF8String] );
+				if ( ![nsFileMgr removeItemAtPath: in_path error: &ns_err] ) {
+					if ( ns_err && ([[ns_err localizedFailureReason] length]) )
+						print_string( LOG_ERR, "delete failed for: %s (%s)\n", [in_path UTF8String], [[ns_err localizedFailureReason] UTF8String] );
+					else
+						print_string( LOG_ERR, "delete failed for: %s\n", [in_path UTF8String] );
+				}
+			}
+		}
+	}
+} // fix_message_dates
+
+#pragma mark -
+
+// ------------------------------------------------------------------
+//	get_alt_data_stores
 
 NSDictionary *get_alt_data_stores ( int in_print )
 {
@@ -2354,6 +1954,35 @@ void reset_alt_data_stores ( const char *in_guid )
 
 // ------------------------------------------------------------------
 
+void list_auto_forwards ( const char *in_guid )
+{
+	id key = 0;
+
+	printf("\n" );
+	printf("local user auto-forward settings\n" );
+	printf("--------------------------------\n" );
+
+	NSDictionary *users_dict = [NSDictionary dictionaryWithContentsOfFile: MAIL_USER_SETTINGS_PLIST];
+	if ( users_dict ) {
+		if ( in_guid ) {
+			NSString *guid = [NSString stringWithCString: in_guid encoding: NSUTF8StringEncoding];
+			NSDictionary *user_dict = [users_dict objectForKey: guid];
+			if ( [[user_dict objectForKey: @"kMailAccountState"] isEqualToString: @"Forward"] )
+				printf("user: %s: <%s>\n", map_userid(in_guid), [[user_dict objectForKey: @"kAutoForwardValue"]UTF8String]);
+		} else {
+			NSEnumerator *enumer = [[users_dict allKeys] objectEnumerator];
+			while ( (key = [enumer nextObject]) ) {
+				NSDictionary *user_dict = [users_dict objectForKey: key];
+				if ( [[user_dict objectForKey: @"kMailAccountState"] isEqualToString: @"Forward"] )
+					printf("user: %s: <%s>\n", map_userid([key UTF8String]), [[user_dict objectForKey: @"kAutoForwardValue"]UTF8String]);
+			}
+		}
+	}
+	printf("\n" );
+} // list_auto_forwards
+
+// ------------------------------------------------------------------
+
 void set_auto_forward( const char *in_guid, const char *in_fwd_addr )
 {
 	NSMutableDictionary *users_dict = [NSMutableDictionary dictionaryWithContentsOfFile: MAIL_USER_SETTINGS_PLIST];
@@ -2396,32 +2025,443 @@ void reset_auto_forward( const char *in_guid )
 	list_auto_forwards( in_guid );
 } //  reset_auto_forward
 
-
 // ------------------------------------------------------------------
+// set_user_mail_opts ()
 
-void list_auto_forwards ( const char *in_guid )
+int set_user_mail_opts ( int argc, char **argv )
 {
-	id key = 0;
+	char ch;
+	int opt_index = 0;
+	int long_val  = 0;
 
-	printf("\n" );
-	printf("local user auto-forward settings\n" );
-	printf("--------------------------------\n" );
+	char *tag		= NULL;
+	char *path		= NULL;
+	char *user_id	= NULL;
+	char *user_guid	= NULL;
+	char *fwd_addr	= NULL;
+	char *alt_store	= NULL;
+	struct option long_options[] = {
+		{"alt_store", 1, &long_val, 'a'},
+		{"auto_fwd", 1, &long_val, 'f'},
+		{"user_guid", 1, &long_val, 'g'},
+		{"path", 1, &long_val, 'p'},
+		{"tag", 1, &long_val, 't'},
+		{"user_id", 1, &long_val, 'u'},
+		{0, 0, 0, 0 }
+	};
 
-	NSDictionary *users_dict = [NSDictionary dictionaryWithContentsOfFile: MAIL_USER_SETTINGS_PLIST];
-	if ( users_dict ) {
-		if ( in_guid ) {
-			NSString *guid = [NSString stringWithCString: in_guid encoding: NSUTF8StringEncoding];
-			NSDictionary *user_dict = [users_dict objectForKey: guid];
-			if ( [[user_dict objectForKey: @"kMailAccountState"] isEqualToString: @"Forward"] )
-				printf("user: %s: <%s>\n", map_userid(in_guid), [[user_dict objectForKey: @"kAutoForwardValue"]UTF8String]);
-		} else {
-			NSEnumerator *enumer = [[users_dict allKeys] objectEnumerator];
-			while ( (key = [enumer nextObject]) ) {
-				NSDictionary *user_dict = [users_dict objectForKey: key];
-				if ( [[user_dict objectForKey: @"kMailAccountState"] isEqualToString: @"Forward"] )
-					printf("user: %s: <%s>\n", map_userid([key UTF8String]), [[user_dict objectForKey: @"kAutoForwardValue"]UTF8String]);
-			}
+	if ( argc == 1 )
+		set_opts_usage(0);
+
+	while ((ch = getopt_long(argc, argv, "ha:f:g:p:t:u:", long_options, &opt_index)) != -1) {
+		switch (ch) {
+			case 'a':
+				alt_store = optarg;
+				break;
+
+			case 'f':
+				fwd_addr = optarg;
+				break;
+
+			case 'g':
+				user_guid = optarg;
+				break;
+
+			case 'p':
+				path = optarg;
+				break;
+
+			case 't':
+				tag = optarg;
+				break;
+
+			case 'u':
+				user_id = optarg;
+				break;
+
+			case 0:
+				switch ( long_val ) {
+					case 'a':
+						alt_store = optarg;
+						break;
+
+					case 'f':
+						fwd_addr = optarg;
+						break;
+
+					case 'g':
+						user_guid = optarg;
+						break;
+
+					case 'p':
+						path = optarg;
+						break;
+
+					case 't':
+						tag = optarg;
+						break;
+
+					case 'u':
+						user_id = optarg;
+						break;
+				}
+				break;
+			case 'h':
+			default:
+				set_opts_usage(0);
 		}
 	}
-	printf("\n" );
-} // list_auto_forwards
+
+	if ( fwd_addr ) {
+		const char *guid = NULL;
+		if ( !strcasecmp(fwd_addr, "list") ) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			list_auto_forwards( guid );
+			return(0);
+		} else if ( !strcasecmp(fwd_addr, "reset") ) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			if ( !guid )
+				set_opts_usage(1);
+
+			reset_auto_forward( guid );
+		} else if (user_id || user_guid) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			if ( !guid )
+				set_opts_usage(1);
+
+			set_auto_forward( guid, fwd_addr );
+		} else
+			set_opts_usage(1);
+	} else if ( alt_store ) {
+		const char *guid = NULL;
+		if ( !strcasecmp(alt_store, "list") ) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			list_alt_data_stores( guid );
+			return(0);
+		} else if ( !strcasecmp(alt_store, "list-tags") ) {
+			get_alt_data_stores(1);
+		} else if ( !strcasecmp(alt_store, "set-tag") ) {
+			if ( !path || !tag )
+				set_opts_usage(1);
+
+			set_alt_data_store_tag( tag, path );
+			return(0);
+		} else if ( !strcasecmp(alt_store, "reset-tag") ) {
+			if ( !tag )
+				set_opts_usage(1);
+
+			reset_alt_data_store_tag( tag );
+			return(0);
+		} else if ( !strcasecmp(alt_store, "reset") ) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			if ( !guid )
+				set_opts_usage(1);
+
+			reset_alt_data_stores( guid );
+		} else if (user_id || user_guid) {
+			if ( user_id )
+				guid = map_guid( user_id );
+			else if ( user_guid )
+				guid = user_guid;
+
+			if ( !guid )
+				set_opts_usage(1);
+
+			set_alt_data_store( guid, alt_store );
+		} else
+			set_opts_usage(1);
+	}
+	return(0);
+} // set_user_mail_opts
+
+// ------------------------------------------------------------------
+// mail_data_tool ()
+
+int mail_data_tool ( int argc, char **argv )
+{
+	char ch;
+	int opt_index = 0;
+	int long_val  = 0;
+
+	TOOL_FLAGS flags = kNO_FLAGS;
+
+	NSString *uid_str = nil;
+	NSString *guid_str = nil;
+	NSString *path_str = DEFAULT_DATA_LOCATION;
+
+	struct option long_options[] = {
+		{"fix-permissions", 1, &long_val, 'f'},
+		{"get-guid", 1, &long_val, 'g'},
+		{"map-mailstore-dirs", 1, &long_val, 'm'},
+		{"repair-sent-dates", 1, &long_val, 'r'},
+		{"path", 1, &long_val, 'p'},
+		{"get-user-id", 1, &long_val, 'u'},
+		{"version", 1, &long_val, 'V'},
+		{"verbose", 1, &long_val, 'v'},
+		{0, 0, 0, 0 }
+	};
+
+	if ( argc == 1 )
+		mail_data_tool_usage(0);
+
+	while ((ch = getopt_long(argc, argv, "efmrVvp:u:g:", long_options, &opt_index)) != -1) {
+		switch (ch) {
+			case 'e':
+				flags |= kE_FLAG;
+				break;
+
+			case 'f':
+				flags |= kF_FLAG;
+				break;
+
+			case 'p':
+				path_str = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'g':
+				flags |= kG_FLAG;
+				uid_str = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'm':
+				flags |= kM_FLAG;
+				break;
+
+			case 'r':
+				flags |= kR_FLAG;
+				break;
+
+			case 'u':
+				flags |= kU_FLAG;
+				guid_str = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'v':
+				g_verbose++;
+				break;
+
+			case 0:
+				switch ( long_val ) {
+					case 'f':
+						flags |= kF_FLAG;
+						break;
+
+					case 'p':
+						path_str = [NSString stringWithUTF8String: optarg];
+						break;
+
+					case 'r':
+						flags |= kR_FLAG;
+						break;
+				}
+				break;
+
+			default:
+				mail_data_tool_usage(0);
+				break;
+		}
+	}
+
+	// fix permissions on mail data store files
+	if ( flags & kF_FLAG ) {
+		verify_arg( path_str );
+		verify_path( path_str );
+		fix_data_store_dir_file_attributes( path_str );
+	}
+
+	// fix message received dates
+ 	if ( flags & kR_FLAG ) {
+		verify_arg( path_str );
+		verify_path( path_str );
+		fix_message_dates( path_str );
+	}
+
+	// rename mailboxes to guid's
+ 	if ( flags & kE_FLAG ) {
+		verify_arg( path_str );
+		verify_path( path_str );
+		rename_mailboxes( path_str );
+	}
+
+	// rename mailboxes to guid's
+ 	if ( flags & kM_FLAG ) {
+		verify_arg( path_str );
+		verify_path( path_str );
+		make_guid_uid_map( path_str );
+	}
+
+	// get user id from guid
+ 	if ( flags & kU_FLAG ) {
+		verify_arg( guid_str );
+		NSString *uid_str = get_uid_for_guid( guid_str );
+		if ( uid_str )
+			fprintf( stdout, "%s\n", [uid_str UTF8String] );
+		else
+			fprintf( stdout, "No user id found for GUID: %s\n", [guid_str UTF8String] );
+	}
+
+	// get guid from user id
+ 	if ( flags & kG_FLAG ) {
+		verify_arg( uid_str );
+		NSString *guid_str = get_guid_for_uid( uid_str );
+		if ( guid_str )
+			fprintf( stdout, "%s\n", [guid_str UTF8String] );
+		else
+			fprintf( stdout, "No GUID found for user: %s\n", [uid_str UTF8String] );
+	}
+	return(0);
+} // mail_data_tool
+
+// ------------------------------------------------------------------
+// cvt_mail_data ()
+
+int cvt_mail_data ( int argc, char **argv )
+{
+	NSString *src_data_dir = [NSString stringWithUTF8String: SRC_MAIL_DATA_DIR];
+	NSString *dst_data_dir = [NSString stringWithUTF8String: DST_MAIL_DATA_DIR];
+
+	gPool = [[NSAutoreleasePool alloc] init];
+
+	if ( geteuid() != 0 ) {
+		fprintf( stdout, "%s must be run as root\n", argv[0] );
+		exit(0);
+	}
+
+	if ( argc == 1 )
+		exit_with_usage( 1, NULL );
+
+	int	ch;
+	while ( (ch = getopt(argc, argv, "Vva:b:c:d:s:t:o:")) != EOF ) {
+		switch( ch ) {
+			case 'a': // user id
+				g_user_id = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'b': // path to cyrus imap binaries
+				g_imap_bins_dir = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'c': // path to imapd.conf
+				g_config_file = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'd': // cyrus imap database directory
+				g_src_db_dir = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 's': // cyrus imap data spool directory
+				src_data_dir = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 't': // destination maildir data directory
+				dst_data_dir = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'o': // migration message option
+				g_migrate_opt = [NSString stringWithUTF8String: optarg];
+				break;
+
+			case 'v':
+				g_verbose++;
+				break;
+
+			case '?':
+				exit_with_usage( 1, NULL );
+				break;
+
+			default:
+				usage( 0 );
+				break;
+		}
+	}
+
+	argc -= optind;
+	argv += optind;
+
+	// ------------------------------------------------------------------
+	// Do arg verification
+
+	verify_path( g_src_db_dir );	// source cyrus db path
+	verify_path( src_data_dir );	// source cyrus spool path
+	verify_path( dst_data_dir );	// destination mail data path
+	verify_path( g_imap_bins_dir );	// path to cyrus binaries
+
+	verify_file( [NSString stringWithFormat: @"%@/imapd.conf", g_config_file] );
+	verify_file( [NSString stringWithFormat: @"%@/cvt_cyrusdb", g_imap_bins_dir] );
+
+	verify_arg( g_user_id );		// user id
+	NSString *src_mbox_path = [NSString stringWithFormat: @"%@/user/%@", src_data_dir, g_user_id];
+	verify_path( src_mbox_path );	// src mail data path
+	g_spool_dir = [NSString stringWithFormat: @"%@/users", src_data_dir];
+
+	// verify migration option
+	if ( !([g_migrate_opt isEqualToString: @"copy"] || [g_migrate_opt isEqualToString: @"move"]) ) {
+		print_string( LOG_ERR, "Error: invalid migration option (must be copy or move)\n" );
+		usage(1);
+	}
+
+	chdir( [g_spool_dir UTF8String] );
+	struct s_seen_data *seen_file = NULL;
+	scan_account( g_spool_dir, dst_data_dir, g_user_id, seen_file );
+	free_seen_data(seen_file);
+
+	print_string( LOG_INFO, "-------------\n" );
+	print_string( LOG_INFO, "totals for: %s\n",  [g_user_id UTF8String] );
+	print_string( LOG_ERR,  "messages migrated: %lu (%llu bytes)\n",  g_count, g_size );
+
+	if ( g_maildirsize != NULL ) {
+		fclose( g_maildirsize );
+		g_maildirsize = NULL;
+	}
+
+	print_string( LOG_DEBUG, "Finished migrating user account\n" );
+
+	return( 0 );
+} // cvt_mail_data
+
+// ------------------------------------------------------------------
+// main ()
+
+int main ( int argc, char **argv )
+{
+	gPool = [[NSAutoreleasePool alloc] init];
+
+	if ( geteuid() != 0 ) {
+		fprintf( stdout, "%s must be run as root\n", argv[0] );
+		exit(0);
+	}
+
+	if ( strcasestr(argv[0], "cvt_mail_data" ) ) {
+		cvt_mail_data( argc, argv );
+		exit(0);
+	} else if ( strcasestr(argv[0], "mail_data_tool" ) ) {
+		mail_data_tool( argc, argv );
+		exit(0);
+	} else if ( strcasestr(argv[0], "set_user_mail_opts" ) ) {
+		set_user_mail_opts( argc, argv );
+		exit(0);
+	}
+
+	return( 0 );
+	[gPool release];
+}

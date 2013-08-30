@@ -1,5 +1,5 @@
-.\" Copyright (c) 2010-2012 Pigeonhole authors, see the included COPYING file
-.TH "SIEVE\-DUMP" 1 "2012-01-07" "Pigeonhole for Dovecot v2.0" "Pigeonhole"
+.\" Copyright (c) 2010-2013 Pigeonhole authors, see the included COPYING file
+.TH "SIEVE\-DUMP" 1 "2013-05-09" "Pigeonhole for Dovecot v2.2" "Pigeonhole"
 .\"------------------------------------------------------------------------
 .SH NAME
 sieve\-dump \- Pigeonhole\(aqs Sieve script binary dump tool
@@ -40,6 +40,9 @@ the binary.
 .BI \-c\  config\-file
 Alternative Dovecot configuration file path.
 .TP
+.B \-D
+Enable Sieve debugging.
+.TP
 .B \-h
 Produce per\-block hexdump output of the whole binary instead of the normal
 human\-readable output.
@@ -47,16 +50,19 @@ human\-readable output.
 .BI \-x\  extensions
 Set the available extensions. The parameter is a space\-separated list of the
 active extensions. By prepending the extension identifiers with \fB+\fP or
-\fB\-\fP, extensions can be included or excluded relative to the default set of
-extensions. If no extensions have a \fB+\fP or \fB\-\fP prefix, only those
-extensions that are explicitly listed will be enabled. Unknown extensions are
-ignored and a warning is produced. By default, all supported extensions are
-available, except for deprecated extensions or those that are still under
-development.
+\fB\-\fP, extensions can be included or excluded relative to the configured set
+of active extensions. If no extensions have a \fB+\fP or \fB\-\fP prefix, only
+those extensions that are explicitly listed will be enabled. Unknown extensions
+are ignored and a warning is produced.
 
 For example \fB\-x\fP \(dq+imapflags \-enotify\(dq will enable the deprecated
-imapflags extension along with all extensions that are available by default,
-except for the enotify extension.
+imapflags extension and disable the enotify extension. The rest of the active
+extensions depends on the \fIsieve_extensions\fP and
+\fIsieve_global_extensions\fP settings. By default, i.e.
+when \fIsieve_extensions\fP and \fIsieve_global_extensions\fP remain
+unconfigured, all supported extensions are available, except for deprecated
+extensions or those that are still under development.
+
 .\"------------------------------------------------------------------------
 .SH ARGUMENTS
 .TP
@@ -94,6 +100,7 @@ Sieve interpreter settings (included from Dovecot\(aqs main configuration file)
 .SH "SEE ALSO"
 .BR dovecot (1),
 .BR dovecot\-lda (1),
+.BR sieve\-filter (1),
 .BR sieve\-test (1),
 .BR sievec (1),
 .BR pigeonhole (7)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension relational
@@ -35,20 +35,17 @@
 static bool ext_relational_validator_load
 (const struct sieve_extension *ext, struct sieve_validator *valdtr);
 
-const struct sieve_extension_def relational_extension = { 
-	"relational", 
-	NULL, NULL,
-	ext_relational_validator_load,
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_NO_OPERATIONS, 
+const struct sieve_extension_def relational_extension = {
+	.name = "relational",
+	.validator_load = ext_relational_validator_load,
 	SIEVE_EXT_DEFINE_OPERAND(rel_match_type_operand)
 };
 
 static bool ext_relational_validator_load
 (const struct sieve_extension *ext, struct sieve_validator *valdtr)
 {
-	sieve_match_type_register(valdtr, ext, &value_match_type); 
-	sieve_match_type_register(valdtr, ext, &count_match_type); 
+	sieve_match_type_register(valdtr, ext, &value_match_type);
+	sieve_match_type_register(valdtr, ext, &count_match_type);
 
 	return TRUE;
 }

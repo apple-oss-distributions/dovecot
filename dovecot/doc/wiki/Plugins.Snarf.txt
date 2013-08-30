@@ -60,4 +60,4 @@ plugin {
 Now the snarfing is done only if '~/mbox' file exists. If it's not, the
 '/var/mail/user' is used directly as the INBOX.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

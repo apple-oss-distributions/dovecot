@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -39,6 +39,7 @@
 #include "auth-cache.h"
 #include "var-expand.h"
 #include "db-od.h"
+#include "mkdir-parents.h"
 
 #include <stdlib.h>
 #include <fcntl.h>
@@ -66,14 +67,10 @@ static void od_lookup ( struct auth_request *in_request, userdb_callback_t *call
 {
 	struct userdb_module	*user_module	= in_request->userdb->userdb;
 	struct od_userdb_module *od_user_module	= (struct od_userdb_module *)user_module;
-	struct od_user			*user_info		= NULL;
-	const char				*base_path		= NULL;
-	const char				*alt_path		= NULL;
-	const char				*quota_str		= NULL;
 
 	auth_request_log_debug(in_request, "od", "lookup user=%s", in_request->user );
 
-	user_info = db_od_user_lookup( in_request, od_user_module->od_data, in_request->user, FALSE );
+	struct od_user *user_info = db_od_user_lookup( in_request, od_user_module->od_data, in_request->user, FALSE );
 	if ( !user_info ) {
 		if ( od_user_module->luser_relay != NULL ) {
 			user_info = db_od_user_lookup( in_request, od_user_module->od_data, od_user_module->luser_relay, FALSE );
@@ -108,6 +105,7 @@ static void od_lookup ( struct auth_request *in_request, userdb_callback_t *call
 	auth_request_set_userdb_field( in_request, "gid", "6" );	/* mail's gid */
 
 	/* individual quotas override global quota settings */
+	const char *quota_str = NULL;
 	if ( user_info->mail_quota != 0 )
 		quota_str = t_strdup_printf( "*:storage=%u", user_info->mail_quota * 1024 );		/* make quota string from user specific settings */
 	else if ( od_user_module->global_quota != 0 )
@@ -122,14 +120,37 @@ static void od_lookup ( struct auth_request *in_request, userdb_callback_t *call
 		auth_request_set_userdb_field( in_request, "quota", "maildir:User quota:noenforcing" );
 
 	auth_request_set_userdb_field( in_request, "quota_rule", quota_str );
-
 	auth_request_log_debug(in_request, "od", "user=%s, quota=%s", user_info->record_name, quota_str );
+
+	const char *base_path = NULL;
 	if ( user_info->alt_data_loc == NULL )
 		base_path = db_od_get_ms_path( in_request, "default", od_user_module->od_partitions );
 	else
 		base_path = db_od_get_ms_path( in_request, user_info->alt_data_loc, od_user_module->od_partitions );
 
-	alt_path = t_strconcat( od_user_module->mail_driver, ":", base_path, "/", user_info->user_guid, NULL );
+	/* user data store path */
+	const char *alt_path = t_strconcat( od_user_module->mail_driver, ":", base_path, "/", user_info->user_guid, NULL );
+
+	/* make symlink or acl and others */
+	const char *users_path = t_strconcat( base_path, "/users", NULL );
+	if ( (mkdir_parents(users_path, 0700) < 0) && (errno != EEXIST) ) {
+		i_error( "mkdir(%s) failed: %m", users_path );
+		callback( USERDB_RESULT_INTERNAL_FAILURE, in_request );
+		return;
+	}
+
+	if ( chdir(users_path) < 0 ) {
+		i_error( "chdir(%s) failed: %m", users_path );
+		callback( USERDB_RESULT_INTERNAL_FAILURE, in_request );
+		return;
+	}
+
+	const char *symlink_path = t_strconcat( "../", user_info->user_guid, NULL );
+	if ( (symlink(symlink_path, in_request->user) < 0) && (errno != EEXIST) ) {
+		i_error( "symlink(%s, %s) in %s failed: %m", symlink_path, in_request->user, users_path );
+		callback( USERDB_RESULT_INTERNAL_FAILURE, in_request );
+		return;
+	}
 
 	/* use GUID not username in mail directory */
 	auth_request_log_debug(in_request, "od", "data store location=%s", alt_path );

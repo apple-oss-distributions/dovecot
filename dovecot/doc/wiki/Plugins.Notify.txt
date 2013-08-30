@@ -6,4 +6,4 @@ some work when something in user's mailboxes change. See <mail_log>
 [Plugins.MailLog.txt] plugin as an example how to develop a plugin based on the
 notify plugin.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

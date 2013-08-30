@@ -1,11 +1,11 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "mail-index.h"
 #include "mail-storage.h"
 #include "mail-namespace.h"
-#include "doveadm-mail-list-iter.h"
+#include "doveadm-mailbox-list-iter.h"
 #include "doveadm-mail-iter.h"
 #include "doveadm-mail.h"
 
@@ -15,84 +15,104 @@ struct altmove_cmd_context {
 };
 
 static int
-cmd_altmove_box(const struct mailbox_info *info,
+cmd_altmove_box(struct doveadm_mail_cmd_context *ctx,
+		const struct mailbox_info *info,
 		struct mail_search_args *search_args, bool reverse)
 {
 	struct doveadm_mail_iter *iter;
-	struct mailbox_transaction_context *trans;
 	struct mail *mail;
 	enum modify_type modify_type =
 		!reverse ? MODIFY_ADD : MODIFY_REMOVE;
 
-	if (doveadm_mail_iter_init(info, search_args, &trans, &iter) < 0)
+	if (doveadm_mail_iter_init(ctx, info, search_args, 0, NULL,
+				   &iter) < 0)
 		return -1;
 
-	mail = mail_alloc(trans, 0, NULL);
-	while (doveadm_mail_iter_next(iter, mail)) {
+	while (doveadm_mail_iter_next(iter, &mail)) {
 		if (doveadm_debug) {
 			i_debug("altmove: box=%s uid=%u",
-				info->name, mail->uid);
+				info->vname, mail->uid);
 		}
 		mail_update_flags(mail, modify_type,
 			(enum mail_flags)MAIL_INDEX_MAIL_FLAG_BACKEND);
 	}
-	mail_free(&mail);
 	return doveadm_mail_iter_deinit_sync(&iter);
 }
 
-static void ns_purge(struct mail_namespace *ns)
+static int
+ns_purge(struct doveadm_mail_cmd_context *ctx, struct mail_namespace *ns,
+	 struct mail_storage *storage)
 {
-	if (mail_storage_purge(ns->storage) < 0) {
+	if (mail_storage_purge(storage) < 0) {
 		i_error("Purging namespace '%s' failed: %s", ns->prefix,
-			mail_storage_get_last_error(ns->storage, NULL));
+			mail_storage_get_last_error(storage, NULL));
+		doveadm_mail_failed_storage(ctx, storage);
+		return -1;
 	}
+	return 0;
 }
 
-static void
+static int
 cmd_altmove_run(struct doveadm_mail_cmd_context *_ctx, struct mail_user *user)
 {
 	struct altmove_cmd_context *ctx = (struct altmove_cmd_context *)_ctx;
 	const enum mailbox_list_iter_flags iter_flags =
-		MAILBOX_LIST_ITER_RAW_LIST |
-		MAILBOX_LIST_ITER_NO_AUTO_INBOX |
+		MAILBOX_LIST_ITER_NO_AUTO_BOXES |
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS;
-	struct doveadm_mail_list_iter *iter;
+	struct doveadm_mailbox_list_iter *iter;
 	const struct mailbox_info *info;
 	struct mail_namespace *ns, *prev_ns = NULL;
-	ARRAY_DEFINE(purged_storages, struct mail_storage *);
-	struct mail_storage *const *storages;
+	ARRAY(struct mail_storage *) purged_storages;
+	struct mail_storage *const *storages, *ns_storage, *prev_storage = NULL;
 	unsigned int i, count;
+	int ret = 0;
 
 	t_array_init(&purged_storages, 8);
-	iter = doveadm_mail_list_iter_init(user, _ctx->search_args, iter_flags);
-	while ((info = doveadm_mail_list_iter_next(iter)) != NULL) T_BEGIN {
-		if (info->ns != prev_ns) {
-			if (prev_ns != NULL) {
-				ns_purge(prev_ns);
+	iter = doveadm_mailbox_list_iter_init(_ctx, user, _ctx->search_args,
+					      iter_flags);
+	while ((info = doveadm_mailbox_list_iter_next(iter)) != NULL) T_BEGIN {
+		ns_storage = mail_namespace_get_default_storage(info->ns);
+		if (ns_storage != prev_storage) {
+			if (prev_storage != NULL) {
+				if (ns_purge(_ctx, prev_ns, prev_storage) < 0)
+					ret = -1;
 				array_append(&purged_storages,
-					     &prev_ns->storage, 1);
+					     &prev_storage, 1);
 			}
+			prev_storage = ns_storage;
 			prev_ns = info->ns;
 		}
-		(void)cmd_altmove_box(info, _ctx->search_args, ctx->reverse);
+		if (cmd_altmove_box(_ctx, info, _ctx->search_args, ctx->reverse) < 0)
+			ret = -1;
 	} T_END;
-	doveadm_mail_list_iter_deinit(&iter);
+	if (doveadm_mailbox_list_iter_deinit(&iter) < 0)
+		ret = -1;
+
+	if (prev_storage != NULL) {
+		if (ns_purge(_ctx, prev_ns, prev_storage) < 0)
+			ret = -1;
+		array_append(&purged_storages, &prev_storage, 1);
+	}
 
 	/* make sure all private storages have been purged */
 	storages = array_get(&purged_storages, &count);
 	for (ns = user->namespaces; ns != NULL; ns = ns->next) {
-		if (ns->type != NAMESPACE_PRIVATE)
+		if (ns->type != MAIL_NAMESPACE_TYPE_PRIVATE)
 			continue;
 
+		ns_storage = mail_namespace_get_default_storage(ns);
 		for (i = 0; i < count; i++) {
-			if (ns->storage == storages[i])
+			if (ns_storage == storages[i])
 				break;
 		}
 		if (i == count) {
-			ns_purge(ns);
-			array_append(&purged_storages, &ns->storage, 1);
+			if (ns_purge(_ctx, ns, ns_storage) < 0)
+				ret = -1;
+			array_append(&purged_storages, &ns_storage, 1);
+			storages = array_get(&purged_storages, &count);
 		}
 	}
+	return ret;
 }
 
 static void cmd_altmove_init(struct doveadm_mail_cmd_context *ctx,

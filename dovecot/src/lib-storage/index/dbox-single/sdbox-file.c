@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "eacces-error.h"
@@ -23,11 +23,10 @@ static void sdbox_file_init_paths(struct sdbox_file *file, const char *fname)
 	i_free(file->file.primary_path);
 	i_free(file->file.alt_path);
 	file->file.primary_path =
-		i_strdup_printf("%s/%s", box->path, fname);
+		i_strdup_printf("%s/%s", mailbox_get_path(box), fname);
 
-	alt_path = mailbox_list_get_path(box->list, box->name,
-					 MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX);
-	if (alt_path != NULL)
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX,
+				&alt_path) > 0)
 		file->file.alt_path = i_strdup_printf("%s/%s", alt_path, fname);
 }
 
@@ -47,7 +46,7 @@ struct dbox_file *sdbox_file_init(struct sdbox_mailbox *mbox, uint32_t uid)
 		} else {
 			file->file.primary_path =
 				i_strdup_printf("%s/%s",
-						file->mbox->box.path,
+						mailbox_get_path(&mbox->box),
 						dbox_generate_tmp_filename());
 		}
 	} T_END;
@@ -120,13 +119,14 @@ sdbox_file_attachment_relpath(struct sdbox_file *file, const char *srcpath)
 	}
 	return t_strdup_printf("%s-%s-%u",
 			p == NULL ? srcpath : t_strdup_until(srcpath, p),
-			mail_guid_128_to_string(file->mbox->mailbox_guid),
+			guid_128_to_string(file->mbox->mailbox_guid),
 			file->uid);
 }
 
 static int sdbox_file_rename_attachments(struct sdbox_file *file)
 {
 	struct dbox_storage *storage = file->file.storage;
+	struct fs_file *src_file, *dest_file;
 	const char *const *pathp, *src, *dest;
 	int ret = 0;
 
@@ -134,11 +134,17 @@ static int sdbox_file_rename_attachments(struct sdbox_file *file)
 		src = t_strdup_printf("%s/%s", storage->attachment_dir, *pathp);
 		dest = t_strdup_printf("%s/%s", storage->attachment_dir,
 				sdbox_file_attachment_relpath(file, *pathp));
-		if (fs_rename(storage->attachment_fs, src, dest) < 0) {
+		src_file = fs_file_init(storage->attachment_fs, src,
+					FS_OPEN_MODE_READONLY);
+		dest_file = fs_file_init(storage->attachment_fs, dest,
+					FS_OPEN_MODE_READONLY);
+		if (fs_rename(src_file, dest_file) < 0) {
 			mail_storage_set_critical(&storage->storage, "%s",
 				fs_last_error(storage->attachment_fs));
 			ret = -1;
 		}
+		fs_file_deinit(&src_file);
+		fs_file_deinit(&dest_file);
 	} T_END;
 	return ret;
 }
@@ -153,7 +159,7 @@ int sdbox_file_assign_uid(struct sdbox_file *file, uint32_t uid)
 
 	old_path = file->file.cur_path;
 	new_fname = t_strdup_printf(SDBOX_MAIL_FILE_FORMAT, uid);
-	new_path = t_strdup_printf("%s/%s", file->mbox->box.path,
+	new_path = t_strdup_printf("%s/%s", mailbox_get_path(&file->mbox->box),
 				   new_fname);
 
 	if (stat(new_path, &st) == 0) {
@@ -182,6 +188,7 @@ static int sdbox_file_unlink_aborted_save_attachments(struct sdbox_file *file)
 {
 	struct dbox_storage *storage = file->file.storage;
 	struct fs *fs = storage->attachment_fs;
+	struct fs_file *fs_file;
 	const char *const *pathp, *path;
 	int ret = 0;
 
@@ -192,20 +199,25 @@ static int sdbox_file_unlink_aborted_save_attachments(struct sdbox_file *file)
 		   attachment paths), so it's safe to delete them. */
 		path = t_strdup_printf("%s/%s", storage->attachment_dir,
 				       *pathp);
-		if (fs_unlink(fs, path) < 0 &&
+		fs_file = fs_file_init(fs, path, FS_OPEN_MODE_READONLY);
+		if (fs_delete(fs_file) < 0 &&
 		    errno != ENOENT) {
 			mail_storage_set_critical(&storage->storage, "%s",
 						  fs_last_error(fs));
 			ret = -1;
 		}
+		fs_file_deinit(&fs_file);
+
 		path = t_strdup_printf("%s/%s", storage->attachment_dir,
 				sdbox_file_attachment_relpath(file, *pathp));
-		if (fs_unlink(fs, path) < 0 &&
+		fs_file = fs_file_init(fs, path, FS_OPEN_MODE_READONLY);
+		if (fs_delete(fs_file) < 0 &&
 		    errno != ENOENT) {
 			mail_storage_set_critical(&storage->storage, "%s",
 						  fs_last_error(fs));
 			ret = -1;
 		}
+		fs_file_deinit(&fs_file);
 	} T_END;
 	return ret;
 }
@@ -230,43 +242,44 @@ int sdbox_file_create_fd(struct dbox_file *file, const char *path, bool parents)
 {
 	struct sdbox_file *sfile = (struct sdbox_file *)file;
 	struct mailbox *box = &sfile->mbox->box;
+	const struct mailbox_permissions *perm = mailbox_get_permissions(box);
 	const char *p, *dir;
 	mode_t old_mask;
 	int fd;
 
-	old_mask = umask(0666 & ~box->file_create_mode);
+	old_mask = umask(0666 & ~perm->file_create_mode);
 	fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
 	umask(old_mask);
 	if (fd == -1 && errno == ENOENT && parents &&
 	    (p = strrchr(path, '/')) != NULL) {
 		dir = t_strdup_until(path, p);
-		if (mkdir_parents_chgrp(dir, box->dir_create_mode,
-					box->file_create_gid,
-					box->file_create_gid_origin) < 0) {
+		if (mkdir_parents_chgrp(dir, perm->dir_create_mode,
+					perm->file_create_gid,
+					perm->file_create_gid_origin) < 0) {
 			mail_storage_set_critical(box->storage,
 				"mkdir_parents(%s) failed: %m", dir);
 			return -1;
 		}
 		/* try again */
-		old_mask = umask(0666 & ~box->file_create_mode);
+		old_mask = umask(0666 & ~perm->file_create_mode);
 		fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
 		umask(old_mask);
 	}
 	if (fd == -1) {
 		mail_storage_set_critical(box->storage,
 			"open(%s, O_CREAT) failed: %m", path);
-	} else if (box->file_create_gid == (gid_t)-1) {
+	} else if (perm->file_create_gid == (gid_t)-1) {
 		/* no group change */
-	} else if (fchown(fd, (uid_t)-1, box->file_create_gid) < 0) {
+	} else if (fchown(fd, (uid_t)-1, perm->file_create_gid) < 0) {
 		if (errno == EPERM) {
 			mail_storage_set_critical(box->storage, "%s",
 				eperm_error_get_chgrp("fchown", path,
-					box->file_create_gid,
-					box->file_create_gid_origin));
+					perm->file_create_gid,
+					perm->file_create_gid_origin));
 		} else {
 			mail_storage_set_critical(box->storage,
 				"fchown(%s, -1, %ld) failed: %m",
-				path, (long)box->file_create_gid);
+				path, (long)perm->file_create_gid);
 		}
 		/* continue anyway */
 	}
@@ -309,10 +322,7 @@ int sdbox_file_move(struct dbox_file *file, bool alt_path)
 	output = o_stream_create_fd_file(out_fd, 0, FALSE);
 	i_stream_seek(file->input, 0);
 	while ((ret = o_stream_send_istream(output, file->input)) > 0) ;
-	if (ret == 0)
-		ret = o_stream_flush(output);
-	if (output->stream_errno != 0) {
-		errno = output->stream_errno;
+	if (o_stream_nfinish(output) < 0) {
 		mail_storage_set_critical(storage, "write(%s) failed: %m",
 					  temp_path);
 		ret = -1;

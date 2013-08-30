@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __EXT_VARIABLES_DUMP_H
@@ -9,7 +9,7 @@
 /*
  * Code dump context
  */
- 
+
 bool ext_variables_code_dump
 	(const struct sieve_extension *ext, const struct sieve_dumptime_env *denv,
 		sieve_size_t *address);
@@ -17,7 +17,7 @@ bool ext_variables_code_dump
 /*
  * Variable identifier dump
  */
- 
+
 const char *ext_variables_dump_get_identifier
 (const struct sieve_extension *var_ext, const struct sieve_dumptime_env *denv,
 	const struct sieve_extension *ext, unsigned int index);

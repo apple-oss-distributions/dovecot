@@ -16,18 +16,17 @@ dbox can be used in two ways:
     files per mailbox.
 
 One of the main reasons for dbox's high performance is that it uses Dovecot's
-index files as the only storage for message flags and keywords. This means that
-indexes don't have to be "synchronized". Dovecot trusts that they're always
-up-to-date (unless it sees that something is clearly broken).
+index files as the only storage for message flags and keywords, so the indexes
+don't have to be "synchronized". Dovecot trusts that they're always up-to-date
+(unless it sees that something is clearly broken). This also means that *you
+must not lose the dbox index files, they can't be regenerated without data
+loss*.
 
 dbox has a feature for transparently moving message data to an alternate
 storage area. See <Alternate storage> [MailboxFormat.dbox.txt] below.
 
-dbox storage is extensible, so in future there will be other extensions. Some
-things that are planned:
-
- * Single instance attachment storage. If multiple mailboxes/users have the
-   same attachment, it's stored only once in disk.
+dbox storage is extensible. Single instance attachment storage was already
+implemented as such extension.
 
 Layout
 ------
@@ -174,12 +173,14 @@ mail_location = mdbox:/var/vmail/%d/%n:ALT=/altstorage/vmail/%d/%n
 
 will make Dovecot look for message data first under '/var/vmail/%d/%n'
 ("primary storage"), and if it is not found there it will look under
-'/altstorage/vmail/%d/%n' ("alternate storage") instead.
+'/altstorage/vmail/%d/%n' ("alternate storage") instead. There's no problem
+having the same (identical) file in both storages.
 
 Keep the unmounted '/altstorage' directory permissions such that Dovecot mail
 processes can't create directories under it (e.g. root:root 0755). This way if
 the alt storage isn't mounted for some reason, Dovecot won't think that all the
-messages in alt storage were deleted and lose their flags.
+messages in alt storage were deleted and lose their flags. With v2.1 this isn't
+strictly requires anymore, because it keeps track of missing mountpoints.
 
 When messages are moved from primary storage to alternate storage, only the
 actual message data (stored in files 'u.*' under *single-dbox* and 'm.*' under
@@ -187,7 +188,10 @@ actual message data (stored in files 'u.*' under *single-dbox* and 'm.*' under
 primary storage.
 
 Message data can be moved from primary storage to alternate storage using
-<doveadm altmove> [Tools.Doveadm.Altmove.txt].
+<doveadm altmove> [Tools.Doveadm.Altmove.txt]. (In theory you could also do
+this with some combination of cp/mv, but better not to go there unless you
+really need to. The updates must be atomic in any case, so direct cp won't be
+work.)
 
 The granularity at which data is moved to alternate storage is individual
 messages. This is true even for *multi-dbox* when multiple messages are stored
@@ -204,10 +208,22 @@ command which could be used to expose this information. It is entirely possible
 to have a mail folder which contains a mix of messages stored in primary
 storage and alternate storage.
 
-An upshot of the way alternate storage works is that any given storage file
-('mailboxes/<folder>/dbox-Mails/u.*' (sdbox) or 'storage/m.*' (mdbox)) can only
-appear *either* in the primary storage area *or* the alternate storage area but
-not both — if the corresponding file appears in both areas then there is an
-inconsistency.
+dbox and mail header metadata
+-----------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Unlike when using <mbox> [MailboxFormat.mbox.txt] as <mailbox format>
+[MailboxFormat.txt], where mail headers (for example 'Status', 'X-UID', etc.)
+are <used to determine and store meta-data> [MailboxFormat.mbox.txt], the mail
+headers within dbox files are (usually)*not* used for this purpose by dovecot;
+neither when mails are created/moved/etc. via IMAP nor when dboxes are placed
+(e.g. copied or moved in the filesystem) in a mail location (and then
+"imported" by dovecot).Therefore, it is (usually) *not* necessary, to strip any
+such mail headers at the MTA, MDA or LDA (as it is recommended with <mbox>
+[MailboxFormat.mbox.txt]).
+
+There is one exception, though, namely when 'pop3_reuse_xuidl=yes' (which is
+however rather deprecated):In this case 'X-UIDL' is used for the POP3 UIDLs.
+Therefore,*in this case, is recommended to strip the 'X-UIDL' mail headers
+_case-insensitively_ at the MTA, MDA or LDA*.
+
+(This file was created from the wiki on 2013-08-05 04:42)

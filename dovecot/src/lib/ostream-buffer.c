@@ -1,8 +1,8 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
-#include "ostream-internal.h"
+#include "ostream-private.h"
 
 struct buffer_ostream {
 	struct ostream_private ostream;
@@ -40,17 +40,18 @@ o_stream_buffer_sendv(struct ostream_private *stream,
 		n = I_MIN(left, iov[i].iov_len);
 		buffer_write(bstream->buf, stream->ostream.offset,
 			     iov[i].iov_base, n);
+		stream->ostream.offset += n;
 		ret += n;
 		if (n != iov[i].iov_len)
 			break;
 	}
-	stream->ostream.offset += ret;
 	return ret;
 }
 
 struct ostream *o_stream_create_buffer(buffer_t *buf)
 {
 	struct buffer_ostream *bstream;
+	struct ostream *output;
 
 	bstream = i_new(struct buffer_ostream, 1);
 	bstream->ostream.max_buffer_size = (size_t)-1;
@@ -59,5 +60,7 @@ struct ostream *o_stream_create_buffer(buffer_t *buf)
 	bstream->ostream.write_at = o_stream_buffer_write_at;
 
 	bstream->buf = buf;
-	return o_stream_create(&bstream->ostream);
+	output = o_stream_create(&bstream->ostream, NULL, -1);
+	o_stream_set_name(output, "(buffer)");
+	return output;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "ioloop.h"
@@ -8,8 +8,10 @@
 #include "str.h"
 #include "base64.h"
 #include "process-title.h"
+#include "randgen.h"
 #include "restrict-access.h"
 #include "fd-close-on-exec.h"
+#include "settings-parser.h"
 #include "master-interface.h"
 #include "master-service.h"
 #include "master-login.h"
@@ -85,7 +87,7 @@ void imap_refresh_proctitle(void)
 
 static void client_kill_idle(struct client *client)
 {
-	if (client->output_lock != NULL)
+	if (client->output_cmd_lock != NULL)
 		return;
 
 	client_send_line(client, "* BYE Server shutting down.");
@@ -196,7 +198,7 @@ client_create_from_input(const struct mail_storage_service_input *input,
 	struct mail_storage_service_user *user;
 	struct mail_user *mail_user;
 	struct client *client;
-	const struct imap_settings *set;
+	struct imap_settings *set;
 	enum mail_auth_request_flags flags;
 
 	if (mail_storage_service_lookup_next(storage_service, input,
@@ -208,12 +210,16 @@ client_create_from_input(const struct mail_storage_service_input *input,
 	if (set->verbose_proctitle)
 		verbose_proctitle = TRUE;
 
-	client = client_create(fd_in, fd_out, mail_user, user, set);
+	settings_var_expand(&imap_setting_parser_info, set, mail_user->pool,
+			    mail_user_var_expand_table(mail_user));
+
+	client = client_create(fd_in, fd_out, input->session_id,
+			       mail_user, user, set);
 	T_BEGIN {
 		client_add_input(client, input_buf);
 	} T_END;
 
-	flags = login_client == NULL ? 0 : login_client->auth_req.flags;
+	flags = login_client->auth_req.flags;
 	if ((flags & MAIL_AUTH_REQUEST_FLAG_TLS_COMPRESSION) != 0)
 		client->tls_compression = TRUE;
 	return 0;
@@ -221,6 +227,7 @@ client_create_from_input(const struct mail_storage_service_input *input,
 
 static void main_stdio_run(const char *username)
 {
+	struct master_login_client login_client;
 	struct mail_storage_service_input input;
 	const char *value, *error, *input_base64;
 	buffer_t *input_buf;
@@ -233,15 +240,17 @@ static void main_stdio_run(const char *username)
 	if (input.username == NULL)
 		i_fatal("USER environment missing");
 	if ((value = getenv("IP")) != NULL)
-		net_addr2ip(value, &input.remote_ip);
+		(void)net_addr2ip(value, &input.remote_ip);
 	if ((value = getenv("LOCAL_IP")) != NULL)
-		net_addr2ip(value, &input.local_ip);
+		(void)net_addr2ip(value, &input.local_ip);
 
 	input_base64 = getenv("CLIENT_INPUT");
 	input_buf = input_base64 == NULL ? NULL :
 		t_base64_decode_str(input_base64);
 
-	if (client_create_from_input(&input, NULL, STDIN_FILENO, STDOUT_FILENO,
+	memset(&login_client, 0, sizeof(login_client));
+	if (client_create_from_input(&input, &login_client,
+				     STDIN_FILENO, STDOUT_FILENO,
 				     input_buf, &error) < 0)
 		i_fatal("%s", error);
 }
@@ -261,18 +270,21 @@ login_client_connected(const struct master_login_client *client,
 	input.remote_ip = client->auth_req.remote_ip;
 	input.username = username;
 	input.userdb_fields = extra_fields;
+	input.session_id = client->session_id;
 
-	buffer_create_const_data(&input_buf, client->data,
-				 client->auth_req.data_size);
+	buffer_create_from_const_data(&input_buf, client->data,
+				      client->auth_req.data_size);
 	if (client_create_from_input(&input, client, client->fd, client->fd,
 				     &input_buf, &error) < 0) {
-		if (write(client->fd, MSG_BYE_INTERNAL_ERROR,
+		int fd = client->fd;
+
+		if (write(fd, MSG_BYE_INTERNAL_ERROR,
 			  strlen(MSG_BYE_INTERNAL_ERROR)) < 0) {
 			if (errno != EAGAIN && errno != EPIPE)
 				i_error("write(client) failed: %m");
 		}
 		i_error("%s", error);
-		(void)close(client->fd);
+		i_close_fd(&fd);
 		master_service_client_connection_destroyed(master_service);
 	}
 }
@@ -306,10 +318,15 @@ int main(int argc, char *argv[])
 		&imap_setting_parser_info,
 		NULL
 	};
+	struct master_login_settings login_set;
 	enum master_service_flags service_flags = 0;
 	enum mail_storage_service_flags storage_service_flags = 0;
-	const char *postlogin_socket_path, *username = NULL;
+	const char *username = NULL;
 	int c;
+
+	memset(&login_set, 0, sizeof(login_set));
+	login_set.postlogin_timeout_secs = MASTER_POSTLOGIN_TIMEOUT_DEFAULT;
+	login_set.request_auth_token = TRUE;
 
 	if (IS_STANDALONE() && getuid() == 0 &&
 	    net_getpeername(1, NULL, NULL) == 0) {
@@ -328,9 +345,14 @@ int main(int argc, char *argv[])
 	}
 
 	master_service = master_service_init("imap", service_flags,
-					     &argc, &argv, "u:");
+					     &argc, &argv, "t:u:");
 	while ((c = master_getopt(master_service)) > 0) {
 		switch (c) {
+		case 't':
+			if (str_to_uint(optarg, &login_set.postlogin_timeout_secs) < 0 ||
+			    login_set.postlogin_timeout_secs == 0)
+				i_fatal("Invalid -t parameter: %s", optarg);
+			break;
 		case 'u':
 			storage_service_flags |=
 				MAIL_STORAGE_SERVICE_FLAG_USERDB_LOOKUP;
@@ -340,19 +362,18 @@ int main(int argc, char *argv[])
 			return FATAL_DEFAULT;
 		}
 	}
-	postlogin_socket_path = argv[optind] == NULL ? NULL :
-		t_abspath(argv[optind]);
 
-	master_service_init_finish(master_service);
 	master_service_set_die_callback(master_service, imap_die);
 
 	/* plugins may want to add commands, so this needs to be called early */
 	commands_init();
 	imap_fetch_handlers_init();
 
+	random_init();
 	storage_service =
 		mail_storage_service_init(master_service,
 					  set_roots, storage_service_flags);
+	master_service_init_finish(master_service);
 
 	/* fake that we're running, so we know if client was destroyed
 	   while handling its initial input */
@@ -362,14 +383,18 @@ int main(int argc, char *argv[])
 		T_BEGIN {
 			main_stdio_run(username);
 		} T_END;
-	} else {
-		master_login = master_login_init(master_service,
-						 t_abspath("auth-master"),
-						 postlogin_socket_path,
-						 login_client_connected,
-						 login_client_failed);
+	} else T_BEGIN {
+		login_set.auth_socket_path = t_abspath("auth-master");
+		if (argv[optind] != NULL) {
+			login_set.postlogin_socket_path =
+				t_abspath(argv[optind]);
+		}
+		login_set.callback = login_client_connected;
+		login_set.failure_callback = login_client_failed;
+
+		master_login = master_login_init(master_service, &login_set);
 		io_loop_set_running(current_ioloop);
-	}
+	} T_END;
 
 	if (io_loop_is_running(current_ioloop))
 		master_service_run(master_service, client_connected);
@@ -382,6 +407,7 @@ int main(int argc, char *argv[])
 	imap_fetch_handlers_deinit();
 	commands_deinit();
 
+	random_deinit();
 	master_service_deinit(&master_service);
 	return 0;
 }

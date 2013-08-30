@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_STORAGE_PRIVATE_H
@@ -9,15 +9,12 @@
 
 #include "sieve-storage.h"
 
-
-enum sieve_storage_flags {
-	/* Print debugging information while initializing the storage */
-	SIEVE_STORAGE_FLAG_DEBUG     = 0x01,
-	/* Use CRLF linefeeds when saving mails. */
-	SIEVE_STORAGE_FLAG_SAVE_CRLF   = 0x02,
-};
-
 #define SIEVE_READ_BLOCK_SIZE (1024*8)
+
+/* How often to scan tmp/ directory for old files (based on dir's atime) */
+#define SIEVE_STORAGE_TMP_SCAN_SECS (8*60*60)
+/* Delete files having ctime older than this from tmp/. 36h is standard. */
+#define SIEVE_STORAGE_TMP_DELETE_SECS (36*60*60)
 
 struct sieve_storage;
 
@@ -33,18 +30,19 @@ struct sieve_storage {
 
 	char *name;
 	char *dir;
-	bool debug;
 
-	/* Private */	
+	/* Private */
 	char *active_path;
 	char *active_fname;
 	char *link_path;
 	char *error;
-	char *user; /* name of user accessing the storage */
+	char *username; /* name of user accessing the storage */
 
 	mode_t dir_create_mode;
 	mode_t file_create_mode;
 	gid_t file_create_gid;
+
+	struct mailbox *inbox;
 
 	uint64_t max_scripts;
 	uint64_t max_storage;
@@ -53,10 +51,19 @@ struct sieve_storage {
 	struct sieve_error_handler *ehandler;
 
 	enum sieve_storage_flags flags;
+	time_t prev_mtime;
 };
 
 struct sieve_script *sieve_storage_script_init_from_path
 	(struct sieve_storage *storage, const char *path, const char *scriptname);
+
+void sieve_storage_inbox_script_attribute_set
+	(struct sieve_storage *storage, const char *name);
+void sieve_storage_inbox_script_attribute_rename
+	(struct sieve_storage *storage, const char *oldname, const char *newname);
+void sieve_storage_inbox_script_attribute_unset
+	(struct sieve_storage *storage, const char *name);
+
 
 #endif
 

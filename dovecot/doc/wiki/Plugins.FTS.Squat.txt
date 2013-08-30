@@ -1,6 +1,10 @@
 Squat Full Text Search Indexing
 ===============================
 
+NOTE: The squat code is quite slow for large mailboxes. There are also a few
+bugs that are unlikely to be fixed. In v2.1+ it's recommended to use
+<fts-lucene> [Plugins.FTS.Lucene.txt] instead.
+
 The main difference between Squat indexes and the others is that Squat provides
 support for substring searches, while pretty much all other FTS indexes support
 only matching from the beginning of words. By strictly reading the IMAP RFC it
@@ -120,4 +124,4 @@ plugin {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

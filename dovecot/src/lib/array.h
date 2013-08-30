@@ -9,7 +9,7 @@
    Example usage:
 
    struct foo {
-	ARRAY_DEFINE(bars, struct bar);
+	ARRAY(struct bar) bars;
 	...
    };
 
@@ -134,6 +134,14 @@ array_clear_i(struct array *array)
 #define array_clear(array) \
 	array_clear_i(&(array)->arr)
 
+static inline unsigned int ATTR_PURE
+array_count_i(const struct array *array)
+{
+	return array->buffer->used / array->element_size;
+}
+#define array_count(array) \
+	array_count_i(&(array)->arr)
+
 static inline void
 array_append_i(struct array *array, const void *data, unsigned int count)
 {
@@ -177,7 +185,7 @@ array_delete_i(struct array *array, unsigned int idx, unsigned int count)
 static inline const void *
 array_get_i(const struct array *array, unsigned int *count_r)
 {
-	*count_r = array->buffer->used / array->element_size;
+	*count_r = array_count_i(array);
 	return array->buffer->data;
 }
 #define array_get(array, count) \
@@ -195,7 +203,7 @@ array_idx_i(const struct array *array, unsigned int idx)
 static inline void *
 array_get_modifiable_i(struct array *array, unsigned int *count_r)
 {
-	*count_r = array->buffer->used / array->element_size;
+	*count_r = array_count_i(array);
 	return buffer_get_modifiable_data(array->buffer, NULL);
 }
 #define array_get_modifiable(array, count) \
@@ -227,6 +235,8 @@ array_append_space_i(struct array *array)
 }
 #define array_append_space(array) \
 	ARRAY_TYPE_CAST_MODIFIABLE(array)array_append_space_i(&(array)->arr)
+#define array_append_zero(array) \
+	(void)array_append_space_i(&(array)->arr)
 
 void *array_insert_space_i(struct array *array, unsigned int idx);
 #define array_insert_space(array, idx) \
@@ -244,14 +254,6 @@ array_copy(struct array *dest, unsigned int dest_idx,
 		    count * dest->element_size);
 }
 
-static inline unsigned int ATTR_PURE
-array_count_i(const struct array *array)
-{
-	return array->buffer->used / array->element_size;
-}
-#define array_count(array) \
-	array_count_i(&(array)->arr)
-
 bool array_cmp_i(const struct array *array1,
 		 const struct array *array2) ATTR_PURE;
 #define array_cmp(array1, array2) \
@@ -262,29 +264,18 @@ void array_reverse_i(struct array *array);
 	array_reverse_i(&(array)->arr)
 
 void array_sort_i(struct array *array, int (*cmp)(const void *, const void *));
-#ifdef CONTEXT_TYPE_SAFETY
 #define array_sort(array, cmp) \
-	({(void)(1 ? 0 : cmp(ARRAY_TYPE_CAST_CONST(array)NULL, \
-			     ARRAY_TYPE_CAST_CONST(array)NULL)); \
-	array_sort_i(&(array)->arr, \
-		(int (*)(const void *, const void *))cmp); })
-#else
-#define array_sort(array, cmp) \
-	array_sort_i(&(array)->arr, (int (*)(const void *, const void *))cmp)
-#endif
+	array_sort_i(&(array)->arr + \
+		CALLBACK_TYPECHECK(cmp, int (*)(typeof(*(array)->v), \
+						typeof(*(array)->v))), \
+		(int (*)(const void *, const void *))cmp)
 
 void *array_bsearch_i(struct array *array, const void *key,
 		      int (*cmp)(const void *, const void *));
-#ifdef CONTEXT_TYPE_SAFETY
 #define array_bsearch(array, key, cmp) \
-	ARRAY_TYPE_CAST_MODIFIABLE(array) \
-	({(void)(1 ? 0 : cmp(key, ARRAY_TYPE_CAST_CONST(array)NULL)); \
-	array_bsearch_i(&(array)->arr, (const void *)key, \
-		(int (*)(const void *, const void *))cmp); })
-#else
-#define array_bsearch(array, key, cmp) \
-	array_bsearch_i(&(array)->arr, (const void *)key, \
-		(int (*)(const void *, const void *))cmp)
-#endif
+	ARRAY_TYPE_CAST_MODIFIABLE(array)array_bsearch_i(&(array)->arr + \
+		CALLBACK_TYPECHECK(cmp, int (*)(typeof(const typeof(*key) *), \
+						typeof(*(array)->v))), \
+		(const void *)key, (int (*)(const void *, const void *))cmp)
 
 #endif

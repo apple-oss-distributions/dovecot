@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -18,6 +18,34 @@ log_append_buffer(struct mail_index_export_context *ctx,
 {
 	mail_transaction_log_append_add(ctx->append_ctx, type,
 					buf->data, buf->used);
+}
+
+static void log_append_flag_updates(struct mail_index_export_context *ctx,
+				    struct mail_index_transaction *t)
+{
+	ARRAY(struct mail_transaction_flag_update) log_updates;
+	const struct mail_index_flag_update *updates;
+	struct mail_transaction_flag_update *log_update;
+	unsigned int i, count;
+
+	updates = array_get(&t->updates, &count);
+	if (count == 0)
+		return;
+
+	i_array_init(&log_updates, count);
+
+	for (i = 0; i < count; i++) {
+		log_update = array_append_space(&log_updates);
+		log_update->uid1 = updates[i].uid1;
+		log_update->uid2 = updates[i].uid2;
+		log_update->add_flags = updates[i].add_flags & 0xff;
+		log_update->remove_flags = updates[i].remove_flags & 0xff;
+		if ((updates[i].add_flags & MAIL_INDEX_MAIL_FLAG_UPDATE_MODSEQ) != 0)
+			log_update->modseq_inc_flag = 1;
+	}
+	log_append_buffer(ctx, log_updates.arr.buffer,
+			  MAIL_TRANSACTION_FLAG_UPDATE);
+	array_free(&log_updates);
 }
 
 static const buffer_t *
@@ -54,10 +82,12 @@ log_get_hdr_update_buffer(struct mail_index_transaction *t, bool prepend)
 }
 
 static void log_append_ext_intro(struct mail_index_export_context *ctx,
-				 uint32_t ext_id, uint32_t reset_id)
+				 uint32_t ext_id, uint32_t reset_id,
+				 unsigned int *hdr_size_r)
 {
 	struct mail_index_transaction *t = ctx->trans;
 	const struct mail_index_registered_ext *rext;
+	const struct mail_index_ext *ext;
         struct mail_transaction_ext_intro *intro, *resizes;
 	buffer_t *buf;
 	uint32_t idx;
@@ -84,20 +114,31 @@ static void log_append_ext_intro(struct mail_index_export_context *ctx,
 		/* we're resizing the extension. use the resize struct. */
 		intro = &resizes[ext_id];
 
-		i_assert(intro->ext_id == idx);
-		intro->name_size = idx != (uint32_t)-1 ? 0 :
-			strlen(rext->name);
+		i_assert(intro->ext_id == idx || idx == (uint32_t)-1);
+		if (idx != (uint32_t)-1)
+			intro->name_size = 0;
+		else {
+			intro->ext_id = (uint32_t)-1;
+			intro->name_size = strlen(rext->name);
+		}
 		buffer_append(buf, intro, sizeof(*intro));
 	} else {
 		/* generate a new intro structure */
 		intro = buffer_append_space_unsafe(buf, sizeof(*intro));
 		intro->ext_id = idx;
-		intro->hdr_size = rext->hdr_size;
-		intro->record_size = rext->record_size;
-		intro->record_align = rext->record_align;
+		if (idx == (uint32_t)-1) {
+			intro->hdr_size = rext->hdr_size;
+			intro->record_size = rext->record_size;
+			intro->record_align = rext->record_align;
+			intro->name_size = strlen(rext->name);
+		} else {
+			ext = array_idx(&t->view->index->map->extensions, idx);
+			intro->hdr_size = ext->hdr_size;
+			intro->record_size = ext->record_size;
+			intro->record_align = ext->record_align;
+			intro->name_size = 0;
+		}
 		intro->flags = MAIL_TRANSACTION_EXT_INTRO_FLAG_NO_SHRINK;
-		intro->name_size = idx != (uint32_t)-1 ? 0 :
-			strlen(rext->name);
 	}
 	if (reset_id != 0) {
 		/* we're going to reset this extension in this transaction */
@@ -121,11 +162,13 @@ static void log_append_ext_intro(struct mail_index_export_context *ctx,
 	}
 
 	log_append_buffer(ctx, buf, MAIL_TRANSACTION_EXT_INTRO);
+	*hdr_size_r = intro->hdr_size;
 }
 
 static void
 log_append_ext_hdr_update(struct mail_index_export_context *ctx,
-			const struct mail_index_transaction_ext_hdr_update *hdr)
+			  const struct mail_index_transaction_ext_hdr_update *hdr,
+			  unsigned int ext_hdr_size)
 {
 	buffer_t *buf;
 	const unsigned char *data, *mask;
@@ -157,6 +200,7 @@ log_append_ext_hdr_update(struct mail_index_export_context *ctx,
 					u.size = u32.size;
 					buffer_append(buf, &u, sizeof(u));
 				}
+				i_assert(u32.offset + u32.size <= ext_hdr_size);
 				buffer_append(buf, data + u32.offset, u32.size);
 				started = FALSE;
 			}
@@ -176,7 +220,7 @@ mail_transaction_log_append_ext_intros(struct mail_index_export_context *ctx)
 	const struct mail_index_transaction_ext_hdr_update *hdrs;
 	struct mail_transaction_ext_reset ext_reset;
 	unsigned int resize_count, ext_count = 0;
-	unsigned int hdrs_count, reset_id_count, reset_count;
+	unsigned int hdrs_count, reset_id_count, reset_count, hdr_size;
 	uint32_t ext_id, reset_id;
 	const struct mail_transaction_ext_reset *reset;
 	const uint32_t *reset_ids;
@@ -217,7 +261,7 @@ mail_transaction_log_append_ext_intros(struct mail_index_export_context *ctx)
 	}
 
 	memset(&ext_reset, 0, sizeof(ext_reset));
-	buffer_create_data(&reset_buf, &ext_reset, sizeof(ext_reset));
+	buffer_create_from_data(&reset_buf, &ext_reset, sizeof(ext_reset));
 	buffer_set_used_size(&reset_buf, sizeof(ext_reset));
 
 	for (ext_id = 0; ext_id < ext_count; ext_id++) {
@@ -236,7 +280,9 @@ mail_transaction_log_append_ext_intros(struct mail_index_export_context *ctx)
 				reset_id = ext_id < reset_id_count ?
 					reset_ids[ext_id] : 0;
 			}
-			log_append_ext_intro(ctx, ext_id, reset_id);
+			log_append_ext_intro(ctx, ext_id, reset_id, &hdr_size);
+		} else {
+			hdr_size = 0;
 		}
 		if (ext_reset.new_reset_id != 0) {
 			i_assert(ext_id < reset_id_count &&
@@ -246,7 +292,8 @@ mail_transaction_log_append_ext_intros(struct mail_index_export_context *ctx)
 		}
 		if (ext_id < hdrs_count && hdrs[ext_id].alloc_size > 0) {
 			T_BEGIN {
-				log_append_ext_hdr_update(ctx, &hdrs[ext_id]);
+				log_append_ext_hdr_update(ctx, &hdrs[ext_id],
+							  hdr_size);
 			} T_END;
 		}
 	}
@@ -259,7 +306,7 @@ static void log_append_ext_recs(struct mail_index_export_context *ctx,
 	struct mail_index_transaction *t = ctx->trans;
 	const ARRAY_TYPE(seq_array) *updates;
 	const uint32_t *reset_ids;
-	unsigned int ext_id, count, reset_id_count;
+	unsigned int ext_id, count, reset_id_count, hdr_size;
 	uint32_t reset_id;
 
 	if (!array_is_created(&t->ext_reset_ids)) {
@@ -276,7 +323,7 @@ static void log_append_ext_recs(struct mail_index_export_context *ctx,
 			continue;
 
 		reset_id = ext_id < reset_id_count ? reset_ids[ext_id] : 0;
-		log_append_ext_intro(ctx, ext_id, reset_id);
+		log_append_ext_intro(ctx, ext_id, reset_id, &hdr_size);
 
 		log_append_buffer(ctx, updates[ext_id].arr.buffer, type);
 	}
@@ -305,13 +352,13 @@ log_append_keyword_update(struct mail_index_export_context *ctx,
 	log_append_buffer(ctx, tmp_buf, MAIL_TRANSACTION_KEYWORD_UPDATE);
 }
 
-static enum mail_index_sync_type
+static enum mail_index_fsync_mask
 log_append_keyword_updates(struct mail_index_export_context *ctx)
 {
         const struct mail_index_transaction_keyword_update *updates;
 	const char *const *keywords;
 	buffer_t *tmp_buf;
-	enum mail_index_sync_type change_mask = 0;
+	enum mail_index_fsync_mask change_mask = 0;
 	unsigned int i, count, keywords_count;
 
 	tmp_buf = buffer_create_dynamic(pool_datastack_create(), 64);
@@ -324,14 +371,14 @@ log_append_keyword_updates(struct mail_index_export_context *ctx)
 	for (i = 0; i < count; i++) {
 		if (array_is_created(&updates[i].add_seq) &&
 		    array_count(&updates[i].add_seq) > 0) {
-			change_mask |= MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD;
+			change_mask |= MAIL_INDEX_FSYNC_MASK_KEYWORDS;
 			log_append_keyword_update(ctx, tmp_buf,
 					MODIFY_ADD, keywords[i],
 					updates[i].add_seq.arr.buffer);
 		}
 		if (array_is_created(&updates[i].remove_seq) &&
 		    array_count(&updates[i].remove_seq) > 0) {
-			change_mask |= MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE;
+			change_mask |= MAIL_INDEX_FSYNC_MASK_KEYWORDS;
 			log_append_keyword_update(ctx, tmp_buf,
 					MODIFY_REMOVE, keywords[i],
 					updates[i].remove_seq.arr.buffer);
@@ -344,7 +391,7 @@ void mail_index_transaction_export(struct mail_index_transaction *t,
 				   struct mail_transaction_log_append_ctx *append_ctx)
 {
 	static uint8_t null4[4] = { 0, 0, 0, 0 };
-	enum mail_index_sync_type change_mask = 0;
+	enum mail_index_fsync_mask change_mask = 0;
 	struct mail_index_export_context ctx;
 
 	memset(&ctx, 0, sizeof(ctx));
@@ -365,16 +412,30 @@ void mail_index_transaction_export(struct mail_index_transaction *t,
 		log_append_buffer(&ctx, log_get_hdr_update_buffer(t, TRUE),
 				  MAIL_TRANSACTION_HEADER_UPDATE);
 	}
+	if (t->attribute_updates != NULL) {
+		buffer_append_c(t->attribute_updates, '\0');
+		/* need to have 32bit alignment */
+		if (t->attribute_updates->used % 4 != 0) {
+			buffer_append_zero(t->attribute_updates,
+					   4 - t->attribute_updates->used % 4);
+		}
+		/* append the timestamp and value lengths */
+		buffer_append(t->attribute_updates,
+			      t->attribute_updates_suffix->data,
+			      t->attribute_updates_suffix->used);
+		i_assert(t->attribute_updates->used % 4 == 0);
+		log_append_buffer(&ctx, t->attribute_updates,
+				  MAIL_TRANSACTION_ATTRIBUTE_UPDATE);
+	}
 	if (array_is_created(&t->appends)) {
-		change_mask |= MAIL_INDEX_SYNC_TYPE_APPEND;
+		change_mask |= MAIL_INDEX_FSYNC_MASK_APPENDS;
 		log_append_buffer(&ctx, t->appends.arr.buffer,
 				  MAIL_TRANSACTION_APPEND);
 	}
 
 	if (array_is_created(&t->updates)) {
-		change_mask |= MAIL_INDEX_SYNC_TYPE_FLAGS;
-		log_append_buffer(&ctx, t->updates.arr.buffer, 
-				  MAIL_TRANSACTION_FLAG_UPDATE);
+		change_mask |= MAIL_INDEX_FSYNC_MASK_FLAGS;
+		log_append_flag_updates(&ctx, t);
 	}
 
 	if (array_is_created(&t->ext_rec_updates)) {
@@ -386,12 +447,6 @@ void mail_index_transaction_export(struct mail_index_transaction *t,
 				    MAIL_TRANSACTION_EXT_ATOMIC_INC);
 	}
 
-	/* keyword resets before updates */
-	if (array_is_created(&t->keyword_resets)) {
-		change_mask |= MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET;
-		log_append_buffer(&ctx, t->keyword_resets.arr.buffer,
-				  MAIL_TRANSACTION_KEYWORD_RESET);
-	}
 	if (array_is_created(&t->keyword_updates))
 		change_mask |= log_append_keyword_updates(&ctx);
 	/* keep modseq updates almost last */
@@ -404,7 +459,7 @@ void mail_index_transaction_export(struct mail_index_transaction *t,
 		/* non-external expunges are only requests, ignore them when
 		   checking fsync_mask */
 		if ((t->flags & MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL) != 0)
-			change_mask |= MAIL_INDEX_SYNC_TYPE_EXPUNGE;
+			change_mask |= MAIL_INDEX_FSYNC_MASK_EXPUNGES;
 		log_append_buffer(&ctx, t->expunges.arr.buffer,
 				  MAIL_TRANSACTION_EXPUNGE_GUID);
 	}

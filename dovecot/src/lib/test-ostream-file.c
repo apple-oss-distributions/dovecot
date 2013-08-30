@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "str.h"
@@ -29,22 +29,23 @@ static void test_ostream_file_random(void)
 	output = o_stream_create_fd(fd, MAX_BUFSIZE, FALSE);
 	o_stream_cork(output);
 
-	size = (rand() % MAX_BUFSIZE) + 1;
+	/* APPLE - s?rand() -> s?random() */
+	size = (random() % MAX_BUFSIZE) + 1;
 	random_fill_weak(randbuf, size);
 	memcpy(buf, randbuf, size);
-	o_stream_send(output, buf, size);
+	test_assert(o_stream_send(output, buf, size) > 0);
 
 	for (i = 0; i < 10; i++) {
-		offset = rand() % (MAX_BUFSIZE*3);
-		size = (rand() % MAX_BUFSIZE) + 1;
+		offset = random() % (MAX_BUFSIZE*3);
+		size = (random() % MAX_BUFSIZE) + 1;
 		random_fill_weak(randbuf, size);
 		memcpy(buf + offset, randbuf, size);
-		o_stream_pwrite(output, randbuf, size, offset);
-		if (rand() % 10 == 0)
-			o_stream_flush(output);
+		test_assert(o_stream_pwrite(output, randbuf, size, offset) == 0);
+		if (random() % 10 == 0)
+			test_assert(o_stream_flush(output) > 0);
 	}
 
-	o_stream_flush(output);
+	test_assert(o_stream_flush(output) > 0);
 	o_stream_uncork(output);
 	ret = pread(fd, buf2, sizeof(buf2), 0);
 	if (ret < 0)
@@ -54,7 +55,7 @@ static void test_ostream_file_random(void)
 		test_assert(memcmp(buf, buf2, ret) == 0);
 	}
 	o_stream_unref(&output);
-	(void)close(fd);
+	i_close_fd(&fd);
 }
 
 void test_ostream_file(void)

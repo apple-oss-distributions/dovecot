@@ -52,6 +52,8 @@ struct mbox_sync_mail {
 	unsigned int uid_broken:1;
 	unsigned int expunged:1;
 	unsigned int pseudo:1;
+	unsigned int status_broken:1;
+	unsigned int xstatus_broken:1;
 
 	uoff_t from_offset;
 	uoff_t body_size;
@@ -121,7 +123,7 @@ struct mbox_sync_context {
 	uoff_t base_uid_last_offset;
 
 	/* mail state: */
-	ARRAY_DEFINE(mails, struct mbox_sync_mail);
+	ARRAY(struct mbox_sync_mail) mails;
 	struct index_sync_changes_context *sync_changes;
 
 	/* per-mail pool */
@@ -179,5 +181,6 @@ void mbox_sync_move_buffer(struct mbox_sync_mail_context *ctx,
 			   size_t pos, size_t need, size_t have);
 void mbox_sync_headers_add_space(struct mbox_sync_mail_context *ctx,
 				 size_t size);
+int mbox_sync_get_guid(struct mbox_mailbox *mbox);
 
 #endif

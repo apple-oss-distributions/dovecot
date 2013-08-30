@@ -15,7 +15,6 @@
 #define MAILDIR_SYNC_TIME_WARN_SECS 60
 
 struct maildir_mailbox;
-
 struct maildir_sync_context;
 struct maildir_keywords_sync_ctx;
 struct maildir_index_sync_context;
@@ -30,7 +29,8 @@ int maildir_sync_header_refresh(struct maildir_mailbox *mbox);
 
 int maildir_sync_index_begin(struct maildir_mailbox *mbox,
 			     struct maildir_sync_context *maildir_sync_ctx,
-			     struct maildir_index_sync_context **ctx_r);
+			     struct maildir_index_sync_context **ctx_r)
+	ATTR_NULL(2);
 int maildir_sync_index(struct maildir_index_sync_context *sync_ctx,
 		       bool partial);
 int maildir_sync_index_commit(struct maildir_index_sync_context **_ctx);
@@ -38,15 +38,21 @@ void maildir_sync_index_rollback(struct maildir_index_sync_context **_ctx);
 
 struct maildir_keywords_sync_ctx *
 maildir_sync_get_keywords_sync_ctx(struct maildir_index_sync_context *ctx);
+void maildir_sync_set_racing(struct maildir_sync_context *ctx);
 void maildir_sync_notify(struct maildir_sync_context *ctx);
 void maildir_sync_set_new_msgs_count(struct maildir_index_sync_context *ctx,
 				     unsigned int count);
+int maildir_sync_refresh_flags_view(struct maildir_mailbox *mbox);
+
+int maildir_sync_lookup(struct maildir_mailbox *mbox, uint32_t uid,
+			enum maildir_uidlist_rec_flag *flags_r,
+			const char **fname_r);
 
 int maildir_list_index_has_changed(struct mailbox *box,
 				   struct mail_index_view *list_view,
 				   uint32_t seq);
-int maildir_list_index_update_sync(struct mailbox *box,
-				   struct mail_index_transaction *trans,
-				   uint32_t seq);
+void maildir_list_index_update_sync(struct mailbox *box,
+				    struct mail_index_transaction *trans,
+				    uint32_t seq);
 
 #endif

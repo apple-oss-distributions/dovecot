@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -23,9 +23,9 @@ static void mbox_prepare_resync(struct mail *mail)
 	struct mbox_mailbox *mbox = (struct mbox_mailbox *)mail->box;
 
 	if (mbox->mbox_lock_type == F_RDLCK) {
-		if (mbox->mbox_lock_id == t->mbox_lock_id)
-			t->mbox_lock_id = 0;
-		(void)mbox_unlock(mbox, mbox->mbox_lock_id);
+		if (mbox->mbox_lock_id == t->read_lock_id)
+			t->read_lock_id = 0;
+		mbox_unlock(mbox, mbox->mbox_lock_id);
 		i_assert(mbox->mbox_lock_type == F_UNLCK);
 	}
 }
@@ -33,7 +33,7 @@ static void mbox_prepare_resync(struct mail *mail)
 static int mbox_mail_seek(struct index_mail *mail)
 {
 	struct mbox_transaction_context *t =
-		(struct mbox_transaction_context *)mail->trans;
+		(struct mbox_transaction_context *)mail->mail.mail.transaction;
 	struct mail *_mail = &mail->mail.mail;
 	struct mbox_mailbox *mbox = (struct mbox_mailbox *)_mail->box;
 	enum mbox_sync_flags sync_flags = 0;
@@ -43,8 +43,10 @@ static int mbox_mail_seek(struct index_mail *mail)
 	if (_mail->expunged || mbox->syncing)
 		return -1;
 
-	if (_mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER)
-		return mail_set_aborted(_mail);
+	if (_mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(_mail);
+		return -1;
+	}
 
 	if (mbox->mbox_stream != NULL &&
 	    istream_raw_mbox_is_corrupted(mbox->mbox_stream)) {
@@ -58,26 +60,27 @@ static int mbox_mail_seek(struct index_mail *mail)
 			mbox_prepare_resync(_mail);
 		}
 		if (mbox->mbox_lock_type == F_UNLCK) {
+			i_assert(t->read_lock_id == 0);
 			sync_flags |= MBOX_SYNC_LOCK_READING;
 			if (mbox_sync(mbox, sync_flags) < 0)
 				return -1;
-			t->mbox_lock_id = mbox->mbox_lock_id;
-			i_assert(t->mbox_lock_id != 0);
+			t->read_lock_id = mbox_get_cur_lock_id(mbox);
+			i_assert(t->read_lock_id != 0);
 
 			/* refresh index file after mbox has been locked to
 			   make sure we get only up-to-date mbox offsets. */
 			if (mail_index_refresh(mbox->box.index) < 0) {
-				mail_storage_set_index_error(&mbox->box);
+				mailbox_set_index_error(&mbox->box);
 				return -1;
 			}
 
 			i_assert(mbox->mbox_lock_type != F_UNLCK);
-		} else if (t->mbox_lock_id == 0) {
+		} else if (t->read_lock_id == 0) {
 			/* file is already locked by another transaction, but
 			   we must keep it locked for the entire transaction,
 			   so increase the lock counter. */
 			if (mbox_lock(mbox, mbox->mbox_lock_type,
-				      &t->mbox_lock_id) < 0)
+				      &t->read_lock_id) < 0)
 				i_unreached();
 		}
 
@@ -102,7 +105,7 @@ static int mbox_mail_seek(struct index_mail *mail)
 	if (ret == 0) {
 		mail_storage_set_critical(&mbox->storage->storage,
 			"Losing sync for mail uid=%u in mbox file %s",
-			_mail->uid, mbox->box.path);
+			_mail->uid, mailbox_get_path(&mbox->box));
 	}
 	return 0;
 }
@@ -163,7 +166,7 @@ mbox_mail_get_md5_header(struct index_mail *mail, const char **value_r)
 			      mail->mail.mail.seq, mbox->md5hdr_ext_idx,
 			      &ext_data, NULL);
 	if (ext_data != NULL && memcmp(ext_data, empty_md5, 16) != 0) {
-		mail->data.guid = p_strdup(mail->data_pool,
+		mail->data.guid = p_strdup(mail->mail.data_pool,
 					   binary_to_hex(ext_data, 16));
 		*value_r = mail->data.guid;
 		return TRUE;
@@ -239,6 +242,8 @@ mbox_mail_get_next_offset(struct index_mail *mail, uoff_t *next_offset_r)
 	uint32_t seq;
 	int trailer_size;
 	int ret = 1;
+
+	*next_offset_r = (uoff_t)-1;
 
 	hdr = mail_index_get_header(mail->mail.mail.transaction->view);
 	if (mail->mail.mail.seq > hdr->messages_count) {
@@ -337,12 +342,10 @@ static int mbox_mail_init_stream(struct index_mail *mail)
 		ret = mbox_mail_get_next_offset(mail, &next_offset);
 		if (ret < 0) {
 			i_warning("mbox %s: Can't find next message offset "
-				  "for uid=%u",
-				  mbox->box.path, mail->mail.mail.uid);
+				  "for uid=%u", mailbox_get_path(&mbox->box),
+				  mail->mail.mail.uid);
 		}
 	}
-	if (ret <= 0)
-		next_offset = (uoff_t)-1;
 
 	raw_stream = mbox->mbox_stream;
 	hdr_offset = istream_raw_mbox_get_header_offset(raw_stream);
@@ -356,12 +359,12 @@ static int mbox_mail_init_stream(struct index_mail *mail)
 		i_stream_create_header_filter(raw_stream,
 				HEADER_FILTER_EXCLUDE | HEADER_FILTER_NO_CR,
 				mbox_hide_headers, mbox_hide_headers_count,
-				null_header_filter_callback, NULL);
+				*null_header_filter_callback, (void *)NULL);
 	i_stream_unref(&raw_stream);
 	return 0;
 }
 
-static int mbox_mail_get_stream(struct mail *_mail,
+static int mbox_mail_get_stream(struct mail *_mail, bool get_body ATTR_UNUSED,
 				struct message_size *hdr_size,
 				struct message_size *body_size,
 				struct istream **stream_r)
@@ -376,11 +379,11 @@ static int mbox_mail_get_stream(struct mail *_mail,
 	return index_mail_init_stream(mail, hdr_size, body_size, stream_r);
 }
 
-static void mbox_mail_set_seq(struct mail *_mail, uint32_t seq)
+static void mbox_mail_set_seq(struct mail *_mail, uint32_t seq, bool saving)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
 
-	index_mail_set_seq(_mail, seq);
+	index_mail_set_seq(_mail, seq, saving);
 	mail->data.dont_cache_fetch_fields |= MAIL_FETCH_PHYSICAL_SIZE;
 }
 
@@ -400,11 +403,15 @@ struct mail_vfuncs mbox_mail_vfuncs = {
 	mbox_mail_set_seq,
 	mbox_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
+	index_mail_precache,
+	index_mail_add_temp_wanted_fields,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	mbox_mail_get_received_date,
@@ -415,14 +422,15 @@ struct mail_vfuncs mbox_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	mbox_mail_get_stream,
+	index_mail_get_binary_stream,
 	mbox_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
-	index_mail_parse,
 	index_mail_set_cache_corrupted,
 	index_mail_opened
 };

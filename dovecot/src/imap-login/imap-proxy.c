@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "array.h"
@@ -9,6 +9,7 @@
 #include "str.h"
 #include "str-sanitize.h"
 #include "safe-memset.h"
+#include "dsasl-client.h"
 #include "client.h"
 #include "client-authenticate.h"
 #include "imap-resp-code.h"
@@ -29,15 +30,21 @@ enum imap_proxy_state {
 
 static void proxy_write_id(struct imap_client *client, string_t *str)
 {
+	i_assert(client->common.proxy_ttl > 1);
+
 	str_printfa(str, "I ID ("
+		    "\"x-session-id\" \"%s\" "
 		    "\"x-originating-ip\" \"%s\" "
 		    "\"x-originating-port\" \"%u\" "
 		    "\"x-connected-ip\" \"%s\" "
-		    "\"x-connected-port\" \"%u\")\r\n",
+		    "\"x-connected-port\" \"%u\" "
+		    "\"x-proxy-ttl\" \"%u\")\r\n",
+		    client_get_session_id(&client->common),
 		    net_ip2addr(&client->common.ip),
 		    client->common.remote_port,
 		    net_ip2addr(&client->common.local_ip),
-		    client->common.local_port);
+		    client->common.local_port,
+		    client->common.proxy_ttl - 1);
 }
 
 static void proxy_free_password(struct client *client)
@@ -49,43 +56,57 @@ static void proxy_free_password(struct client *client)
 	i_free_and_null(client->proxy_password);
 }
 
-static void get_plain_auth(struct client *client, string_t *dest)
+static int proxy_write_login(struct imap_client *client, string_t *str)
 {
-	string_t *str;
+	struct dsasl_client_settings sasl_set;
+	const unsigned char *output;
+	unsigned int len;
+	const char *mech_name, *error;
 
-	str = t_str_new(128);
-	str_append(str, client->proxy_user);
-	str_append_c(str, '\0');
-	str_append(str, client->proxy_master_user);
-	str_append_c(str, '\0');
-	str_append(str, client->proxy_password);
-	base64_encode(str_data(str), str_len(str), dest);
-}
+	if (client->proxy_backend_capability == NULL)
+		str_append(str, "C CAPABILITY\r\n");
 
-static void proxy_write_login(struct imap_client *client, string_t *str)
-{
-	str_append(str, "C CAPABILITY\r\n");
-
-	if (client->common.proxy_master_user == NULL) {
+	if (client->common.proxy_mech == NULL) {
 		/* logging in normally - use LOGIN command */
 		str_append(str, "L LOGIN ");
-		imap_quote_append_string(str, client->common.proxy_user, FALSE);
+		imap_append_string(str, client->common.proxy_user);
 		str_append_c(str, ' ');
-		imap_quote_append_string(str, client->common.proxy_password,
-					 FALSE);
+		imap_append_string(str, client->common.proxy_password);
+		str_append(str, "\r\n");
 
 		proxy_free_password(&client->common);
-	} else if (client->proxy_sasl_ir) {
-		/* master user login with SASL initial response support */
-		str_append(str, "L AUTHENTICATE PLAIN ");
-		get_plain_auth(&client->common, str);
-		proxy_free_password(&client->common);
-	} else {
-		/* master user login without SASL initial response */
-		str_append(str, "L AUTHENTICATE PLAIN");
-		client->proxy_wait_auth_continue = TRUE;
+		return 0;
+	}
+
+	i_assert(client->common.proxy_sasl_client == NULL);
+	memset(&sasl_set, 0, sizeof(sasl_set));
+	sasl_set.authid = client->common.proxy_master_user != NULL ?
+		client->common.proxy_master_user : client->common.proxy_user;
+	sasl_set.authzid = client->common.proxy_user;
+	sasl_set.password = client->common.proxy_password;
+	client->common.proxy_sasl_client =
+		dsasl_client_new(client->common.proxy_mech, &sasl_set);
+	mech_name = dsasl_client_mech_get_name(client->common.proxy_mech);
+
+	str_append(str, "L AUTHENTICATE ");
+	str_append(str, mech_name);
+	if (client->proxy_sasl_ir) {
+		if (dsasl_client_output(client->common.proxy_sasl_client,
+					&output, &len, &error) < 0) {
+			client_log_err(&client->common, t_strdup_printf(
+				"proxy: SASL mechanism %s init failed: %s",
+				mech_name, error));
+			return -1;
+		}
+		str_append_c(str, ' ');
+		if (len == 0)
+			str_append_c(str, '=');
+		else
+			base64_encode(output, len, str);
 	}
 	str_append(str, "\r\n");
+	proxy_free_password(&client->common);
+	return 0;
 }
 
 static int proxy_input_banner(struct imap_client *client,
@@ -109,6 +130,9 @@ static int proxy_input_banner(struct imap_client *client,
 			proxy_write_id(client, str);
 		if (str_array_icase_find(capabilities, "SASL-IR"))
 			client->proxy_sasl_ir = TRUE;
+		i_free(client->proxy_backend_capability);
+		client->proxy_backend_capability =
+			i_strdup(t_strcut(line + 5 + 12, ']'));
 	}
 
 	ssl_flags = login_proxy_get_ssl_flags(client->common.login_proxy);
@@ -121,10 +145,11 @@ static int proxy_input_banner(struct imap_client *client,
 		}
 		str_append(str, "S STARTTLS\r\n");
 	} else {
-		proxy_write_login(client, str);
+		if (proxy_write_login(client, str) < 0)
+			return -1;
 	}
 
-	(void)o_stream_send(output, str_data(str), str_len(str));
+	o_stream_nsend(output, str_data(str), str_len(str));
 	return 0;
 }
 
@@ -168,6 +193,10 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 	struct imap_client *imap_client = (struct imap_client *)client;
 	struct ostream *output;
 	string_t *str;
+	const unsigned char *data;
+	unsigned int data_len;
+	const char *error;
+	int ret;
 
 	i_assert(!client->destroyed);
 
@@ -183,19 +212,40 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 		return 0;
 	} else if (*line == '+') {
 		/* AUTHENTICATE started. finish it. */
-		if (!imap_client->proxy_wait_auth_continue) {
+		if (client->proxy_sasl_client == NULL) {
 			/* used literals with LOGIN command, just ignore. */
 			return 0;
 		}
 		client->proxy_state = IMAP_PROXY_STATE_AUTH_CONTINUE;
-		imap_client->proxy_wait_auth_continue = FALSE;
 
 		str = t_str_new(128);
-		get_plain_auth(client, str);
-		str_append(str, "\r\n");
-		proxy_free_password(client);
+		if (line[1] != ' ' ||
+		    base64_decode(line+2, strlen(line+2), NULL, str) < 0) {
+			client_log_err(client,
+				"proxy: Server sent invalid base64 data in AUTHENTICATE response");
+			client_proxy_failed(client, TRUE);
+			return -1;
+		}
+		ret = dsasl_client_input(client->proxy_sasl_client,
+					 str_data(str), str_len(str), &error);
+		if (ret == 0) {
+			ret = dsasl_client_output(client->proxy_sasl_client,
+						  &data, &data_len, &error);
+		}
+		if (ret < 0) {
+			client_log_err(client, t_strdup_printf(
+				"proxy: Server sent invalid authentication data: %s",
+				error));
+			client_proxy_failed(client, TRUE);
+			return -1;
+		}
+		i_assert(ret == 0);
 
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		str_truncate(str, 0);
+		base64_encode(data, data_len, str);
+		str_append(str, "\r\n");
+
+		o_stream_nsend(output, str_data(str), str_len(str));
 		return 0;
 	} else if (strncmp(line, "S ", 2) == 0) {
 		if (strncmp(line, "S OK ", 5) != 0) {
@@ -215,16 +265,18 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 		/* i/ostreams changed. */
 		output = login_proxy_get_ostream(client->login_proxy);
 		str = t_str_new(128);
-		proxy_write_login(imap_client, str);
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		if (proxy_write_login(imap_client, str) < 0) {
+			client_proxy_failed(client, TRUE);
+			return -1;
+		}
+		o_stream_nsend(output, str_data(str), str_len(str));
 		return 1;
 	} else if (strncmp(line, "L OK ", 5) == 0) {
 		/* Login successful. Send this line to client. */
 		client->proxy_state = IMAP_PROXY_STATE_LOGIN;
 		str = t_str_new(128);
 		client_send_login_reply(imap_client, str, line + 5);
-		(void)o_stream_send(client->output,
-				    str_data(str), str_len(str));
+		o_stream_nsend(client->output, str_data(str), str_len(str));
 
 		(void)client_skip_line(imap_client);
 		client_proxy_finish_destroy_client(client);
@@ -246,8 +298,9 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   the remote is sending a different error message
 			   an attacker can't find out what users exist in
 			   the system. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		} else if (strncmp(line, "NO [", 4) == 0) {
 			/* remote sent some other resp-code. forward it. */
 			client_send_raw(client, t_strconcat(
@@ -260,10 +313,12 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   failures. since other errors are pretty rare,
 			   it's safer to just hide them. they're still
 			   available in logs though. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		}
 
+		client->proxy_auth_failed = TRUE;
 		client_proxy_failed(client, FALSE);
 		return -1;
 	} else if (strncasecmp(line, "* CAPABILITY ", 13) == 0) {
@@ -298,6 +353,11 @@ void imap_proxy_reset(struct client *client)
 
 	imap_client->proxy_sasl_ir = FALSE;
 	imap_client->proxy_seen_banner = FALSE;
-	imap_client->proxy_wait_auth_continue = FALSE;
 	client->proxy_state = IMAP_PROXY_STATE_NONE;
+}
+
+void imap_proxy_error(struct client *client, const char *text)
+{
+	client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+			       IMAP_RESP_CODE_UNAVAILABLE, text);
 }

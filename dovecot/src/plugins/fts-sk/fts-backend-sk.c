@@ -1,6 +1,6 @@
 /* Copyright (c) 2006-2010 Dovecot authors, see the included COPYING file */
 /*
- * Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -49,63 +49,44 @@
    slower than it needs to be.  Since flushing the index can be very slow
    and the FTS API provides no way to make expunge asynchronous, defer
    expunges until the external updater runs (see fts_enqueue_update()) and
-   executes a special command X-FTS-COMPACT.
+   executes fts_backend_optimize().
 
    SearchKit does not expose the fd it uses, so locking uses a separate file.
    Conveniently, this allows all locking to happen at the border (the
    fts_backend_sk_* functions) which helps avoid races since SearchKit does not
    offer an API for "open if present otherwise create."
 
-   This plugin can index small plain text documents internally, but as soon as
-   it encounters large text or non-text it fires up an external indexer.  This
-   separates any buggy or malicious content indexers (aka Spotlight importers,
-   or text extractors) into a separate process with limited privileges.  It
-   also allows us to time out if indexing some document takes too long.
-
-   Indexing is pretty slow (not a surprise since it involves writing temp
-   files, IPC with the indexer, and updating search indexes).  So whenever
-   possible use asynchronous IPC with it:  send it a document to index and
-   unwind all the way back out to the main command loop so some other client
-   can use this process (when client_limit > 1).  Unfortunately implementing
-   this is pretty ugly since it appears no other command suspends input from
-   the client like this.  So we use a really bad "reacharound" to suspend and
-   resume client input.
-
    SearchKit indexes are limited to 32 bits so use multiple indexes
    ("fragments") when necessary.  Only the 0th index contains the meta
-   properties.  Locking covers all the indexes together. */
+   properties.  Locking covers all the indexes together.
+
+   Version 1 indexes only indicate whether terms are in the body or in any
+   header.  Version 2 indexes are identical in format to version 1 indexes but
+   also indicate whether terms are in the fts_header_want_indexed() headers,
+   and whether a header of a given name is present in the message.  To upgrade
+   from version 1 to version 2 perform a rescan.  */
 
 #include "lib.h"
 #include "str.h"
 #include "array.h"
 #include "ioloop.h"
-#include "istream.h"
-#include "ostream.h"
 #include "unichar.h"
-#include "strescape.h"
-#include "imap-client.h"
-#include "imap-commands.h"
 #include "mail-namespace.h"
 #include "mail-storage-private.h"
-#include "mail-search-build.h"
+#include "mailbox-list-private.h"
+#include "mail-search.h"
 #include "nfs-workarounds.h"
 #include "safe-mkstemp.h"
-#include "mkdir-parents.h"
 #include "file-lock.h"
 #include "file-dotlock.h"
 #include "write-full.h"
 #include "seq-range-array.h"
-#include "fd-set-nonblock.h"
-#include "randgen.h"
-#include "hex-binary.h"
-#include "imap-search.h"
 #include "fts-api.h"
 #include "fts-storage.h"
 #include "fts-sk-plugin.h"
 
 #include <stdlib.h>
 #include <sysexits.h>
-#include <dlfcn.h>
 
 /* config.h defines DEBUG to an empty comment which makes CoreServices barf */
 #ifdef DEBUG
@@ -133,6 +114,7 @@
 #define	SK_DEFAULT_MIN_TERM_LENGTH	1
 #define	SK_SEARCH_SECS			5
 #define	SK_DEFAULT_SPILL_DIR		"/tmp"
+#define	SK_INDEX_SPILL_DIR		"index"
 #define	SK_COMPACT_AGE			(2 * 24 * 60 * 60)
 #define	SK_COMPACT_EXPUNGES		100
 #define	SK_COMPACT_BATCH_SIZE		8
@@ -148,7 +130,7 @@
 #define	SK_INDEX_NAME			"fts-sk"
 #define	SK_SCHEME			"fts-sk"
 #define	SK_META_URL			SK_SCHEME"://meta"
-#define	SK_META_VERSION			1
+#define	SK_META_VERSION			2
 #define	SK_VERSION_NAME			"version"
 #define	SK_LAST_UID_NAME		"last_uid"
 #define	SK_UIDV_NAME			"uidvalidity"
@@ -157,10 +139,7 @@
 #define	SK_SHADOW_NAME			"shadow"
 #define	SK_EXPUNGED_UIDS_NAME		"expunged_uids"
 #define	SK_DEFERRED_SINCE_NAME		"deferred_since"
-
-#define	SK_INDEXER			"skindexer"
-#define	SK_INDEXER_EXECUTABLE		PKG_LIBEXECDIR"/"SK_INDEXER
-#define	SK_INDEXER_TIMEOUT_SECS		(2 * 60)
+#define	SK_HEADER_EXISTS_PREFIX		SK_SCHEME"-he-"
 
 #define	SK_TERM_CHARS			"@.-+#$%_&'"	/* arbitrary */
 
@@ -169,18 +148,9 @@
 						(x) = NULL; \
 					} STMT_END
 
-enum sk_where {
-	SK_BODY,
-	SK_HEADERS,
-	SK_SHADOW,
-	SK_WHERE_LAST
-};
-static const char *sk_wheres[SK_WHERE_LAST] = {
-	"body",
-	"hdr",
-	"shadow"
-};
-static size_t sk_where_lengths[SK_WHERE_LAST];
+static const char *sk_headers = "hdr";
+static const char *sk_body = "body";
+static const char *sk_shadow = "shadow";
 
 struct sk_fts_index {
 	char *path;
@@ -188,11 +158,27 @@ struct sk_fts_index {
 	SKDocumentRef meta_doc;
 };
 
+struct sk_meta_values {
+	unsigned int version;
+	uint32_t uidvalidity;
+	unsigned int fragments;
+	uint32_t last_uid;
+	CFArrayRef expungedUids;
+	time_t deferred_since;
+};
+
 struct sk_fts_backend {
 	struct fts_backend backend;
 
-	char *index_path;
+	long compact_age;
+	int compact_expunges;
+	unsigned int lock_timeout_secs;
+	unsigned int default_min_term_length;
+	unsigned int search_secs;
 	char *spill_dir;
+
+	struct mailbox *box;
+	char *index_path;
 	char *lock_path;
 	enum file_lock_method lock_method;
 	int lock_fd;
@@ -201,63 +187,50 @@ struct sk_fts_backend {
 	struct dotlock *dotlock;
 	int lock_type;
 
+	struct sk_meta_values values;
 	uint32_t uidvalidity;
 	mode_t create_mode;
 	gid_t create_gid;
-	CFMutableArrayRef pendingExpunges;
 
-	unsigned int default_min_term_length;
-	unsigned int lock_timeout_secs;
-	unsigned int search_secs;
-	int indexer_timeout_secs;
-	long compact_age;
-	int compact_expunges;
-
-	ARRAY_DEFINE(indexes, struct sk_fts_index);
+	ARRAY(struct sk_fts_index) indexes;
 
 	unsigned int debug:1;
 };
 
-struct sk_meta_values {
-	uint32_t last_uid;
-	CFArrayRef expungedUids;
-	time_t deferred_since;
-};
+struct sk_field {
+	char *where;
+	char *content_type;
+	off_t size;
 
-struct sk_fts_backend_build_context {
-	struct fts_backend_build_context ctx;
-
-	unsigned int fragment;
-
-	uint32_t next_uid, cur_uid, cur_seq;
-	enum sk_where next_where, cur_where;
-	buffer_t *cur_text;
-	char *next_content_type, *cur_content_type;
-	CFMutableArrayRef cur_shadow_ids;
-	struct sk_meta_values *values;
-
+	buffer_t *text;
 	string_t *spill_path;
 	int spill_fd;
 
-	pid_t indexer_pid;
-	struct ostream *to_indexer;
-	struct istream *from_indexer, *errs_from_indexer;
-	int from_indexer_fd;
-	int errs_from_indexer_fd;
-	char *indexer_tag;
-	struct ioloop *indexer_ioloop;
-	struct io *indexer_io, *indexer_ie;
-	struct timeout *indexer_timeout;
-	const char *indexer_reply;
-
-	unsigned int use_indexer_forever:1;
-	unsigned int indexer_shook:1;
-	unsigned int indexer_synchronous:1;
-	unsigned int indexer_shadowing:1;
-	unsigned int indexer_timed_out:1;
+	unsigned int is_text:1;
+	unsigned int sealed:1;
 };
 
-struct sk_fts_search_context {
+struct sk_fts_backend_update_context {
+	struct fts_backend_update_context uctx;
+
+	uint32_t uid;
+	ARRAY(struct sk_field *) fields;
+	struct sk_field *cur_field, *cur_field2;
+
+	unsigned int fragment;
+
+	CFMutableArrayRef shadowIds;
+	CFMutableArrayRef pendingExpunges;
+};
+
+struct sk_lookup_context {
+	struct sk_fts_backend *backend;
+	ARRAY_TYPE(seq_range) expunged_uids;
+	CFMutableStringRef query;
+	ARRAY_TYPE(seq_range) definite_uids, maybe_uids;
+};
+
+struct sk_search_context {
 	const struct sk_fts_index *skindex;
 	SKSearchRef search;
 
@@ -272,95 +245,105 @@ struct sk_fts_expunge_context {
 	unsigned int done:1;
 };
 
-static bool sk_plugin_initialized = FALSE;
+static bool sk_extractors_loaded = FALSE;
 
-/* the reacharound needs the symbols cmd_search_more and
-   cmd_search_more_callback to determine whether to run asynchronously but
-   they are not available in the LDA so use dlsym to look them up */
-static bool (*sk_cmd_search_more)(struct client_command_context *);
-static void (*sk_cmd_search_more_callback)(struct client_command_context *);
-
-int sk_assert_build_cancel = 1;		/* see stats-plugin.c */
-
-/* note that enabling mail_debug makes sandboxd use lots of cpu and
-   slows down skindexer <rdar://problem/8200016> */
 static const char sk_sandbox_profile[] = "\
 (version 1)\n\
+(deny default)\n\
+(import \"system.sb\")\n\
 \n\
-; set mail_debug to log to system log\n\
-(deny default%s)\n\
-(debug %s)\n\
-\n\
-(allow file-ioctl\n\
-       (literal \"/dev/dtracehelper\"))\n\
+; don't spam logs with these denials\n\
+(deny mach-per-user-lookup (with no-log))\n\
+(deny file-read-metadata\n\
+      (regex #\"^/(Volumes|Network)/.\")\n\
+      (with no-log))\n\
+(deny file-write*\n\
+      (subpath \"/private/var/folders\")\n\
+      (with no-log))\n\
 \n\
 (allow file-read*\n\
        (literal \"/\")\n\
        (regex #\"/(Library|Applications)($|/)\")	; explicitly not ^\n\
        (literal \"/private\")\n\
-       (regex #\"^/(private/)?(tmp|var)($|/)\")\n\
-       (literal \"/dev/autofs_nowait\")\n\
-       (literal \"/dev/dtracehelper\")\n\
-       (literal \"/dev/null\")\n\
-       (regex #\"^/dev/u?random$\")\n\
-       (subpath \"/System\")\n\
-       (regex #\"^/usr/(lib|share)($|/)\")\n\
-       (literal \""PKG_LIBEXECDIR"\")\n\
-       (subpath \""SK_INDEXER_EXECUTABLE"\")	; subpath for resource fork\n\
-       %s)	; spill dir\n\
+       (regex #\"^/(private/)?(tmp|var)($|/)\"))\n\
 \n\
-(allow file-read-metadata\n\
-       (regex #\"^/(private/)?etc(/localtime)?$)\")\n\
-       (literal \"/usr\"))\n\
-\n\
-(allow file-write-data\n\
-       (literal \"/dev/dtracehelper\")\n\
-       (literal \"/dev/null\")\n\
-       (regex #\"^/(private/)?(var/)?tmp($|/)\"))\n\
+(allow file-read* file-write*\n\
+       (subpath (param \"INDEX_DIR\"))\n\
+       (subpath (param \"SPILL_DIR\")))\n\
 \n\
 (allow ipc-posix-shm\n\
-       (ipc-posix-name-regex #\"^/tmp/com\\.apple\\.csseed\\.\")\n\
-       (ipc-posix-name \"apple.shm.notification_center\"))\n\
+       (ipc-posix-name-regex #\"^/tmp/com\\.apple\\.csseed\\.\"))\n\
 \n\
 (allow mach-lookup\n\
-       (global-name \"com.apple.CoreServices.coreservicesd\")\n\
-       (global-name-regex #\"^com\\.apple\\.distributed_notifications\\.\")\n\
-       (global-name-regex #\"^com\\.apple\\.system\\.DirectoryService\\.\")\n\
-       (global-name \"com.apple.system.logger\")\n\
-       (global-name \"com.apple.system.notification_center\"))\n\
-\n\
-(allow process-exec\n\
-       (literal \""SK_INDEXER_EXECUTABLE"\"))\n\
+       (global-name \"com.apple.CoreServices.coreservicesd\"))\n\
 \n\
 (allow signal (target self))\n\
-\n\
-(allow sysctl-read)\n\
-\n\
-(allow file-read* file-write-data file-write-mode\n\
-       %s)	; skindex path\n\
 ";
 
-static void sk_plugin_init(void)
+static void sk_extractors_load(struct sk_fts_backend *backend)
 {
-	unsigned int i;
+	const char *sandparams[5];
+	char *index_path, *real_index_path, *real_spill_path;
+	const char *spill_path;
+	char *cp, *errorbuf;
+	unsigned int slashes;
 
-	if (sk_plugin_initialized)
+	if (sk_extractors_loaded)
 		return;
+
+	i_assert(!fts_header_want_indexed(sk_headers));
+	i_assert(!fts_header_want_indexed(sk_body));
+	i_assert(!fts_header_want_indexed(sk_shadow));
+
+	/* SKLoadDefaultExtractorPlugins() only loads the plugins if
+	   getuid() != 0.  We need those plugins! */
+	if (getuid() == 0)
+		i_fatal("fts_sk: bad privileges for extractors");
 
 	/* <rdar://problem/7819581> */
 	_CFPreferencesAlwaysUseVolatileUserDomains();
 
-	for (i = 0; i < SK_WHERE_LAST; i++)
-		sk_where_lengths[i] = strlen(sk_wheres[i]);
+	/* indexer-worker can be shared among multiple users so don't
+	   screw the sandbox down tight on a single user's maildir.
+	   but also don't open up the entire file system. */
+	index_path = i_strdup(backend->index_path);
+	*strrchr(index_path, '/') = '\0';
+	for (slashes = 0, cp = index_path; *cp; cp++)
+		if (*cp == '/')
+			++slashes;
+	if (slashes < 3)	/* arbitrary but seems reasonable */
+		i_fatal("fts_sk: unsafe path for indexing: %s", index_path);
 
-	/* this reacharound just gets uglier and uglier */
-	sk_cmd_search_more = dlsym(RTLD_MAIN_ONLY, "cmd_search_more");
-	sk_cmd_search_more_callback = dlsym(RTLD_MAIN_ONLY,
-					    "cmd_search_more_callback");
-	if (sk_cmd_search_more != NULL && sk_cmd_search_more_callback == NULL)
-		i_fatal("fts_sk: found cmd_search_more but not cmd_search_more_callback");
+	if (strcmp(backend->spill_dir, SK_INDEX_SPILL_DIR) == 0)
+		spill_path = index_path;
+	else
+		spill_path = backend->spill_dir;
 
-	sk_plugin_initialized = TRUE;
+	/* sandbox barfs on symlinks */
+	real_index_path = realpath(index_path, NULL);
+	if (real_index_path == NULL)
+		i_fatal("fts_sk: realpath(%s) failed: %m", index_path);
+	real_spill_path = realpath(spill_path, NULL);
+	if (real_spill_path == NULL)
+		i_fatal("fts_sk: realpath(%s) failed: %m", spill_path);
+	sandparams[0] = "INDEX_DIR";
+	sandparams[1] = real_index_path;
+	sandparams[2] = "SPILL_DIR";
+	sandparams[3] = real_spill_path;
+	sandparams[4] = NULL;
+	errorbuf = NULL;
+	if (sandbox_init_with_parameters(sk_sandbox_profile, 0, sandparams,
+					 &errorbuf) != 0)
+		i_fatal("fts_sk: sandbox_init failed: %s", errorbuf);
+	free(real_spill_path);
+	free(real_index_path);
+	i_free(index_path);
+
+	sandbox_note("fts_sk: loading metadata importers");
+	SKLoadDefaultExtractorPlugIns();
+	sandbox_note("");
+
+	sk_extractors_loaded = TRUE;
 }
 
 static void sk_nonnull(const void *ptr, const char *tag)
@@ -370,7 +353,8 @@ static void sk_nonnull(const void *ptr, const char *tag)
 			       "fts_sk: %s failed: Out of memory", tag);
 }
 
-static void sk_set_options(struct sk_fts_backend *backend, const char *str)
+static int sk_set_options(struct sk_fts_backend *backend, const char *str,
+			  const char **error_r)
 {
 	const char *const *tmp;
 
@@ -378,60 +362,78 @@ static void sk_set_options(struct sk_fts_backend *backend, const char *str)
 		if (strncasecmp(*tmp, "compact_age_days=", 17) == 0) {
 			const char *p = *tmp + 17;
 			long val = atoi(p) * 24 * 60 * 60;
-			if (val <= 0)
-				i_fatal("fts_sk: Invalid compact_age_days: %s",
+			if (val <= 0) {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid compact_age_days: %s",
 					p);
+				return -1;
+			}
 			backend->compact_age = val;
 		} else if (strncasecmp(*tmp, "compact_expunges=", 17) == 0) {
 			const char *p = *tmp + 17;
 			int val = atoi(p);
-			if (val <= 0)
-				i_fatal("fts_sk: Invalid compact_expunges: %s",
+			if (val <= 0) {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid compact_expunges: %s",
 					p);
+				return -1;
+			}
 			backend->compact_expunges = val;
 		} else if (strncasecmp(*tmp, "lock_timeout_secs=", 18) == 0) {
 			const char *p = *tmp + 18;
 			int val = atoi(p);
-			if (val < 0)
-				i_fatal("fts_sk: Invalid lock_timeout_secs: %s",
+			if (val < 0) {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid lock_timeout_secs: %s",
 					p);
+				return -1;
+			}
 			backend->lock_timeout_secs = val;
 		} else if (strncasecmp(*tmp, "min_term_length=", 16) == 0) {
 			const char *p = *tmp + 16;
 			int val = atoi(p);
-			if (val <= 0)
-				i_fatal("fts_sk: Invalid min_term_length: %s",
+			if (val <= 0) {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid min_term_length: %s",
 					p);
+				return -1;
+			}
 			backend->default_min_term_length = val;
 		} else if (strncasecmp(*tmp, "indexer_timeout_secs=", 21) == 0) {
-			const char *p = *tmp + 21;
-			int val = atoi(p);
-			if (val <= 0)
-				i_fatal("fts_sk: Invalid indexer_timeout_secs: %s",
-					p);
-			backend->indexer_timeout_secs = val;
+			i_warning("fts_sk: indexer_timeout_secs setting is "
+				  "obsolete; use fts_index_timeout instead");
 		} else if (strncasecmp(*tmp, "search_secs=", 12) == 0) {
 			const char *p = *tmp + 12;
 			int val = atoi(p);
-			if (val < 0)
-				i_fatal("fts_sk: Invalid search_secs: %s", p);
+			if (val < 0) {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid search_secs: %s", p);
+				return -1;
+			}
 			backend->search_secs = val;
 		} else if (strncasecmp(*tmp, "spill_dir=", 10) == 0) {
 			const char *p = *tmp + 10;
 			if (strcasecmp(p, "index") == 0) {
 				i_free(backend->spill_dir);
 				backend->spill_dir =
-					i_strdup(backend->index_path);
+					i_strdup(SK_INDEX_SPILL_DIR);
 			} else if (*p == '/') {
 				i_free(backend->spill_dir);
 				backend->spill_dir = i_strdup(p);
-			} else
-				i_fatal("fts_sk: Invalid spill_dir: %s "
+			} else {
+				*error_r = t_strdup_printf(
+					"fts_sk: Invalid spill_dir: %s "
 					"(need \"index\" or an absolute path)",
 					p);
-		} else
-			i_fatal("fts_sk: Invalid setting: %s", *tmp);
+				return -1;
+			}
+		} else {
+			*error_r = t_strdup_printf(
+				"fts_sk: Invalid setting: %s", *tmp);
+			return -1;
+		}
 	}
+	return 0;
 }
 
 static CFDictionaryRef sk_index_properties(struct sk_fts_backend *backend)
@@ -470,7 +472,7 @@ static CFDictionaryRef sk_meta_properties(struct sk_fts_backend *backend,
 					  const struct sk_meta_values *values)
 {
 	CFMutableDictionaryRef metaprops;
-	unsigned int version, fragments;
+	unsigned int fragments;
 	CFNumberRef versionNum, lastUid, uidValidity, fragmentCount,
 		deferredSince;
 
@@ -480,15 +482,14 @@ static CFDictionaryRef sk_meta_properties(struct sk_fts_backend *backend,
 					  &kCFTypeDictionaryValueCallBacks);
 	sk_nonnull(metaprops, "CFDictionaryCreateMutable(metaprops)");
 
-	version = SK_META_VERSION;
 	versionNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type,
-				    &version);
+				    &values->version);
 	sk_nonnull(versionNum, "CFNumberCreate(version)");
 	CFDictionaryAddValue(metaprops, CFSTR(SK_VERSION_NAME), versionNum);
 	CFRelease_and_null(versionNum);
 
 	uidValidity = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type,
-				     &backend->uidvalidity);
+				     &values->uidvalidity);
 	sk_nonnull(uidValidity, "CFNumberCreate(uidvalidity)");
 	CFDictionaryAddValue(metaprops, CFSTR(SK_UIDV_NAME), uidValidity);
 	CFRelease_and_null(uidValidity);
@@ -530,44 +531,22 @@ static CFDictionaryRef sk_meta_properties(struct sk_fts_backend *backend,
 	return metaprops;
 }
 
-static CFDictionaryRef sk_get_metaprops(struct sk_fts_backend *backend)
+static void sk_meta_values_init(struct sk_meta_values *values)
 {
-	const struct sk_fts_index *skindex = array_idx(&backend->indexes, 0);
-
-	CFDictionaryRef metaprops =
-		SKIndexCopyDocumentProperties(skindex->skiref,
-					      skindex->meta_doc);
-	if (metaprops == NULL)
-		i_error("fts_sk: meta properties missing from %s",
-			skindex->path);
-	return metaprops;
-}
-
-static struct sk_meta_values *sk_meta_values_init(void)
-{
-	struct sk_meta_values *values;
-
-	values = i_new(struct sk_meta_values, 1);
+	memset(values, 0, sizeof *values);
+	values->version = SK_META_VERSION;
 	values->last_uid = (uint32_t) -1;
-	values->expungedUids = NULL;
-	values->deferred_since = 0;
-
-	return values;
 }
 
-static void sk_meta_values_deinit(struct sk_meta_values **_values)
+static void sk_meta_values_deinit(struct sk_meta_values *values)
 {
-	struct sk_meta_values *values = *_values;
-
-	*_values = NULL;
 	if (values->expungedUids != NULL)
 		CFRelease_and_null(values->expungedUids);
-	i_free(values);
 }
 
-static int sk_set_meta_values(struct sk_fts_backend *backend,
-			      const struct sk_meta_values *values)
+static int sk_save_meta_values(struct sk_fts_backend *backend)
 {
+	struct sk_meta_values *values = &backend->values;
 	const struct sk_fts_index *skindex = array_idx(&backend->indexes, 0);
 
 	if (values->last_uid == 0) {
@@ -589,24 +568,46 @@ static int sk_set_meta_values(struct sk_fts_backend *backend,
 	return 1;
 }
 
-static int sk_get_meta_values(struct sk_fts_backend *backend,
-			      struct sk_meta_values **values_r)
+static int sk_load_meta_values(struct sk_fts_backend *backend)
 {
+	const struct sk_fts_index *skindex = array_idx(&backend->indexes, 0);
+	struct sk_meta_values *values = &backend->values;
 	CFDictionaryRef metaprops;
-	struct sk_meta_values *values;
-	CFNumberRef lastUid, deferredSince;
+	CFNumberRef num;
 	int ret = 0;
 
-	metaprops = sk_get_metaprops(backend);
-	if (metaprops == NULL)
+	metaprops = SKIndexCopyDocumentProperties(skindex->skiref,
+						  skindex->meta_doc);
+	if (metaprops == NULL) {
+		i_error("fts_sk: meta properties missing from %s",
+			skindex->path);
 		return -1;
+	}
 
-	values = sk_meta_values_init();
+	sk_meta_values_init(values);
 
-	lastUid = (CFNumberRef) CFDictionaryGetValue(metaprops,
-				CFSTR(SK_LAST_UID_NAME));
-	if (lastUid == NULL ||
-	    !CFNumberGetValue(lastUid, kCFNumberSInt32Type, &values->last_uid))
+	num = (CFNumberRef) CFDictionaryGetValue(metaprops,
+						 CFSTR(SK_VERSION_NAME));
+	if (num == NULL || !CFNumberGetValue(num, kCFNumberSInt32Type,
+					     &values->version))
+		ret = -1;
+
+	num = (CFNumberRef) CFDictionaryGetValue(metaprops,
+						 CFSTR(SK_UIDV_NAME));
+	if (num == NULL || !CFNumberGetValue(num, kCFNumberSInt32Type,
+					     &values->uidvalidity))
+		ret = -1;
+
+	num = (CFNumberRef) CFDictionaryGetValue(metaprops,
+						 CFSTR(SK_FRAGS_NAME));
+	if (num == NULL || !CFNumberGetValue(num, kCFNumberSInt32Type,
+					     &values->fragments))
+		ret = -1;
+
+	num = (CFNumberRef) CFDictionaryGetValue(metaprops,
+						 CFSTR(SK_LAST_UID_NAME));
+	if (num == NULL || !CFNumberGetValue(num, kCFNumberSInt32Type,
+					     &values->last_uid))
 		ret = -1;
 
 	values->expungedUids = (CFArrayRef) CFDictionaryGetValue(metaprops,
@@ -614,20 +615,17 @@ static int sk_get_meta_values(struct sk_fts_backend *backend,
 	if (values->expungedUids != NULL)
 		CFRetain(values->expungedUids);
 
-	deferredSince = (CFNumberRef) CFDictionaryGetValue(metaprops,
-				      CFSTR(SK_DEFERRED_SINCE_NAME));
+	num = (CFNumberRef) CFDictionaryGetValue(metaprops,
+						 CFSTR(SK_DEFERRED_SINCE_NAME));
 	i_assert(sizeof values->deferred_since == sizeof (long));
-	if (deferredSince == NULL ||
-	    !CFNumberGetValue(deferredSince, kCFNumberLongType,
-			      &values->deferred_since))
+	if (num == NULL || !CFNumberGetValue(num, kCFNumberLongType,
+					     &values->deferred_since))
 		ret = -1;
 
 	CFRelease_and_null(metaprops);
 
 	if (ret < 0)
-		sk_meta_values_deinit(&values);
-	else
-		*values_r = values;
+		sk_meta_values_deinit(values);
 	return ret;
 }
 
@@ -687,15 +685,19 @@ static int sk_flush(struct sk_fts_backend *backend)
 	return ret;
 }
 
+static bool sk_is_open(struct sk_fts_backend *backend)
+{
+	struct sk_fts_index *skindex =
+		array_idx_modifiable(&backend->indexes, 0);
+	return skindex->skiref != NULL;
+}
+
 static int sk_open(struct sk_fts_backend *backend, bool writable,
 		   bool meta_only)
 {
 	struct sk_fts_index *skindex;
 	size_t path_len;
 	CFURLRef url;
-	CFDictionaryRef metaprops;
-	int version = -1;
-	uint32_t uidvalidity = (uint32_t) -1;
 	int error_ret = -1;
 	unsigned int fragments = 0, i;
 	string_t *fragment_path;
@@ -710,38 +712,18 @@ static int sk_open(struct sk_fts_backend *backend, bool writable,
 	sk_nonnull(url, "CFURLCreateFromFileSystemRepresentation(path)");
 
 	/* open the first index */
+	sandbox_note(t_strdup_printf("fts_sk: opening \"%s\" writable %d",
+				     skindex->path, writable));
 	skindex->skiref = SKIndexOpenWithURL(url, CFSTR(SK_INDEX_NAME),
 					     writable);
+	sandbox_note("");
 	CFRelease_and_null(url);
 	if (skindex->skiref == NULL)
 		return -1;
 
-	metaprops = sk_get_metaprops(backend);
-	if (metaprops != NULL) {
-		CFNumberRef versionNum, uidValidity, fragmentCount;
-
-		versionNum = (CFNumberRef) CFDictionaryGetValue(metaprops,
-			CFSTR(SK_VERSION_NAME));
-		if (versionNum == NULL ||
-		    !CFNumberGetValue(versionNum, kCFNumberSInt32Type,
-				      &version))
-			version = -1;
-
-		uidValidity = (CFNumberRef) CFDictionaryGetValue(metaprops,
-			CFSTR(SK_UIDV_NAME));
-		if (uidValidity == NULL ||
-		    !CFNumberGetValue(uidValidity, kCFNumberSInt32Type,
-				      &uidvalidity))
-			uidvalidity = (uint32_t) -1;
-
-		fragmentCount = (CFNumberRef) CFDictionaryGetValue(metaprops,
-			CFSTR(SK_FRAGS_NAME));
-		if (fragmentCount == NULL ||
-		    !CFNumberGetValue(fragmentCount, kCFNumberSInt32Type,
-				      &fragments))
-			fragments = 0;
-
-		CFRelease_and_null(metaprops);
+	if (sk_load_meta_values(backend) < 0) {
+		sk_close(backend);
+		return -1;
 	}
 
 	/* prepare index fragment paths in case we need to call sk_delete() */
@@ -775,19 +757,21 @@ static int sk_open(struct sk_fts_backend *backend, bool writable,
 	skindex = array_get_modifiable(&backend->indexes, &fragments);
 
 	/* sanity check */
-	if (version != SK_META_VERSION || uidvalidity != backend->uidvalidity) {
-		if (version > SK_META_VERSION) {
-			i_warning("fts_sk: %s is version %d which is "
-				  "newer than version %d; ignoring",
-				  skindex->path, version, SK_META_VERSION);
-			error_ret = 0;
-			sk_close(backend);
-		} else {
-			/* FIXME when appropriate: upgrade old index to new
-			   version */
-			sk_close(backend);
-			sk_delete(backend);
-		}
+	if (backend->values.version > SK_META_VERSION) {
+		i_warning("fts_sk: %s is version %d which is "
+			  "newer than version %d; ignoring",
+			  skindex->path, backend->values.version,
+			  SK_META_VERSION);
+		error_ret = 0;
+		sk_close(backend);
+	} else if (backend->values.version < SK_META_VERSION) {
+		/* FIXME when appropriate:  upgrade old index to new
+		   version.  No upgrade from v1 to v2; that is, if v1
+		   remain v1. */
+	}
+	if (backend->values.uidvalidity != backend->uidvalidity) {
+		sk_close(backend);
+		sk_delete(backend);
 	}
 	/* the array may have been reallocated */
 	skindex = array_get_modifiable(&backend->indexes, &fragments);
@@ -804,9 +788,12 @@ static int sk_open(struct sk_fts_backend *backend, bool writable,
 			kCFAllocatorDefault, (const UInt8 *) skindex[i].path,
 			strlen(skindex[i].path), FALSE);
 		sk_nonnull(url, "CFURLCreateFromFileSystemRepresentation(fragment_path)");
+		sandbox_note(t_strdup_printf("fts_sk: opening \"%s\" writable %d",
+					     skindex[i].path, writable));
 		skindex[i].skiref = SKIndexOpenWithURL(url,
 						       CFSTR(SK_INDEX_NAME),
 						       writable);
+		sandbox_note("");
 		CFRelease_and_null(url);
 
 		if (skindex[i].skiref == NULL) {
@@ -837,15 +824,16 @@ static int sk_create(struct sk_fts_backend *backend, unsigned int fragno)
 
 	/* Don't adjust umask since we can't set the mode til after. */
 	CFDictionaryRef properties = sk_index_properties(backend);
+	sandbox_note(t_strdup_printf("fts_sk: creating \"%s\"",
+				     skindex->path));
 	skindex->skiref = SKIndexCreateWithURL(url,
 					       CFSTR(SK_INDEX_NAME),
 					       kSKIndexInverted,
 					       properties);
+	sandbox_note("");
 	CFRelease_and_null(properties);
 	CFRelease_and_null(url);
 	if (skindex->skiref != NULL) {
-		struct sk_meta_values *values;
-
 		if (chmod(skindex->path, backend->create_mode) < 0)
 			i_warning("fts_sk: chmod(%s, 0%o) failed: %m",
 			       skindex->path, backend->create_mode);
@@ -855,14 +843,19 @@ static int sk_create(struct sk_fts_backend *backend, unsigned int fragno)
 			i_warning("fts_sk: chown(%s, -1, %d) failed: %m",
 			       skindex->path, backend->create_gid);
 
-		values = sk_meta_values_init();
-		values->last_uid = 0;
-		if ((fragno == 0 && sk_set_meta_values(backend, values) < 0) ||
-		    sk_flush(backend) < 0) {
+		if (fragno == 0) {
+			sk_meta_values_init(&backend->values);
+			backend->values.uidvalidity = backend->uidvalidity;
+			backend->values.last_uid = 0;
+			if (sk_save_meta_values(backend) < 0 ||
+			    sk_flush(backend) < 0) {
+				sk_close(backend);
+				sk_delete(backend);
+			}
+		} else if (sk_flush(backend) < 0) {
 			sk_close(backend);
 			sk_delete(backend);
 		}
-		sk_meta_values_deinit(&values);
 	}
 
 	return skindex->skiref == NULL ? -1 : 1;
@@ -887,39 +880,44 @@ static int sk_open_or_create(struct sk_fts_backend *backend, bool meta_only)
 	return ret;
 }
 
-static void sk_doc_mkname(string_t *name, uint32_t uid, enum sk_where where,
-			  uint32_t seq)
+static void sk_doc_mkname(string_t *name, uint32_t uid, const char *where)
 {
 	/* putting the uid and the where in the url is crucial */
-	str_printfa(name, "uid=%u&where=%s&seq=%u", uid, sk_wheres[where], seq);
+	str_printfa(name, "uid=%u&where=%s", uid, where);
 }
 
-static SKDocumentRef sk_create_document_immediate(uint32_t uid,
-						  enum sk_where where,
-						  uint32_t seq)
+static SKDocumentRef sk_create_document(string_t *doc_path)
 {
-	string_t *url;
-	CFURLRef docurl;
+	CFURLRef doc_url;
 	SKDocumentRef doc;
 
-	url = t_str_new(64);
-	str_append(url, "/"SK_DOCUMENTS_NAME"/");
-	sk_doc_mkname(url, uid, where, seq);
-
-	docurl = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-		str_data(url), str_len(url), FALSE);
-	if (docurl == NULL) {
-		i_error("fts_sk: CFURLCreateWithString(%s) failed", str_c(url));
+	doc_url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+		str_data(doc_path), str_len(doc_path), FALSE);
+	if (doc_url == NULL) {
+		i_error("fts_sk: CFURLCreateWithString(%s) failed",
+			str_c(doc_path));
 		return NULL;
 	}
 
-	doc = SKDocumentCreateWithURL(docurl);
+	doc = SKDocumentCreateWithURL(doc_url);
 	if (doc == NULL)
 		i_error("fts_sk: SKDocumentCreateWithURL(%s) failed",
-			str_c(url));
+			str_c(doc_path));
 
-	CFRelease_and_null(docurl);
+	CFRelease_and_null(doc_url);
 	return doc;
+}
+
+static SKDocumentRef sk_create_document_immediate(uint32_t uid,
+						  const char *where)
+{
+	string_t *path;
+
+	path = t_str_new(64);
+	str_append(path, "/"SK_DOCUMENTS_NAME"/");
+	sk_doc_mkname(path, uid, where);
+
+	return sk_create_document(path);
 }
 
 static const char *sk_clean_term(const char *term, bool *quote)
@@ -952,11 +950,17 @@ static const char *sk_clean_term(const char *term, bool *quote)
 	return str_c(clean);
 }
 
-static bool sk_build_query(CFMutableStringRef query, const char *term)
+static void sk_build_query(CFMutableStringRef query,
+			   const struct mail_search_arg *arg)
 {
-	bool definite = TRUE;
+	const char *term = arg->value.str;
 	const char **words;
 	unsigned int count, i;
+
+	if (arg->fuzzy) {
+		CFStringAppendCString(query, term, kCFStringEncodingUTF8);
+		return;
+	}
 
 	words = t_strsplit_spaces(term, " \t");
 	for (count = 0; words[count] != NULL; ++count)
@@ -973,12 +977,10 @@ static bool sk_build_query(CFMutableStringRef query, const char *term)
 			CFStringAppend(query, CFSTR(" "));
 
 		if (quote) {
+			/* SearchKit can't do subphrase matches so no wildcards */
 			CFStringAppend(query, CFSTR("\""));
 			CFStringAppendCString(query, word, kCFStringEncodingUTF8);
 			CFStringAppend(query, CFSTR("\""));
-
-			/* SearchKit can't do subphrase matches */
-			definite = FALSE;
 		} else {
 			/* IMAP requires substring match always */
 			CFStringAppend(query, CFSTR("*"));
@@ -989,24 +991,15 @@ static bool sk_build_query(CFMutableStringRef query, const char *term)
 
 	if (count > 1)
 		CFStringAppend(query, CFSTR(")"));
-
-	return definite;
 }
 
-static int sk_score_cmp(const struct fts_score_map *s1,
-			const struct fts_score_map *s2)
-{
-	return s1->uid < s2->uid ? -1 :
-		(s1->uid > s2->uid ? 1 : 0);
-}
 
-static void sk_search_do(struct sk_fts_backend *backend,
-			 struct sk_fts_search_context *sctx,
-			 enum fts_lookup_flags flags,
-			 const ARRAY_TYPE(seq_range) *expunged,
-			 ARRAY_TYPE(seq_range) *uids,
+static void sk_search_do(struct sk_lookup_context *lctx,
+			 struct sk_search_context *sctx,
+			 const struct mail_search_arg *arg,
 			 ARRAY_TYPE(fts_score_map) *score_map)
 {
+	struct sk_fts_backend *backend = lctx->backend;
 	enum { SK_MAXDOCS = 50 };
 	SKDocumentID results[SK_MAXDOCS];
 	float scores[SK_MAXDOCS];
@@ -1023,8 +1016,9 @@ static void sk_search_do(struct sk_fts_backend *backend,
 	SKIndexCopyInfoForDocumentIDs(sctx->skindex->skiref, found, results,
 				      names, NULL);
 	for (i = 0; i < found; i++) {
-		char name[128], where[128];
+		char name[128], where[128], *amp;
 		uint32_t uid = 0;
+		ARRAY_TYPE(seq_range) *uids = NULL;
 
 		if (names[i] == NULL)
 			continue;
@@ -1041,22 +1035,55 @@ static void sk_search_do(struct sk_fts_backend *backend,
 		    uid == 0)
 			continue;
 
-		if ((flags & FTS_LOOKUP_FLAG_HEADER) == 0 &&
-		    strncmp(where, sk_wheres[SK_HEADERS],
-			    sk_where_lengths[SK_HEADERS]) == 0)
-			continue;	/* body only */
-		if ((flags & FTS_LOOKUP_FLAG_BODY) == 0 &&
-		    strncmp(where, sk_wheres[SK_BODY],
-			    sk_where_lengths[SK_BODY]) == 0)
-			continue;	/* header only */
-		if (strncmp(where, sk_wheres[SK_SHADOW],
-			    sk_where_lengths[SK_SHADOW]) == 0)
-			continue;	/* shadows are internal only */
+		/* version 1 indexes included &seq=%u, absent from version 2,
+		   also there might be &rand= */
+		if ((amp = strchr(where, '&')) != NULL)
+			*amp = '\0';
 
-		if (seq_range_exists(expunged, uid))
+		if (strcmp(where, sk_shadow) == 0)
+			continue;	/* shadows are internal only */
+		if (seq_range_exists(&lctx->expunged_uids, uid))
 			continue;
 
-		seq_range_array_add(uids, found, uid);
+		switch (arg->type) {
+		case SEARCH_TEXT:
+			/* definite match anywhere in message */
+			uids = &lctx->definite_uids;
+			break;
+		case SEARCH_BODY:
+			/* definite match if in body */
+			if (strcmp(where, sk_body) == 0)
+				uids = &lctx->definite_uids;
+			break;
+		case SEARCH_HEADER:
+		case SEARCH_HEADER_ADDRESS:
+		case SEARCH_HEADER_COMPRESS_LWSP:
+			if (backend->values.version == 1) {
+				/* version 1 indexes only indicate body vs.
+				   any-header; maybe match if in any header */
+				if (strcmp(where, sk_headers) == 0)
+					uids = &lctx->maybe_uids;
+			} else if (fts_header_want_indexed(arg->hdr_field_name)) {
+				/* version 2 indexes indicate body, each of the
+				   fts_header_want_indexed() headers, and
+				   any-header; definite match if in indexed
+				   header */
+				if (strcmp(where, arg->hdr_field_name) == 0)
+					uids = &lctx->definite_uids;
+			} else {
+				/* maybe match if in any header */
+				if (strcmp(where, sk_headers) == 0)
+					uids = &lctx->maybe_uids;
+			}
+			break;
+		default:
+			i_unreached();
+		}
+		if (uids == NULL)
+			continue;
+
+		i_assert(array_is_created(uids));
+		seq_range_array_add(uids, uid);
 
 		if (score_map != NULL) {
 			struct fts_score_map *score =
@@ -1067,58 +1094,34 @@ static void sk_search_do(struct sk_fts_backend *backend,
 	}
 }
 
-static int sk_search(struct sk_fts_backend *backend, CFStringRef query,
-		     enum fts_lookup_flags flags,
-		     ARRAY_TYPE(seq_range) *uids,
+static int sk_search(struct sk_lookup_context *lctx,
+		     const struct mail_search_arg *arg,
 		     ARRAY_TYPE(fts_score_map) *score_map)
 {
-	struct sk_meta_values *values = NULL;
-	ARRAY_TYPE(seq_range) expunged;
+	struct sk_fts_backend *backend = lctx->backend;
 	unsigned int count, i;
 	const struct sk_fts_index *skindex;
-	ARRAY_DEFINE(searches, struct sk_fts_search_context);
-	struct sk_fts_search_context *sctx;
+	ARRAY(struct sk_search_context) searches;
+	struct sk_search_context *sctx;
 	bool more;
 
-	/* searching may find uids that have been expunge-deferred;
-	   skip those results */
-	if (sk_get_meta_values(backend, &values) < 0)
-		return -1;
-	count = values->expungedUids != NULL ?
-		CFArrayGetCount(values->expungedUids) : 0;
-	t_array_init(&expunged, count);
-	for (i = 0; i < count; i++) {
-		CFNumberRef num = (CFNumberRef)
-			CFArrayGetValueAtIndex(values->expungedUids, i);
-		uint32_t uid;
-
-		if (num == NULL ||
-		    !CFNumberGetValue(num, kCFNumberSInt32Type, &uid))
-			uid = (uint32_t) -1;
-		if (uid != (uint32_t) -1)
-			seq_range_array_add(&expunged, count, uid);
-	}
-	sk_meta_values_deinit(&values);
+	CFStringReplaceAll(lctx->query, CFSTR(""));
+	sk_build_query(lctx->query, arg);
 
 	skindex = array_get(&backend->indexes, &count);
 	t_array_init(&searches, count);
 	for (i = 0; i < count; i++) {
+		SKSearchOptions opts = kSKSearchOptionDefault;
 		SKSearchRef search;
 
-		/* SK requires flush before search */
-		if (!SKIndexFlush(skindex[i].skiref)) {
-			i_error("fts_sk: SKIndexFlush(%s) failed",
-				skindex[i].path);
-			return -1;
-		}
-
-		search = SKSearchCreate(skindex[i].skiref, query,
-					score_map != NULL ?
-					kSKSearchOptionDefault :
-					kSKSearchOptionNoRelevanceScores);
+		if (score_map == NULL)
+			opts |= kSKSearchOptionNoRelevanceScores;
+		if (arg->fuzzy)
+			opts |= kSKSearchOptionFindSimilar;
+		search = SKSearchCreate(skindex[i].skiref, lctx->query, opts);
 		if (search == NULL) {
 			char qbuf[1024];
-			if (!CFStringGetCString(query, qbuf, sizeof qbuf,
+			if (!CFStringGetCString(lctx->query, qbuf, sizeof qbuf,
 						kCFStringEncodingUTF8))
 				strcpy(qbuf, "(unknown)");
 			i_error("fts_sk: SKSearchCreate(%s, %s) failed",
@@ -1143,8 +1146,7 @@ static int sk_search(struct sk_fts_backend *backend, CFStringRef query,
 		for (i = 0; i < count; i++) {
 			if (sctx[i].done)
 				continue;
-			sk_search_do(backend, &sctx[i], flags, &expunged,
-				     uids, score_map);
+			sk_search_do(lctx, &sctx[i], arg, score_map);
 			if (sctx[i].done)
 				CFRelease_and_null(sctx[i].search);
 			else
@@ -1152,916 +1154,525 @@ static int sk_search(struct sk_fts_backend *backend, CFStringRef query,
 		}
 	} while (more);
 
-	/* fts_mail_get_special() expects the scores to be sorted by uid */
-	if (score_map != NULL)
-		array_sort(score_map, sk_score_cmp);
-
 	return 1;
 }
 
-static int sk_spill_init(struct sk_fts_backend_build_context *ctx)
+static struct sk_lookup_context *sk_lookup_new(struct sk_fts_backend *backend)
 {
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
+	struct sk_meta_values *values = &backend->values;
+	struct sk_lookup_context *lctx;
+	unsigned int count, i;
 
-	if (ctx->spill_path == NULL) {
-		ctx->spill_path = str_new(default_pool, 128);
-		str_printfa(ctx->spill_path, "%s/", backend->spill_dir);
-		sk_doc_mkname(ctx->spill_path, ctx->cur_uid, ctx->cur_where,
-			      ctx->cur_seq);
-		str_append(ctx->spill_path, "&rand=");
+	/* SK requires flush before search */
+	if (sk_flush(backend) < 0)
+		return NULL;
+
+	lctx = i_new(struct sk_lookup_context, 1);
+	lctx->backend = backend;
+	lctx->query = CFStringCreateMutable(kCFAllocatorDefault, 0);
+	sk_nonnull(lctx->query, "CFStringCreateMutable(query)");
+	i_array_init(&lctx->definite_uids, 128);
+	i_array_init(&lctx->maybe_uids, 128);
+
+	/* searching may find uids that have been expunge-deferred;
+	   skip those results */
+	count = values->expungedUids != NULL ?
+		CFArrayGetCount(values->expungedUids) : 0;
+	i_array_init(&lctx->expunged_uids, count);
+	for (i = 0; i < count; i++) {
+		CFNumberRef num = (CFNumberRef)
+			CFArrayGetValueAtIndex(values->expungedUids, i);
+		uint32_t uid;
+
+		if (num == NULL ||
+		    !CFNumberGetValue(num, kCFNumberSInt32Type, &uid))
+			uid = 0;
+		if (uid != 0)
+			seq_range_array_add(&lctx->expunged_uids, uid);
 	}
 
-	ctx->spill_fd = safe_mkstemp(ctx->spill_path, 0600, (uid_t) -1,
-				     backend->create_gid);
-	if (ctx->spill_fd < 0) {
-		i_error("fts_sk: safe_mkstemp(%s) failed: %m",
-			str_c(ctx->spill_path));
-		return -1;
-	}
-
-	return 1;
+	return lctx;
 }
 
-static int sk_spill(struct sk_fts_backend_build_context *ctx)
+static void sk_lookup_free(struct sk_lookup_context **_lctx)
 {
-	const void *cur_data;
-	size_t cur_size;
+	struct sk_lookup_context *lctx = *_lctx;
 
-	cur_data = buffer_get_data(ctx->cur_text, &cur_size);
-	if (cur_size == 0)
-		return 1;
-
-	if (ctx->spill_fd < 0) {
-		if (sk_spill_init(ctx) < 0)
-			return -1;
-	}
-
-	if (write_full(ctx->spill_fd, cur_data, cur_size) < 0) {
-		i_error("fts_sk: write_full(%s, %"PRIuSIZE_T") failed: %m",
-			str_c(ctx->spill_path), cur_size);
-		return -1;
-	}
-
-	buffer_set_used_size(ctx->cur_text, 0);
-	return 1;
+	*_lctx = NULL;
+	array_free(&lctx->expunged_uids);
+	CFRelease_and_null(lctx->query);
+	array_free(&lctx->definite_uids);
+	array_free(&lctx->maybe_uids);
+	i_free(lctx);
 }
 
-static void sk_indexer_end_clean(struct sk_fts_backend_build_context *ctx)
+static int sk_lookup_arg(struct sk_lookup_context *lctx,
+			 struct mail_search_arg *arg, bool and_args,
+			 struct fts_result *result)
 {
-	int status;
-
-	io_loop_stop(ctx->indexer_ioloop);
-
-	if (waitpid(ctx->indexer_pid, &status, 0) < 0)
-		i_error("fts_sk: waitpid(%d) failed: %m", ctx->indexer_pid);
-	else if (WIFEXITED(status)) {
-		if (WEXITSTATUS(status) != 0)
-			i_error("fts_sk: indexer process %d exited with code %d",
-				ctx->indexer_pid, WEXITSTATUS(status));
-	} else if (WIFSIGNALED(status))
-		i_error("fts_sk: indexer process %d terminated abnormally, "
-			"signal %d", ctx->indexer_pid, WTERMSIG(status));
-	else if (WIFSTOPPED(status))
-		i_error("fts_sk: indexer process %d stopped, signal %d",
-			ctx->indexer_pid, WSTOPSIG(status));
-	else
-		i_error("fts_sk: indexer process %d terminated abnormally, "
-			"exit status %d", ctx->indexer_pid, status);
-}
-
-static void sk_indexer_end_dirty(struct sk_fts_backend_build_context *ctx)
-{
-	if (ctx->indexer_ioloop != NULL)
-		io_loop_stop(ctx->indexer_ioloop);
-
-	if (kill(ctx->indexer_pid, SIGKILL) < 0) {
-		if (errno == ESRCH)
-			return;
-		i_error("fts_sk: kill(%d, %d) failed: %m", ctx->indexer_pid,
-			SIGKILL);
-	}
-
-	i_warning("fts_sk: killed unresponsive indexer process %d",
-		  ctx->indexer_pid);
-	(void) waitpid(ctx->indexer_pid, NULL, 0);
-}
-
-static void sk_indexer_error_input(struct sk_fts_backend_build_context *ctx)
-{
+	struct sk_fts_backend *backend = lctx->backend;
+	const char *orig_arg_str = arg->value.str;
 	int ret;
-	char *line;
 
-	while ((ret = i_stream_read(ctx->errs_from_indexer)) > 0) {
-		while ((line =
-			i_stream_next_line(ctx->errs_from_indexer)) != NULL)
-			i_info("fts_sk: indexer process %d stderr: %s",
-			       ctx->indexer_pid, line);
+	switch (arg->type) {
+	case SEARCH_TEXT:
+	case SEARCH_BODY:
+		/* we can search for these */
+		break;
+	case SEARCH_HEADER:
+	case SEARCH_HEADER_ADDRESS:
+	case SEARCH_HEADER_COMPRESS_LWSP:
+		if (*arg->value.str == '\0') {
+			/* to search for the existence of a header give SK a
+			   special string */
+			arg->value.str = t_strconcat(SK_HEADER_EXISTS_PREFIX,
+						     arg->hdr_field_name,
+						     NULL);
+		}
+		/* we can search for these */
+		break;
+	default:
+		/* ignore all other args */
+		return 0;
 	}
-}
 
-static void sk_indexer_end(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	struct io *io, *ie;
-	struct timeout *timeout;
+	array_clear(&lctx->definite_uids);
+	array_clear(&lctx->maybe_uids);
+	ret = sk_search(lctx, arg, &result->scores);
+	arg->value.str = orig_arg_str;
 
-	if (ctx->indexer_pid < 0)
-		return;
+	/* begin code copied from squat_lookup_arg(); not also merging scores
+	   because (a) how do you score a not-match? and (b) scores array is not
+	   a source of truth for the results.  FIXME? */
+	if (arg->match_not) {
+		/* definite -> non-match
+		   maybe -> maybe
+		   non-match -> maybe */
+		array_clear(&lctx->maybe_uids);
 
-	ctx->indexer_synchronous = TRUE;
-	if (ctx->indexer_ie != NULL)
-		io_remove(&ctx->indexer_ie);
-	if (ctx->indexer_io != NULL)
-		io_remove(&ctx->indexer_io);
-	if (ctx->indexer_timeout != NULL)
-		timeout_remove(&ctx->indexer_timeout);
-	if (ctx->indexer_ioloop != NULL)
-		io_loop_destroy(&ctx->indexer_ioloop);
-	o_stream_close(ctx->to_indexer);
+		seq_range_array_add_range(&lctx->maybe_uids, 1,
+					  backend->values.last_uid);
+		seq_range_array_remove_seq_range(&lctx->maybe_uids,
+						 &lctx->definite_uids);
+		array_clear(&lctx->definite_uids);
+	}
+	if (and_args) {
+		/* AND:
+		   definite && definite -> definite
+		   definite && maybe -> maybe
+		   maybe && maybe -> maybe */
 
-	if (ctx->indexer_timed_out) {
-		ctx->indexer_ioloop = NULL;
-		sk_indexer_end_dirty(ctx);
+		/* put definites among maybies, so they can be intersected */
+		seq_range_array_merge(&result->maybe_uids,
+				      &result->definite_uids);
+		seq_range_array_merge(&lctx->maybe_uids,
+				      &lctx->definite_uids);
+
+		seq_range_array_intersect(&result->maybe_uids,
+					  &lctx->maybe_uids);
+		seq_range_array_intersect(&result->definite_uids,
+					  &lctx->definite_uids);
+		/* remove duplicate maybies that are also definites */
+		seq_range_array_remove_seq_range(&result->maybe_uids,
+						 &result->definite_uids);
 	} else {
-		ctx->indexer_ioloop = io_loop_create();
-		io = io_add(ctx->from_indexer_fd, IO_READ, sk_indexer_end_clean,
-			    ctx);
-		ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
-			    sk_indexer_error_input, ctx);
-		timeout = timeout_add(backend->indexer_timeout_secs * 1000,
-				      sk_indexer_end_dirty, ctx);
-		io_loop_run(ctx->indexer_ioloop);
-		timeout_remove(&timeout);
-		io_remove(&ie);
-		io_remove(&io);
-		io_loop_destroy(&ctx->indexer_ioloop);
+		/* OR:
+		   definite || definite -> definite
+		   definite || maybe -> definite
+		   maybe || maybe -> maybe */
+
+		/* remove maybies that are now definites */
+		seq_range_array_remove_seq_range(&lctx->maybe_uids,
+						 &result->definite_uids);
+		seq_range_array_remove_seq_range(&result->maybe_uids,
+						 &lctx->definite_uids);
+
+		seq_range_array_merge(&result->definite_uids,
+				      &lctx->definite_uids);
+		seq_range_array_merge(&result->maybe_uids,
+				      &lctx->maybe_uids);
 	}
+	/* end copy */
 
-	ctx->indexer_pid = -1;
-	o_stream_destroy(&ctx->to_indexer);
-	i_stream_destroy(&ctx->from_indexer);
-	i_stream_destroy(&ctx->errs_from_indexer);
-	ctx->from_indexer_fd = -1;
-	ctx->errs_from_indexer_fd = -1;
-
-	if (ctx->indexer_tag != NULL)
-		i_free_and_null(ctx->indexer_tag);
-
-	ctx->use_indexer_forever = FALSE;
-	ctx->indexer_shook = FALSE;
-	ctx->indexer_synchronous = FALSE;
-	ctx->indexer_shadowing = FALSE;
+	return ret < 0 ? -1 : 1;
 }
 
-static void sk_indexer_drop_privileges(void)
+static int sk_lookup(struct sk_lookup_context *lctx,
+		     struct mail_search_arg *args, bool and_args,
+		     struct fts_result *result)
 {
-	int euid, ruid;
-	const char *error;
-
-	euid = geteuid();
-	ruid = getuid();
-	i_assert(euid != 0);
-
-	if (seteuid(0) == 0) {
-		if (setuid(euid) < 0)
-			i_fatal("fts_sk: setuid(%d) failed: %m "
-				"(euid=%d ruid=%d)",
-				euid, geteuid(), getuid());
-	} else
-		(void) setuid(euid);
-
-	if (seteuid(0) == 0)
-		error = "seteuid(0) succeeded";
-	else if (setuid(0) == 0)
-		error = "setuid(0) succeeded";
-	else if (geteuid() == 0)
-		error = "euid=0";
-	else if (getuid() == 0)
-		error = "ruid=0";
-	else
-		error = NULL;
-	if (error != NULL)
-		i_fatal("fts_sk: failed to drop root privileges: %s "
-			"(euid=%d ruid=%d)", error, geteuid(), getuid());
-}
-
-static bool sk_indexer_sandbox(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	unsigned int conversions;
-	const char *profile, *spill_dir_clean, *index_path, *index_path_clean,
-		*spill_allow, *index_allow;
-	char *spill_dir_real, *index_path_real, *errorbuf;
-
-	/* make sure the profile has exactly the expected number of %'s */
-	conversions = 0;
-	for (profile = sk_sandbox_profile; *profile; profile++)
-		if (*profile == '%')
-			++conversions;
-	i_assert(conversions == 4);
-
-	/* ok, safe to printf */
-	spill_dir_clean = str_escape(backend->spill_dir);
-	spill_dir_real = realpath(backend->spill_dir, NULL);
-	if (spill_dir_real != NULL) {
-		const char *spill_dir_real_clean = str_escape(spill_dir_real);
-		free(spill_dir_real);
-		spill_allow = t_strdup_printf("(subpath \"%s\")\n"
-					      "(subpath \"%s\")",
-					      spill_dir_clean,
-					      spill_dir_real_clean);
-	} else
-		spill_allow = t_strdup_printf("(subpath \"%s\")",
-					      spill_dir_clean);
-
-	index_path = (array_idx(&backend->indexes, ctx->fragment))->path;
-	index_path_clean = str_escape(index_path);
-	index_path_real = realpath(index_path, NULL);
-	if (index_path_real != NULL) {
-		const char *index_path_real_clean = str_escape(index_path_real);
-		free(index_path_real);
-		index_allow = t_strdup_printf("(literal \"%s\")\n"
-					      "(literal \"%s\")",
-					      index_path_clean,
-					      index_path_real_clean);
-	} else
-		index_allow = t_strdup_printf("(literal \"%s\")",
-					      index_path_clean);
-	profile = t_strdup_printf(sk_sandbox_profile,
-				  backend->debug ? "" : " (with no-log)",
-				  backend->debug ? "deny" : "none",
-				  spill_allow,
-				  index_allow);
-
-	errorbuf = NULL;
-	if (sandbox_init(profile, 0, &errorbuf) != 0) {
-		i_error("fts_sk: sandbox_init failed: %s", errorbuf);
-		sandbox_free_error(errorbuf);
-		return FALSE;
-	}
-
-	return TRUE;
-}
-
-static void sk_indexer_child_exec(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	char *args[5];
-	int fd;
-
-	i_set_fatal_handler(NULL);
-	i_set_error_handler(NULL);
-	i_set_info_handler(NULL);
-
-	sk_indexer_drop_privileges();
-
-	/* if the sandbox can't be established, run the indexer anyway */
-	(void) sk_indexer_sandbox(ctx);
-
-	for (fd = getdtablesize(); --fd >= 3; )
-		(void) close(fd);
-
-	args[0] = SK_INDEXER;
-	args[1] = backend->spill_dir;
-	args[2] = (array_idx(&backend->indexes, ctx->fragment))->path;
-	args[3] = SK_INDEX_NAME;
-	args[4] = NULL;
-	execv(SK_INDEXER_EXECUTABLE, args);
-	i_fatal_status(FATAL_EXEC, "fts_sk: execv(%s) failed: %m",
-		       SK_INDEXER_EXECUTABLE);
-}
-
-static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx);
-
-static int sk_indexer_start(struct sk_fts_backend_build_context *ctx)
-{
-	pid_t pid;
-	int parent_to_child[2], child_to_parent[2], errors_to_parent[2];
-
-	if (ctx->indexer_pid > 0)
-		return 1;
-
-	if (pipe(parent_to_child) < 0) {
-		i_error("fts_sk: pipe() failed: %m");
-		return -1;
-	}
-	if (pipe(child_to_parent) < 0) {
-		i_error("fts_sk: pipe() failed: %m");
-		(void) close(parent_to_child[0]);
-		(void) close(parent_to_child[1]);
-		return -1;
-	}
-	if (pipe(errors_to_parent) < 0) {
-		i_error("fts_sk: pipe() failed: %m");
-		(void) close(parent_to_child[0]);
-		(void) close(parent_to_child[1]);
-		(void) close(child_to_parent[0]);
-		(void) close(child_to_parent[1]);
-		return -1;
-	}
-
-	pid = fork();
-	if (pid < 0) {
-		i_error("fts_sk: fork() failed: %m");
-		(void) close(parent_to_child[0]);
-		(void) close(parent_to_child[1]);
-		(void) close(child_to_parent[0]);
-		(void) close(child_to_parent[1]);
-		(void) close(errors_to_parent[0]);
-		(void) close(errors_to_parent[1]);
-		return -1;
-	}
-
-	if (pid == 0) {
-		(void) close(parent_to_child[1]);
-		(void) close(child_to_parent[0]);
-		(void) close(errors_to_parent[0]);
-
-		if (dup2(parent_to_child[0], 0) < 0)
-			i_fatal("fts_sk: dup2(stdin) failed: %m");
-		if (dup2(child_to_parent[1], 1) < 0)
-			i_fatal("fts_sk: dup2(stdout) failed: %m");
-		if (dup2(errors_to_parent[1], 2) < 0)
-			i_fatal("fts_sk: dup2(stderr) failed: %m");
-
-		sk_indexer_child_exec(ctx);
-	}
-
-	(void) close(parent_to_child[0]);
-	fd_set_nonblock(parent_to_child[1], TRUE);
-	fd_set_nonblock(child_to_parent[0], TRUE);
-	(void) close(child_to_parent[1]);
-	fd_set_nonblock(errors_to_parent[0], TRUE);
-	(void) close(errors_to_parent[1]);
-
-	ctx->use_indexer_forever = TRUE;
-	ctx->indexer_pid = pid;
-	ctx->to_indexer = o_stream_create_fd(parent_to_child[1], 8192, TRUE);
-	ctx->from_indexer = i_stream_create_fd(child_to_parent[0], 8192, TRUE);
-	ctx->errs_from_indexer = i_stream_create_fd(errors_to_parent[0], 8192,
-						    TRUE);
-	ctx->from_indexer_fd = child_to_parent[0];
-	ctx->errs_from_indexer_fd = errors_to_parent[0];
-
-	if (o_stream_send_str(ctx->to_indexer,
-			      "version\t"PACKAGE_VERSION"\n") <= 0) {
-		i_error("fts_sk: sending handshake to indexer process %d failed",
-			pid);
-		sk_indexer_end(ctx);
-		return -1;
-	}
-
-	/* now if possible, go away and do some other work until the indexer
-	   signals readiness by sending us its version string */
-	return sk_indexer_sync(ctx);
-}
-
-static int sk_indexer_handle_reply(struct sk_fts_backend_build_context *ctx)
-{
-	size_t taglen;
-
-	/* arrgh! <rdar://problem/7819581> */
-	if (strstr(ctx->indexer_reply, "CFPreferences") != NULL)
-		return 0;
-	if (strstr(ctx->indexer_reply, "bootstrap_look_up") != NULL)
-		return 0;
-
-#ifdef DEBUG
-	if (strstr(ctx->indexer_reply, "DEBUG") != NULL) {
-		i_debug("%s", ctx->indexer_reply);
-		return 0;
-	}
-#endif
-
-	if (strncmp(ctx->indexer_reply, "version\t", 8) == 0) {
-		bool already_shook = ctx->indexer_shook;
-		ctx->indexer_shook = TRUE;
-		if (strcmp(ctx->indexer_reply + 8, PACKAGE_VERSION) == 0) {
-			/* the first version lets us continue from
-			   sk_indexer_start().  others are irrelevant */
-			return !already_shook;
-		}
-		i_error("fts_sk: indexer version mismatch: "
-			"process %d ("SK_INDEXER_EXECUTABLE") is v%s, "
-			"imap is v"PACKAGE_VERSION,
-			ctx->indexer_pid, ctx->indexer_reply + 8);
-		return -1;
-	} else if (!ctx->indexer_shook) {
-		i_error("fts_sk: indexer process %d failed to identify itself"
-			" (greeted with \"%s\")",
-			ctx->indexer_pid, ctx->indexer_reply);
-		return -1;
-	}
-
-	/* if it's a tagged response, keep it */
-	taglen = strlen(ctx->indexer_tag);
-	if (strncmp(ctx->indexer_reply, ctx->indexer_tag, taglen) == 0 &&
-	    ctx->indexer_reply[taglen] == '\t')
-		return 1;
-
-	/* otherwise log it and keep reading */
-	i_info("fts_sk: indexer process %d: %s", ctx->indexer_pid,
-	       ctx->indexer_reply);
-	return 0;
-}
-
-static bool sk_build_cancel(struct client_command_context *cmd)
-{
-	i_assert(cmd->cancel);
-
-	i_assert(cmd->func == sk_build_cancel);
-	cmd->func = sk_cmd_search_more;
-
-	/* cleanly cancel the search */
-	(void) sk_cmd_search_more(cmd);
-
-	/* sk_build_cancelling needed ignore=TRUE */
-	cmd->client->ignore = FALSE;
-
-	return TRUE;
-}
-
-static bool sk_build_cancelling(struct sk_fts_backend_build_context *ctx)
-{
-	struct mail_search_context *mail_ctx;
-	struct imap_search_context *imap_ctx;
-	struct client_command_context *cmd;
-
-	if (ctx->ctx.fts_ctx == NULL)
-		return FALSE;
-
-	mail_ctx = fts_build_get_mail_context(ctx->ctx.fts_ctx);
-	if (mail_ctx == NULL)
-		return FALSE;
-
-	imap_ctx = mail_ctx->imap_ctx;
-	if (imap_ctx == NULL)
-		return FALSE;
-
-	cmd = imap_ctx->cmd;
-	if (cmd == NULL)
-		return FALSE;
-
-	return cmd->client->ignore;
-}
-
-static void sk_indexer_resume_build(struct sk_fts_backend_build_context *ctx)
-{
-	struct mail_search_context *mail_ctx;
-	struct imap_search_context *imap_ctx;
-	struct client_command_context *cmd;
-
-	/* nobody said reacharounds were pretty.
-	   the assertions are for figuring out where it all went south */
-	i_assert(ctx->ctx.fts_ctx != NULL);
-	mail_ctx = fts_build_get_mail_context(ctx->ctx.fts_ctx);
-	i_assert(mail_ctx != NULL);
-	imap_ctx = mail_ctx->imap_ctx;
-	i_assert(imap_ctx != NULL);
-	i_assert(imap_ctx->to == NULL);
-	cmd = imap_ctx->cmd;
-	i_assert(cmd != NULL);
-	imap_ctx->to = timeout_add(0, sk_cmd_search_more_callback, cmd);
-	i_assert(!sk_assert_build_cancel || cmd->func == sk_build_cancel);
-	cmd->func = sk_cmd_search_more;
-
-	/* client_add_missing_io() restores cmd->client->io for us */
-	cmd->client->ignore = FALSE;
-
-	if (ctx->indexer_ie != NULL)
-		io_remove(&ctx->indexer_ie);
-	if (ctx->indexer_io != NULL)
-		io_remove(&ctx->indexer_io);
-	if (ctx->indexer_timeout != NULL)
-		timeout_remove(&ctx->indexer_timeout);
-}
-
-static void sk_indexer_input(struct sk_fts_backend_build_context *ctx)
-{
-	int ret;
-
-	while ((ret = i_stream_read(ctx->from_indexer)) > 0) {
-		while ((ctx->indexer_reply =
-			i_stream_next_line(ctx->from_indexer)) != NULL) {
-			if (sk_indexer_handle_reply(ctx) != 0)
-				break;
-		}
-
-		if (ctx->indexer_reply != NULL)
-			break;
-	}
-
-	if (ret < 0 || ctx->indexer_reply != NULL) {
-		if (ctx->indexer_reply == NULL)
-			ctx->indexer_reply = "[EOF]";
-		if (ctx->indexer_synchronous)
-			io_loop_stop(ctx->indexer_ioloop);
-		else
-			sk_indexer_resume_build(ctx);
-	}
-}
-
-static void sk_indexer_timeout(struct sk_fts_backend_build_context *ctx)
-{
-	ctx->indexer_timed_out = TRUE;
-	if (ctx->indexer_synchronous)
-		io_loop_stop(ctx->indexer_ioloop);
-	else
-		sk_indexer_resume_build(ctx);
-}
-
-static int sk_indexer_sync(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	struct mail_search_context *mail_ctx = NULL;
-	struct imap_search_context *imap_ctx = NULL;
-	struct client_command_context *cmd = NULL;
-
-	/* nobody said reacharounds were pretty.
-	   conditions should be right to use async I/O, but just in case they
-	   aren't, fall back to synchronous. */
-	if (ctx->ctx.fts_ctx != NULL)
-		mail_ctx = fts_build_get_mail_context(ctx->ctx.fts_ctx);
-	if (mail_ctx != NULL)
-		imap_ctx = mail_ctx->imap_ctx;
-	if (imap_ctx != NULL)
-		cmd = imap_ctx->cmd;
-	if (cmd == NULL || sk_cmd_search_more == NULL ||
-	    cmd->func != sk_cmd_search_more)
-		ctx->indexer_synchronous = TRUE;
-
-	if (ctx->indexer_synchronous) {
-		struct io *io, *ie;
-		struct timeout *timeout;
-
-		/* wait right here for the reply from the indexer */
-
-		ctx->indexer_ioloop = io_loop_create();
-		io = io_add(ctx->from_indexer_fd, IO_READ,
-			    sk_indexer_input, ctx);
-		ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
-			    sk_indexer_error_input, ctx);
-		timeout =
-		       timeout_add(backend->indexer_timeout_secs * 1000,
-				   sk_indexer_timeout, ctx);
-		io_loop_run(ctx->indexer_ioloop);
-		timeout_remove(&timeout);
-		io_remove(&ie);
-		io_remove(&io);
-		io_loop_destroy(&ctx->indexer_ioloop);
-
-		return 1;
-	} else {
-		/* trade the client I/O for I/O from the indexer,
-		   and request a continuation */
-
-		if (cmd->client->io != NULL)
-			io_remove(&cmd->client->io);
-		cmd->client->ignore = TRUE;
-		if (imap_ctx->to != NULL)
-			timeout_remove(&imap_ctx->to);
-
-		ctx->indexer_io = io_add(ctx->from_indexer_fd, IO_READ,
-					 sk_indexer_input, ctx);
-		ctx->indexer_ie = io_add(ctx->errs_from_indexer_fd, IO_READ,
-					 sk_indexer_error_input, ctx);
-		ctx->indexer_timeout =
-		       timeout_add(backend->indexer_timeout_secs * 1000,
-				   sk_indexer_timeout, ctx);
-
-		/* tell imap_search_start not to set its immediate
-		   timeout, and cancel search gracefully if needed */
-		cmd->func = sk_build_cancel;
-		i_assert(cmd->context != NULL);
-
-		return 0;
-	}
-}
-
-static void sk_save_id(struct sk_fts_backend_build_context *ctx,
-		       SKDocumentID id)
-{
-	CFNumberRef num;
-
-	num = CFNumberCreate(kCFAllocatorDefault, kCFNumberCFIndexType, &id);
-	sk_nonnull(num, "CFNumberCreate(id)");
-	CFArrayAppendValue(ctx->cur_shadow_ids, num);
-	CFRelease_and_null(num);
-}
-
-static void sk_indexer_save_id(struct sk_fts_backend_build_context *ctx,
-			       const char *idstr)
-{
-	char *endstr;
-	SKDocumentID id;
-
-	id = strtol(idstr, &endstr, 10);
-	if (*idstr == '\0' || *endstr != '\0')
-		i_error("fts_sk: bad document ID from indexer process %d: %s",
-			ctx->indexer_pid, idstr);
-	else
-		sk_save_id(ctx, id);
-}
-
-typedef void sk_indexer_reply_callback_t(struct sk_fts_backend_build_context *,
-					 const char *reply);
-
-static int sk_indexer_do(struct sk_fts_backend_build_context *ctx,
-			 const char *cmd,
-			 sk_indexer_reply_callback_t reply_callback)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	int ret;
-
-	/* caution:  if we return 0, we are requesting a continuation */
-
-	if (ctx->indexer_tag == NULL) {	/* new command, not continuation */
-		unsigned char randbuf[8];
-		const char *line;
-
-		ret = sk_indexer_start(ctx);
-		if (ret <= 0)
-			return ret;
-
-		random_fill_weak(randbuf, sizeof randbuf);
-		ctx->indexer_tag = i_strdup(binary_to_hex(randbuf,
-							  sizeof randbuf));
-		line = t_strdup_printf("%s\t%s\n", ctx->indexer_tag, cmd);
-		if (o_stream_send_str(ctx->to_indexer, line) <= 0) {
-			i_error("fts_sk: sending command to "
-				"indexer process %d failed", ctx->indexer_pid);
-			sk_indexer_end(ctx);
-			return -1;
-		}
-
-		ret = sk_indexer_sync(ctx);
-		if (ret == 0)
-			return 0;
-	}
-
-	ret = -1;
-	if (ctx->indexer_reply != NULL) {
-		size_t randlen = strlen(ctx->indexer_tag);
-		if (strncmp(ctx->indexer_reply, ctx->indexer_tag,
-			    randlen) == 0 && 
-		    ctx->indexer_reply[randlen] == '\t')
-			ret = 1;
-		if (ret == 1 &&
-		    strncmp(&ctx->indexer_reply[randlen + 1], "OK\t", 3) == 0) {
-			if (reply_callback != NULL)
-				reply_callback(ctx,
-					&ctx->indexer_reply[randlen + 4]);
-		} else if (backend->debug)
-			i_error("fts_sk: indexer process %d "
-				"failed command \"%s\": %s",
-				ctx->indexer_pid, cmd, ctx->indexer_reply);
-	} else
-		i_error("fts_sk: timed out waiting for indexer process %d "
-			"to execute command \"%s\"", ctx->indexer_pid, cmd);
-
-	ctx->indexer_reply = NULL;
-	i_free_and_null(ctx->indexer_tag);
-	if (ctx->indexer_ie != NULL)
-		io_remove(&ctx->indexer_ie);
-	if (ctx->indexer_io != NULL)
-		io_remove(&ctx->indexer_io);
-	if (ctx->indexer_timeout != NULL)
-		timeout_remove(&ctx->indexer_timeout);
-	if (ret < 0)
-		sk_indexer_end(ctx);
-
-	return ret;
-}
-
-static int sk_index_path_indexer(struct sk_fts_backend_build_context *ctx,
-				 const char *path)
-{
-	const char *cmd;
-
-	cmd = t_strdup_printf("index\t%s\t%s", path, ctx->cur_content_type);
-	return sk_indexer_do(ctx, cmd, sk_indexer_save_id);
-}
-
-static int sk_shadow_indexer(struct sk_fts_backend_build_context *ctx,
-			     const char *path)
-{
-	string_t *cmd;
-	CFIndex count, i;
+	struct mail_search_arg *arg;
 	bool first = TRUE;
 	int ret;
 
-	cmd = t_str_new(128);
-	str_printfa(cmd, "shadow\t%s\tids=", path);
-
-	count = CFArrayGetCount(ctx->cur_shadow_ids);
-	for (i = 0; i < count; i++) {
-		CFNumberRef num;
-		SKDocumentID id;
-
-		num = CFArrayGetValueAtIndex(ctx->cur_shadow_ids, i);
-		if (CFNumberGetValue(num, kCFNumberCFIndexType, &id)) {
-			if (!first)
-				str_append_c(cmd, ',');
-			str_printfa(cmd, "%ld", id);
+	/* Solr can search for terms in different parts of a document at once,
+	   e.g. hdr:foo+AND+body:bar, so fts-solr makes only two search passes:
+	   one for definite matches (like body:bar or to:bar) and one for maybe
+	   matches (like hdr:foo).  Squat searches for terms singly so
+	   fts-squat merges the results after each term.  SK can search for
+	   multiple terms at once but not if they're isolated to different
+	   parts of the document, so e.g. "foo AND bar" works only if both are
+	   wanted in the body or both in a header.  Also, SK does not support
+	   naked "NOT foo"; it needs a non-inverted search term from which to
+	   exclude the NOT terms.  Furthermore, we find out where a term
+	   appears only after the SK search is finished.  Therefore we follow
+	   the fts-squat example:  search for each term separately and merge
+	   the results.  This also allows for individual fuzzy terms. */
+	for (arg = args; arg; arg = arg->next) {
+		ret = sk_lookup_arg(lctx, arg, first ? FALSE : and_args,
+				    result);
+		if (ret < 0)
+			return -1;
+		if (ret > 0) {
+			arg->match_always = TRUE;
 			first = FALSE;
 		}
 	}
+	return 0;
+}
 
-	ret = sk_indexer_do(ctx, str_c(cmd), NULL);
-	if (ret == 0)
+static void sk_update_save_id(struct sk_fts_backend_update_context *uctx,
+			      SKDocumentID id)
+{
+	CFNumberRef num;
+
+	if (uctx->shadowIds == NULL) {
+		uctx->shadowIds =
+			CFArrayCreateMutable(kCFAllocatorDefault,
+					     0, &kCFTypeArrayCallBacks);
+		sk_nonnull(uctx->shadowIds, "CFArrayCreateMutable(shadowIds)");
+	}
+
+	num = CFNumberCreate(kCFAllocatorDefault, kCFNumberCFIndexType, &id);
+	sk_nonnull(num, "CFNumberCreate(id)");
+	CFArrayAppendValue(uctx->shadowIds, num);
+	CFRelease_and_null(num);
+}
+
+static struct sk_field *sk_field_new(const char *where,
+				      const char *content_type)
+{
+	struct sk_field *field;
+
+	field = i_new(struct sk_field, 1);
+	field->where = str_lcase(i_strdup(where));
+	field->content_type = i_strdup(content_type);
+	field->spill_fd = -1;
+	if (strncasecmp(content_type, "text/", 5) == 0 ||
+	    strcasecmp(content_type, "text") == 0)
+		field->is_text = TRUE;
+	return field;
+}
+
+static void sk_field_free(struct sk_field **_field)
+{
+	struct sk_field *field = *_field;
+
+	*_field = NULL;
+	i_free(field->where);
+	i_free(field->content_type);
+	if (field->text != NULL)
+		buffer_free(&field->text);
+	if (field->spill_fd >= 0) {
+		if (close(field->spill_fd) < 0)
+			i_error("fts_sk: close(%s) failed: %m",
+				str_c(field->spill_path));
+		field->spill_fd = -1;
+
+		if (unlink(str_c(field->spill_path)) < 0 &&
+		    errno != ENOENT)
+			i_error("fts_sk: unlink(%s) failed: %m",
+				str_c(field->spill_path));
+		str_free(&field->spill_path);
+	}
+	i_free(field);
+}
+
+static struct sk_field *
+sk_update_field_get(struct sk_fts_backend_update_context *uctx,
+		    const char *where, const char *content_type)
+{
+	struct sk_field * const *fieldp;
+	struct sk_field *new_field;
+
+	array_foreach(&uctx->fields, fieldp) {
+		struct sk_field *field = *fieldp;
+		if (!field->sealed &&
+		    strcasecmp(field->where, where) == 0 &&
+		    strcasecmp(field->content_type, content_type) == 0)
+			return field;
+	}
+
+	new_field = sk_field_new(where, content_type);
+	array_append(&uctx->fields, &new_field, 1);
+	return new_field;
+}
+
+static int sk_update_field_spill(struct sk_fts_backend_update_context *uctx,
+				  struct sk_field *field)
+{
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) uctx->uctx.backend;
+
+	if (field->spill_fd < 0) {
+		char *dir = backend->spill_dir;
+		if (strcmp(dir, SK_INDEX_SPILL_DIR) == 0)
+			dir = backend->index_path;
+		field->spill_path = str_new(default_pool, 256);
+		str_printfa(field->spill_path, "%s/", dir);
+		sk_doc_mkname(field->spill_path, uctx->uid, field->where);
+		str_append(field->spill_path, "&rand=");
+		field->spill_fd = safe_mkstemp(field->spill_path, 0600,
+					       (uid_t) -1, backend->create_gid);
+		if (field->spill_fd < 0) {
+			i_error("fts_sk: safe_mkstemp(%s) failed: %m",
+				str_c(field->spill_path));
+			str_free(&field->spill_path);
+			return -1;
+		}
+	}
+	if (field->text != NULL) {
+		size_t text_size = 0;
+		const void *text_data = buffer_get_data(field->text,
+							&text_size);
+		if (write_full(field->spill_fd, text_data, text_size) < 0) {
+			i_error("fts_sk: write_full(%s, %"PRIuSIZE_T") failed: %m",
+				str_c(field->spill_path), text_size);
+			return -1;
+		}
+		buffer_free(&field->text);
+	}
+	return 1;
+}
+
+static int sk_update_field_append(struct sk_fts_backend_update_context *uctx,
+				  struct sk_field *field,
+				  const void *data, size_t size)
+{
+	/* buffer small text for use with SKIndexAddDocumentWithText().
+	   spill large text or non-text for use with SKIndexAddDocument(). */
+
+	if (field->spill_fd < 0 && field->is_text) {
+		size_t length = field->text != NULL ?
+			buffer_get_used_size(field->text) : 0;
+		if (length + size <= SK_TEXT_BUFFER) {
+			if (field->text == NULL)
+				field->text =
+					buffer_create_dynamic(default_pool,
+							      SK_TEXT_BUFFER);
+			buffer_append(field->text, data, size);
+			field->size += size;
+			return 1;
+		}
+	}
+
+	if (sk_update_field_spill(uctx, field) < 0)
+		return -1;
+	if (write_full(field->spill_fd, data, size) < 0) {
+		i_error("fts_sk: write_full(%s, %"PRIuSIZE_T") failed: %m",
+			str_c(field->spill_path), size);
+		return -1;
+	}
+	field->size += size;
+	return 1;
+}
+
+static int sk_update_field_commit(struct sk_fts_backend_update_context *uctx,
+				  struct sk_field *field)
+{
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) uctx->uctx.backend;
+	const struct sk_fts_index *skindex = array_idx(&backend->indexes,
+						       uctx->fragment);
+	int ret = 0;
+
+	if (field->text != NULL) {
+		size_t text_size = 0;
+		const void *text_data = buffer_get_data(field->text,
+							&text_size);
+		SKDocumentRef doc;
+		CFStringRef text;
+
+		i_assert(field->spill_fd < 0);
+		if (text_size == 0)
+			return 1;
+
+		doc = sk_create_document_immediate(uctx->uid, field->where);
+		if (doc == NULL)
+			return -1;
+
+		text = CFStringCreateWithBytesNoCopy(kCFAllocatorDefault,
+						     text_data, text_size,
+						     kCFStringEncodingUTF8,
+						     FALSE, kCFAllocatorNull);
+		if (text != NULL) {
+			if (SKIndexAddDocumentWithText(skindex->skiref, doc,
+						       text, TRUE)) {
+				sk_update_save_id(uctx,
+					SKIndexGetDocumentID(skindex->skiref,
+							     doc));
+				ret = 1;
+			} else {
+				i_error("fts_sk: SKIndexAddDocumentWithText(path=%s, size=%lu) failed",
+					skindex->path, text_size);
+				ret = -1;
+			}
+
+			buffer_free(&field->text);
+			field->size = 0;
+
+			CFRelease_and_null(text);
+		} else {
+			/* maybe non-text chars. try SKIndexAddDocument() */
+			(void) sk_update_field_spill(uctx, field);
+		}
+		CFRelease_and_null(doc);
+	}
+	if (field->spill_fd >= 0) {
+		SKDocumentRef doc;
+		CFStringRef type_str;
+		Boolean added;
+
+		i_assert(field->text == NULL);
+
+		doc = sk_create_document(field->spill_path);
+		if (doc == NULL)
+			return -1;
+
+		type_str = CFStringCreateWithCStringNoCopy(kCFAllocatorDefault,
+							   field->content_type,
+							   kCFStringEncodingUTF8,
+							   kCFAllocatorNull);
+		sk_nonnull(type_str, "CFStringCreateWithCStringNoCopy(content-type)");
+
+		if (close(field->spill_fd) < 0)
+			i_error("fts_sk: close(%s) failed: %m",
+				str_c(field->spill_path));
+		field->spill_fd = -1;
+
+		sk_extractors_load(backend);
+		sandbox_note(t_strdup_printf("indexing \"%s\" type \"%s\"",
+					     str_c(field->spill_path),
+					     field->content_type));
+		added = SKIndexAddDocument(skindex->skiref, doc, type_str,
+					   TRUE);
+		sandbox_note("");
+		if (added) {
+			sk_update_save_id(uctx,
+					  SKIndexGetDocumentID(skindex->skiref,
+							       doc));
+			ret = 1;
+		} else {
+			i_error("fts_sk: SKIndexAddDocument(%s) failed",
+				field->content_type);
+			ret = -1;
+		}
+		CFRelease_and_null(type_str);
+		CFRelease_and_null(doc);
+
+		if (unlink(str_c(field->spill_path)) < 0)
+			i_error("fts_sk: unlink(%s) failed: %m",
+				str_c(field->spill_path));
+		str_free(&field->spill_path);
+		field->size = 0;
+	}
+	return ret;
+}
+
+static int sk_update_shadow(struct sk_fts_backend_update_context *uctx)
+{
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) uctx->uctx.backend;
+	const struct sk_fts_index *skindex = array_idx(&backend->indexes,
+						       uctx->fragment);
+	SKDocumentRef shadow;
+	CFStringRef text;
+	CFMutableDictionaryRef properties;
+
+	if (uctx->shadowIds == NULL)
 		return 0;
 
-	CFArrayRemoveAllValues(ctx->cur_shadow_ids);
-	return ret;
-}
-
-static int sk_spill_flush(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	int ret = 1;
-
-	/* caution:  if we return 0, we are requesting a continuation */
-
-	if (ctx->indexer_tag == NULL) {
-		ret = sk_spill(ctx);
-		if (ret < 0 || ctx->spill_path == NULL)
-			return ret;
-
-		sk_close(backend);
-	}
-
-	if (!ctx->indexer_shadowing) {
-		ret = sk_index_path_indexer(ctx, str_c(ctx->spill_path));
-		if (ret == 0)
-			return 0;
-
-		if (ret > 0)
-			ctx->values->last_uid = ctx->cur_uid;
-	}
-
-	if (ret > 0 && ctx->cur_where == SK_SHADOW) {
-		ret = sk_shadow_indexer(ctx, str_c(ctx->spill_path));
-		if (ret == 0) {
-			ctx->indexer_shadowing = TRUE;
-			return 0;
-		}
-		ctx->indexer_shadowing = FALSE;
-	}
-
-	if (close(ctx->spill_fd) < 0)
-		i_error("fts_sk: close(%s) failed: %m", str_c(ctx->spill_path));
-	ctx->spill_fd = -1;
-
-	if (unlink(str_c(ctx->spill_path)) < 0)
-		i_error("fts_sk: unlink(%s) failed: %m",
-			str_c(ctx->spill_path));
-	str_free(&ctx->spill_path);
-
-	return ret;
-}
-
-static int sk_build_flush(struct sk_fts_backend_build_context *ctx)
-{
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
-	const void *cur_data;
-	size_t cur_size;
-	SKDocumentRef doc;
-	CFStringRef text;
-	const struct sk_fts_index *skindex;
-	int ret;
-
-	/* caution:  if we return 0, we are requesting a continuation */
-
-	/* it's probably safe to index small plain text internally, but
-	   once we use the external indexer it's faster to always use it */
-	if (ctx->spill_fd >= 0 || ctx->use_indexer_forever ||
-	    (strncasecmp(ctx->cur_content_type, "text/", 5) != 0 &&
-	     strcasecmp(ctx->cur_content_type, "text") != 0))
-		return sk_spill_flush(ctx);
-
-	cur_data = buffer_get_data(ctx->cur_text, &cur_size);
-	if (cur_size == 0)
-		return 1;
-
-	if (sk_open_or_create(backend, FALSE) <= 0)
-		ret = -1;
-
-	doc = sk_create_document_immediate(ctx->cur_uid, ctx->cur_where,
-					   ctx->cur_seq);
-	if (doc == NULL)
+	shadow = sk_create_document_immediate(uctx->uid, sk_shadow);
+	if (shadow == NULL) {
+		CFRelease_and_null(uctx->shadowIds);
 		return -1;
-
-	text = CFStringCreateWithBytesNoCopy(kCFAllocatorDefault,
-					     cur_data, cur_size,
-					     kCFStringEncodingUTF8,
-					     FALSE, kCFAllocatorNull);
-	if (text == NULL) {
-		/* maybe non-text chars in cur_text.  perhaps the
-		   external indexer can make something of it */
-		CFRelease_and_null(doc);
-		sk_close(backend);
-		return sk_spill_flush(ctx);
 	}
 
-	skindex = array_idx(&backend->indexes, ctx->fragment);
-	if (SKIndexAddDocumentWithText(skindex->skiref, doc, text, TRUE)) {
-		ctx->values->last_uid = ctx->cur_uid;
-		buffer_set_used_size(ctx->cur_text, 0);
-		ret = 1;
+	text = CFStringCreateWithFormat(kCFAllocatorDefault, NULL,
+					CFSTR("FTS%uSK"), uctx->uid);
+	if (text == NULL) {
+		CFRelease_and_null(shadow);
+		CFRelease_and_null(uctx->shadowIds);
+		return -1;
+	}
 
-		sk_save_id(ctx, SKIndexGetDocumentID(skindex->skiref, doc));
-	} else {
-		i_error("fts_sk: SKIndexAddDocumentWithText(path=%s, size=%lu) failed",
-			skindex->path, cur_size);
-		ret = -1;
+	if (!SKIndexAddDocumentWithText(skindex->skiref, shadow, text, TRUE)) {
+		CFRelease_and_null(text);
+		CFRelease_and_null(shadow);
+		CFRelease_and_null(uctx->shadowIds);
+		return -1;
 	}
 	CFRelease_and_null(text);
 
-	if (ret > 0 && ctx->cur_where == SK_SHADOW) {
-		CFMutableDictionaryRef properties;
+	/* shadow properties include shadow document's id */
+	sk_update_save_id(uctx, SKIndexGetDocumentID(skindex->skiref, shadow));
 
-		properties =
-			CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
-				&kCFTypeDictionaryKeyCallBacks,
-				&kCFTypeDictionaryValueCallBacks);
-		sk_nonnull(properties, "CFDictionaryCreateMutable(shadow properties)");
+	properties = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+					       &kCFTypeDictionaryKeyCallBacks,
+					       &kCFTypeDictionaryValueCallBacks);
+	sk_nonnull(properties, "CFDictionaryCreateMutable(shadow properties)");
+	CFDictionaryAddValue(properties, CFSTR(SK_SHADOW_NAME),
+			     uctx->shadowIds);
+	CFRelease_and_null(uctx->shadowIds);
 
-		CFDictionaryAddValue(properties, CFSTR(SK_SHADOW_NAME),
-				     ctx->cur_shadow_ids);
-		CFRelease_and_null(ctx->cur_shadow_ids);
-		ctx->cur_shadow_ids = CFArrayCreateMutable(kCFAllocatorDefault,
-						0, &kCFTypeArrayCallBacks);
-		sk_nonnull(ctx->cur_shadow_ids,
-			   "CFArrayCreateMutable(shadow_ids)");
+	SKIndexSetDocumentProperties(skindex->skiref, shadow, properties);
 
-		SKIndexSetDocumentProperties(skindex->skiref, doc, properties);
-		CFRelease_and_null(properties);
-	}
-
-	CFRelease_and_null(doc);
-
-	return ret;
+	CFRelease_and_null(properties);
+	CFRelease_and_null(shadow);
+	return 1;
 }
 
-static int sk_assign_fragment(struct sk_fts_backend_build_context *ctx)
+static int sk_update_assign_fragment(struct sk_fts_backend_update_context *uctx,
+				     off_t incr)
 {
 	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->ctx.backend;
+		(struct sk_fts_backend *) uctx->uctx.backend;
 	struct sk_fts_index *skindex;
 	unsigned int count, i;
 	struct stat stbuf;
-	struct sk_meta_values *values = NULL;
 
 	/* continue to use same fragment? */
 	skindex = array_get_modifiable(&backend->indexes, &count);
-	if (ctx->fragment != (unsigned int) -1) {
-		if (ctx->fragment >= count)
-			i_panic("fts_sk: ctx->fragment=%u >= count=%u",
-				ctx->fragment, count);
+	if (uctx->fragment != (unsigned int) -1) {
+		if (uctx->fragment >= count)
+			i_panic("fts_sk: uctx->fragment=%u >= count=%u",
+				uctx->fragment, count);
 
-		if (stat(skindex[ctx->fragment].path, &stbuf) < 0) {
+		if (stat(skindex[uctx->fragment].path, &stbuf) < 0) {
 			i_error("fts_sk: stat(%s): %m",
-				skindex[ctx->fragment].path);
+				skindex[uctx->fragment].path);
 			return -1;
 		}
-		if (stbuf.st_size < SK_FRAGMENT_THRESHOLD_SIZE)
+		if (stbuf.st_size + incr < SK_FRAGMENT_THRESHOLD_SIZE)
 			return 1;
 	}
 
 	/* use the first fragment smaller than the threshold */
 	for (i = 0; i < count; i++) {
-		if (i == ctx->fragment)
+		if (i == uctx->fragment)
 			continue;
 
 		if (stat(skindex[i].path, &stbuf) < 0) {
 			i_error("fts_sk: stat(%s): %m", skindex[i].path);
 			return -1;
 		}
-		if (stbuf.st_size < SK_FRAGMENT_THRESHOLD_SIZE) {
-			ctx->fragment = i;
+		if (stbuf.st_size + incr < SK_FRAGMENT_THRESHOLD_SIZE) {
+			uctx->fragment = i;
 			return 1;
 		}
 	}
 
 	/* create a new fragment */
-	i_assert(buffer_get_used_size(ctx->cur_text) == 0);
-	sk_indexer_end(ctx);
-	if (sk_open(backend, TRUE, FALSE) <= 0)
-		return -1;
-
-	/* will need meta values later */
-	if (sk_get_meta_values(backend, &values) < 0) {
-		sk_close(backend);
-		return -1;
-	}
 	skindex = array_append_space(&backend->indexes);
 	skindex->path = i_strdup_printf("%s-%u",
 					(array_idx(&backend->indexes, 0))->path,
@@ -2069,89 +1680,62 @@ static int sk_assign_fragment(struct sk_fts_backend_build_context *ctx)
 	if (sk_create(backend, count) < 0) {
 		i_error("fts_sk: could not create new index fragment %s",
 			skindex->path);
-		sk_meta_values_deinit(&values);
-		sk_close(backend);
 		return -1;
 	}
-	ctx->fragment = count;
+	uctx->fragment = count;
 
 	/* register the new fragment in the meta properties */
-	if (sk_set_meta_values(backend, values) < 0) {
-		sk_meta_values_deinit(&values);
+	if (sk_save_meta_values(backend) < 0) {
 		sk_close(backend);
 		(void) unlink(skindex->path);
 		return -1;
 	}
-	sk_meta_values_deinit(&values);
 
 	return 1;
 }
 
-static int sk_build_shadow(struct sk_fts_backend_build_context *ctx);
-
-static int sk_build_common(struct sk_fts_backend_build_context *ctx,
-			   uint32_t uid, const unsigned char *data, size_t size,
-			   enum sk_where where, const char *content_type)
+static int sk_update_build_commit(struct sk_fts_backend_update_context *uctx)
 {
+	struct sk_field * const *fieldp;
+	off_t size = 0;
 	int ret = 1;
 
-	i_assert(uid >= ctx->values->last_uid);
-
-	/* caution:  if we return 0, we are requesting a continuation */
-
-	if (uid != ctx->cur_uid || where != ctx->cur_where ||
-	    strcasecmp(content_type, ctx->cur_content_type) != 0) {
-		if (uid != ctx->cur_uid && ctx->cur_where != SK_SHADOW) {
-			ret = sk_build_shadow(ctx);
-			if (ret <= 0)
-				return ret;
-		}
-
-		ret = sk_build_flush(ctx);
-		if (ret <= 0)
-			return ret;
-
-		/* we come through here multiple times for the body of a
-		   a single uid, but SK needs unique document names */
-		if (uid == ctx->cur_uid)
-			++ctx->cur_seq;
-		else {
-			ctx->cur_seq = 0;
-
-			if (sk_assign_fragment(ctx) < 0)
-				return -1;
-		}
-
-		ctx->cur_uid = uid;
-		ctx->cur_where = where;
-		i_free(ctx->cur_content_type);
-		ctx->cur_content_type = i_strdup(content_type);
+	array_foreach(&uctx->fields, fieldp) {
+		struct sk_field *field = *fieldp;
+		size += field->size;
 	}
+	if (sk_update_assign_fragment(uctx, size) < 0)
+		return -1;
 
-	if (buffer_get_used_size(ctx->cur_text) + size >
-	    buffer_get_size(ctx->cur_text)) {
-		ret = sk_spill(ctx);
-		if (ret < 0)
-			return ret;
+	array_foreach(&uctx->fields, fieldp) {
+		struct sk_field *field = *fieldp;
+		if (sk_update_field_commit(uctx, field) < 0)
+			ret = -1;
 	}
-
-	buffer_append(ctx->cur_text, data, size);
-
-	i_assert(ret != 0);
+	if (sk_update_shadow(uctx) < 0)
+		ret = -1;
 	return ret;
 }
 
-static int sk_build_shadow(struct sk_fts_backend_build_context *ctx)
+static bool sk_needs_compact(struct sk_fts_backend *backend)
 {
-	string_t *data;
+	struct sk_meta_values *values = &backend->values;
+	CFIndex num_expunged;
+	time_t deferred_age;
 
-	if (ctx->cur_uid == 0)
-		return 1;
+	if (values->expungedUids == NULL)
+		return FALSE;
 
-	data = t_str_new(32);
-	str_printfa(data, "FTS%uSK", ctx->cur_uid);
-	return sk_build_common(ctx, ctx->cur_uid, str_data(data), str_len(data),
-			       SK_SHADOW, "text/plain");
+	/* compact only if there are enough expunges to make it worthwhile,
+	   or if the expunges are getting long in the tooth */
+	num_expunged = CFArrayGetCount(values->expungedUids);
+	deferred_age = ioloop_time - values->deferred_since;
+	if (num_expunged == 0 ||
+	    (num_expunged < backend->compact_expunges &&
+	     deferred_age < backend->compact_age))
+		return FALSE;
+
+	return TRUE;
 }
 
 static void sk_shadow_expunge(const struct sk_fts_index *skindex,
@@ -2227,42 +1811,38 @@ static void sk_expunge_do(struct sk_fts_backend *backend,
 	}
 }
 
-static int sk_expunge_defer(struct sk_fts_backend *backend, uint32_t uid)
+static void sk_update_expunge_defer(struct sk_fts_backend_update_context *uctx,
+				    uint32_t uid)
 {
 	CFNumberRef num;
 
-	if (backend->pendingExpunges == NULL) {
-		backend->pendingExpunges =
+	if (uctx->pendingExpunges == NULL) {
+		uctx->pendingExpunges =
 			CFArrayCreateMutable(kCFAllocatorDefault, 0,
 					     &kCFTypeArrayCallBacks);
-		sk_nonnull(backend->pendingExpunges,
+		sk_nonnull(uctx->pendingExpunges,
 			   "CFArrayCreateMutable(pendingExpunges)");
 	}
 
 	num = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &uid);
 	sk_nonnull(num, "CFNumberCreate(uid)");
-	CFArrayAppendValue(backend->pendingExpunges, num);
+	CFArrayAppendValue(uctx->pendingExpunges, num);
 	CFRelease_and_null(num);
-
-	return 0;
 }
 
-static int sk_expunge_commit(struct sk_fts_backend *backend)
+static int sk_update_expunge_commit(struct sk_fts_backend_update_context *uctx)
 {
-	struct sk_meta_values *values = NULL;
-	int ret = 0;
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) uctx->uctx.backend;
+	struct sk_meta_values *values = &backend->values;
 
-	if (backend->pendingExpunges == NULL ||
-	    CFArrayGetCount(backend->pendingExpunges) == 0)
+	if (uctx->pendingExpunges == NULL)
 		return 0;
-
-	if (sk_get_meta_values(backend, &values) < 0)
-		return -1;
 
 	if (values->expungedUids != NULL) {
 		CFIndex count = CFArrayGetCount(values->expungedUids);
 		if (count > 0) {
-			CFArrayAppendArray(backend->pendingExpunges,
+			CFArrayAppendArray(uctx->pendingExpunges,
 					   values->expungedUids,
 					   CFRangeMake(0, count));
 		} else {
@@ -2276,20 +1856,13 @@ static int sk_expunge_commit(struct sk_fts_backend *backend)
 		   expunges */
 		values->deferred_since = ioloop_time;
 	}
-	values->expungedUids = backend->pendingExpunges;
-	backend->pendingExpunges = NULL;
+	values->expungedUids = uctx->pendingExpunges;
+	uctx->pendingExpunges = NULL;
 
-	if (sk_set_meta_values(backend, values) < 0)
-		ret = -1;
-	sk_meta_values_deinit(&values);
+	if (sk_needs_compact(backend))
+		fts_enqueue_update(backend->box);
 
-	return ret;
-}
-
-static void sk_expunge_cancel(struct sk_fts_backend *backend)
-{
-	if (backend->pendingExpunges != NULL)
-		CFRelease_and_null(backend->pendingExpunges);
+	return 1;
 }
 
 static int sk_compact_batch(struct sk_fts_backend *backend, uint32_t *uids,
@@ -2298,7 +1871,7 @@ static int sk_compact_batch(struct sk_fts_backend *backend, uint32_t *uids,
 	const struct sk_fts_index *skindex;
 	unsigned int count, i;
 	CFMutableStringRef query;
-	ARRAY_DEFINE(expunges, struct sk_fts_expunge_context);
+	ARRAY(struct sk_fts_expunge_context) expunges;
 	struct sk_fts_expunge_context *ectx;
 	bool more;
 	int ret = 0;
@@ -2384,40 +1957,21 @@ static int sk_compact_batch(struct sk_fts_backend *backend, uint32_t *uids,
 
 static int sk_compact(struct sk_fts_backend *backend)
 {
-	struct sk_meta_values *values = NULL;
+	struct sk_meta_values *values = &backend->values;
 	CFIndex num_expunged, num_compacted;
-	time_t deferred_age;
 	const struct sk_fts_index *skindex;
 	int ret = 0;
 
-	if (sk_get_meta_values(backend, &values) < 0)
-		return -1;
-	if (values->expungedUids == NULL) {
-		sk_meta_values_deinit(&values);
+	if (!sk_needs_compact(backend))
 		return 0;
-	}
 
-	/* compact only if there are enough expunges to make it worthwhile,
-	   or if the expunges are getting long in the tooth */
 	num_expunged = CFArrayGetCount(values->expungedUids);
-	deferred_age = ioloop_time - values->deferred_since;
-	if (num_expunged == 0 ||
-	    (num_expunged < backend->compact_expunges &&
-	     deferred_age < backend->compact_age)) {
-		sk_meta_values_deinit(&values);
-		return 0;
-	}
 
-	array_foreach(&backend->indexes, skindex) {
-		/* SK requires flush before search. Technically this
-		   should flush before each search, but flushing is slow
-		   and we may be expunging a large number of messages. */
-		if (!SKIndexFlush(skindex->skiref)) {
-			i_error("fts_sk: SKIndexFlush(%s) failed",
-				skindex->path);
-			return -1;
-		}
-	}
+	/* SK requires flush before search. Technically this should flush
+	   before each search, but flushing is slow and we may be expunging a
+	   large number of messages. */
+	if (sk_flush(backend) < 0)
+		return -1;
 
 	num_compacted = 0;
 	do {
@@ -2445,9 +1999,9 @@ static int sk_compact(struct sk_fts_backend *backend)
 
 	if (ret >= 0) {
 		CFRelease_and_null(values->expungedUids);
-		ret = sk_set_meta_values(backend, values);
+		values->deferred_since = 0;
+		ret = sk_save_meta_values(backend);
 	}
-	sk_meta_values_deinit(&values);
 
 	array_foreach(&backend->indexes, skindex) {
 		if (!SKIndexCompact(skindex->skiref)) {
@@ -2501,13 +2055,15 @@ static int sk_lock(struct sk_fts_backend *backend, int lock_type)
 						 backend->lock_method,
 						 backend->lock_timeout_secs,
 						 &backend->file_lock,
-						 POINTER_CAST_TO(backend, uintmax_t));
+						 POINTER_CAST_TO(backend,
+								 uintmax_t));
 	} else {
 		lock_path = (array_idx(&backend->indexes, 0))->path;
 		ret = file_dotlock_create_multiclient(&backend->dotlock_set,
 						      lock_path, 0,
 						      &backend->dotlock,
-						      POINTER_CAST_TO(backend, uintmax_t));
+						      POINTER_CAST_TO(backend,
+								      uintmax_t));
 
 	}
 	if (ret == 0) {
@@ -2529,7 +2085,8 @@ static void sk_unlock(struct sk_fts_backend *backend)
 
 	if (backend->dotlock != NULL)
 		(void) file_dotlock_delete_multiclient(&backend->dotlock,
-						       POINTER_CAST_TO(backend, uintmax_t));
+						       POINTER_CAST_TO(backend,
+								       uintmax_t));
 
 	backend->lock_type = F_UNLCK;
 }
@@ -2564,83 +2121,8 @@ static int sk_lock_and_open(struct sk_fts_backend *backend, int lock_type,
 	return 1;
 }
 
-
-static struct fts_backend *fts_backend_sk_init(struct mailbox *box)
+static void sk_unset_box(struct sk_fts_backend *backend)
 {
-	struct mail_storage *storage;
-	const char *path, *env;
-	struct mailbox_status status;
-	struct sk_fts_backend *backend;
-	struct sk_fts_index *skindex;
-	CFURLRef meta_url;
-
-	sk_plugin_init();
-
-	storage = mailbox_get_storage(box);
-	path = mailbox_list_get_path(box->list, box->name,
-				     MAILBOX_LIST_PATH_TYPE_INDEX);
-	if (*path == '\0') {
-		/* SearchKit supports in-memory indexes; maybe later */
-		if (storage->set->mail_debug)
-			i_debug("fts_sk: Disabled with in-memory indexes");
-		return NULL;
-	}
-
-	backend = i_new(struct sk_fts_backend, 1);
-	backend->backend = fts_backend_sk;
-
-	backend->index_path = i_strdup(path);
-	backend->spill_dir = i_strdup(SK_DEFAULT_SPILL_DIR);
-	backend->lock_path = i_strconcat(path, "/"SK_LOCK_FILE_NAME, NULL);
-	backend->lock_method = storage->set->parsed_lock_method;
-	if (backend->lock_method == FILE_LOCK_METHOD_FCNTL) {
-		/* POSIX requires that *all* of a process's fcntl locks on a
-		   file are removed when the process closes *any* descriptor
-		   for that file.  This breaks multiclient locking, so instead
-		   use flock locks.  See fcntl(2). */
-		backend->lock_method = FILE_LOCK_METHOD_FLOCK;
-	}
-	backend->lock_fd = -1;
-	backend->dotlock_set.stale_timeout = SK_DOTLOCK_STALE_TIMEOUT_SECS;
-	backend->dotlock_set.use_excl_lock = storage->set->dotlock_use_excl;
-	backend->dotlock_set.nfs_flush = storage->set->mail_nfs_index;
-	backend->lock_type = F_UNLCK;
-
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
-	backend->uidvalidity = status.uidvalidity;
-	backend->create_mode = box->file_create_mode;
-	backend->create_gid = box->file_create_gid;
-
-	backend->default_min_term_length = SK_DEFAULT_MIN_TERM_LENGTH;
-	backend->lock_timeout_secs = SK_LOCK_TIMEOUT_SECS;
-	backend->search_secs = SK_SEARCH_SECS;
-	backend->indexer_timeout_secs = SK_INDEXER_TIMEOUT_SECS;
-	backend->compact_age = SK_COMPACT_AGE;
-	backend->compact_expunges = SK_COMPACT_EXPUNGES;
-	backend->debug = storage->set->mail_debug;
-
-	i_array_init(&backend->indexes, 1);
-	skindex = array_append_space(&backend->indexes);
-	skindex->path = i_strconcat(path, "/"SK_FILE_NAME, NULL);
-	meta_url = CFURLCreateWithString(kCFAllocatorDefault,
-					 CFSTR(SK_META_URL), NULL);
-	sk_nonnull(meta_url, "CFURLCreateWithString(meta_url)");
-	skindex->meta_doc = SKDocumentCreateWithURL(meta_url);
-	sk_nonnull(skindex->meta_doc, "SKDocumentCreateWithURL(meta_url)");
-	CFRelease_and_null(meta_url);
-
-	env = mail_user_plugin_getenv(box->storage->user, "fts_sk");
-	if (env != NULL)
-		sk_set_options(backend, env);
-
-	backend->dotlock_set.timeout = backend->lock_timeout_secs;
-
-	return &backend->backend;
-}
-
-static void fts_backend_sk_deinit(struct fts_backend *_backend)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
 	struct sk_fts_index *skindex;
 
 	/* just in case */
@@ -2652,380 +2134,466 @@ static void fts_backend_sk_deinit(struct fts_backend *_backend)
 		if (skindex->meta_doc != NULL)
 			CFRelease_and_null(skindex->meta_doc);
 	}
-	array_free(&backend->indexes);
+	array_clear(&backend->indexes);
 
-	if (backend->pendingExpunges != NULL)
-		CFRelease_and_null(backend->pendingExpunges);
 	if (backend->lock_fd != -1) {
 		if (close(backend->lock_fd) < 0)
 			i_error("fts_sk: close(%s) failed: %m",
 				backend->lock_path);
 		backend->lock_fd = -1;
 	}
-	i_free(backend->lock_path);
+	if (backend->lock_path != NULL)
+		i_free(backend->lock_path);
+	if (backend->index_path != NULL)
+		i_free(backend->index_path);
+
+	backend->box = NULL;
+}
+
+static void sk_set_box(struct sk_fts_backend *backend, struct mailbox *box)
+{
+	const struct mailbox_permissions *perm;
+	struct mail_storage *storage;
+	struct mailbox_status status;
+	const char *path;
+	struct sk_fts_index *skindex;
+	CFURLRef meta_url;
+
+	if (backend->box == box)
+		return;
+	sk_unset_box(backend);
+	if (box == NULL)
+		return;
+	backend->box = box;
+
+	perm = mailbox_get_permissions(box);
+	backend->create_mode = perm->file_create_mode;
+	backend->create_gid = perm->file_create_gid;
+
+	storage = mailbox_get_storage(box);
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &path) <= 0)
+		i_unreached();	/* fts already checked this */
+
+	backend->index_path = i_strdup(path);
+	backend->lock_path = i_strconcat(path, "/"SK_LOCK_FILE_NAME, NULL);
+	backend->lock_method = storage->set->parsed_lock_method;
+	if (backend->lock_method == FILE_LOCK_METHOD_FCNTL) {
+		/* POSIX requires that *all* of a process's fcntl locks on a
+		   file are removed when the process closes *any* descriptor
+		   for that file.  This breaks multiclient locking, so instead
+		   use flock locks.  See fcntl(2). */
+		backend->lock_method = FILE_LOCK_METHOD_FLOCK;
+	}
+	backend->dotlock_set.stale_timeout = SK_DOTLOCK_STALE_TIMEOUT_SECS;
+	backend->dotlock_set.use_excl_lock = storage->set->dotlock_use_excl;
+	backend->dotlock_set.nfs_flush = storage->set->mail_nfs_index;
+	backend->lock_type = F_UNLCK;
+
+	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	backend->uidvalidity = status.uidvalidity;
+
+	backend->debug = storage->set->mail_debug;
+
+	skindex = array_append_space(&backend->indexes);
+	skindex->path = i_strconcat(path, "/"SK_FILE_NAME, NULL);
+	meta_url = CFURLCreateWithString(kCFAllocatorDefault,
+					 CFSTR(SK_META_URL), NULL);
+	sk_nonnull(meta_url, "CFURLCreateWithString(meta_url)");
+	skindex->meta_doc = SKDocumentCreateWithURL(meta_url);
+	sk_nonnull(skindex->meta_doc, "SKDocumentCreateWithURL(meta_url)");
+	CFRelease_and_null(meta_url);
+
+	backend->dotlock_set.timeout = backend->lock_timeout_secs;
+}
+
+static struct fts_backend *fts_backend_sk_alloc(void)
+{
+	struct sk_fts_backend *backend;
+
+	backend = i_new(struct sk_fts_backend, 1);
+	backend->backend = fts_backend_sk;
+	return &backend->backend;
+}
+
+static int fts_backend_sk_init(struct fts_backend *_backend,
+			       const char **error_r)
+{
+	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
+	const char *env;
+
+	backend->compact_age = SK_COMPACT_AGE;
+	backend->compact_expunges = SK_COMPACT_EXPUNGES;
+	backend->lock_timeout_secs = SK_LOCK_TIMEOUT_SECS;
+	backend->default_min_term_length = SK_DEFAULT_MIN_TERM_LENGTH;
+	backend->search_secs = SK_SEARCH_SECS;
+	backend->spill_dir = i_strdup(SK_DEFAULT_SPILL_DIR);
+	backend->lock_fd = -1;
+	i_array_init(&backend->indexes, 4);
+
+	env = mail_user_plugin_getenv(_backend->ns->user, "fts_sk");
+	if (env == NULL)
+		return 0;
+	return sk_set_options(backend, env, error_r);
+}
+
+static void fts_backend_sk_deinit(struct fts_backend *_backend)
+{
+	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
+
+	/* just in case */
+	sk_unset_box(backend);
+
 	i_free(backend->spill_dir);
-	i_free(backend->index_path);
+	array_free(&backend->indexes);
 	i_free(backend);
 }
 
 static int fts_backend_sk_get_last_uid(struct fts_backend *_backend,
+				       struct mailbox *box,
 				       uint32_t *last_uid_r)
 {
 	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
-	struct sk_meta_values *values = NULL;
-	int ret = 0;
 
-	if (sk_lock_and_open(backend, F_RDLCK, TRUE) < 0)
-		return -1;
-
-	if (sk_get_meta_values(backend, &values) < 0)
-		ret = -1;
-	else {
-		*last_uid_r = values->last_uid;
-		sk_meta_values_deinit(&values);
-	}
-
-	sk_close(backend);
-	if (ret < 0)
-		sk_delete(backend);
-	sk_unlock(backend);
-
-	return ret;
-}
-
-static int fts_backend_sk_build_init(struct fts_backend *_backend,
-				     uint32_t *last_uid_r,
-				     struct fts_backend_build_context **ctx_r)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
-	struct sk_fts_backend_build_context *ctx;
-	struct sk_meta_values *values = NULL;
-
-	if (sk_lock_and_open(backend, F_WRLCK, FALSE) < 0)
-		return -1;
-
-	if (sk_get_meta_values(backend, &values) < 0) {
-		sk_close(backend);
-		sk_delete(backend);
-		sk_unlock(backend);
+	sk_set_box(backend, box);
+	if (sk_lock_and_open(backend, F_RDLCK, TRUE) < 0) {
+		sk_unset_box(backend);
 		return -1;
 	}
-	*last_uid_r = values->last_uid;
 
-	ctx = i_new(struct sk_fts_backend_build_context, 1);
-	ctx->ctx.backend = _backend;
-	ctx->fragment = (unsigned int) -1;
-	ctx->values = values;
-	ctx->cur_text = buffer_create_dynamic(default_pool, SK_TEXT_BUFFER);
-	ctx->cur_content_type = i_strdup("text/plain");
-	ctx->cur_shadow_ids = CFArrayCreateMutable(kCFAllocatorDefault, 0,
-						   &kCFTypeArrayCallBacks);
-	sk_nonnull(ctx->cur_shadow_ids, "CFArrayCreateMutable(shadow_ids)");
+	*last_uid_r = backend->values.last_uid;
 
-	ctx->spill_fd = -1;
-	ctx->indexer_pid = -1;
-	ctx->from_indexer_fd = -1;
-	ctx->errs_from_indexer_fd = -1;
-
-	*ctx_r = &ctx->ctx;
+	sk_unset_box(backend);
 	return 0;
 }
 
-static void fts_backend_sk_build_hdr(struct fts_backend_build_context *_ctx,
-				     uint32_t uid)
+static struct fts_backend_update_context *
+fts_backend_sk_update_init(struct fts_backend *_backend)
 {
-	struct sk_fts_backend_build_context *ctx =
-		(struct sk_fts_backend_build_context *) _ctx;
+	struct sk_fts_backend_update_context *uctx;
 
-	ctx->next_uid = uid;
-	ctx->next_where = SK_HEADERS;
-	if (ctx->next_content_type != NULL)
-		i_free(ctx->next_content_type);
-	ctx->next_content_type = i_strdup("text/plain");
+	uctx = i_new(struct sk_fts_backend_update_context, 1);
+	uctx->uctx.backend = _backend;
+	i_array_init(&uctx->fields, 16);
+	uctx->fragment = (unsigned int) -1;
+	return &uctx->uctx;
+}
+
+static int
+fts_backend_sk_update_deinit(struct fts_backend_update_context *_uctx)
+{
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *)_uctx;
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) _uctx->backend;
+	struct sk_field * const *fieldp;
+	int ret = 0;
+
+	if (backend->box != NULL) {
+		i_assert(sk_is_locked(backend, F_WRLCK));
+
+		if (sk_update_build_commit(uctx) < 0)
+			ret = -1;
+		if (sk_update_expunge_commit(uctx) < 0)
+			ret = -1;
+		if (sk_save_meta_values(backend) < 0)
+			ret = -1;
+		if (sk_flush(backend) < 0)
+			ret = -1;
+
+		sk_unset_box(backend);
+	}
+
+	if (uctx->shadowIds != NULL)
+		CFRelease_and_null(uctx->shadowIds);
+	if (uctx->pendingExpunges != NULL)
+		CFRelease_and_null(uctx->pendingExpunges);
+
+	array_foreach(&uctx->fields, fieldp) {
+		struct sk_field *field = *fieldp;
+		sk_field_free(&field);
+	}
+	array_free(&uctx->fields);
+
+	i_free(uctx);
+	return ret;
+}
+
+static void
+fts_backend_sk_update_set_mailbox(struct fts_backend_update_context *_uctx,
+				  struct mailbox *box)
+{
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *) _uctx;
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) uctx->uctx.backend;
+
+	if (uctx->uid != 0 && sk_is_open(backend)) {
+		i_assert(sk_is_locked(backend, F_WRLCK));
+
+		backend->values.last_uid = uctx->uid;
+		(void) sk_update_build_commit(uctx);
+	}
+	uctx->uid = 0;
+
+	if (sk_is_open(backend)) {
+		(void) sk_update_expunge_commit(uctx);
+		(void) sk_save_meta_values(backend);
+		(void) sk_flush(backend);
+	}
+
+	sk_set_box(backend, box);
+	if (box == NULL)
+		return;
+
+	if (sk_lock_and_open(backend, F_WRLCK, FALSE) < 0) {
+		sk_unset_box(backend);
+		return;
+	}
+}
+
+static void
+fts_backend_sk_update_expunge(struct fts_backend_update_context *_uctx,
+			      uint32_t uid)
+{
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *) _uctx;
+	struct sk_fts_backend *backend =
+		(struct sk_fts_backend *) _uctx->backend;
+
+	if (sk_is_open(backend)) {
+		i_assert(sk_is_locked(backend, F_WRLCK));
+		sk_update_expunge_defer(uctx, uid);
+	}
 }
 
 static bool
-fts_backend_sk_build_body_begin(struct fts_backend_build_context *_ctx,
-				uint32_t uid, const char *content_type,
-				const char *content_disposition ATTR_UNUSED)
+fts_backend_sk_update_set_build_key(struct fts_backend_update_context *_uctx,
+				    const struct fts_backend_build_key *key)
 {
-	struct sk_fts_backend_build_context *ctx =
-		(struct sk_fts_backend_build_context *) _ctx;
-
-	if (strncasecmp(content_type, "multipart/", 10) == 0)
-		return FALSE;	/* ignore multipart preamble and epilogue */
-
-	ctx->next_uid = uid;
-	ctx->next_where = SK_BODY;
-	if (ctx->next_content_type != NULL)
-		i_free(ctx->next_content_type);
-	ctx->next_content_type = i_strdup(content_type);
-
-	return TRUE;	/* we take all other types */
-}
-
-static int fts_backend_sk_build_more(struct fts_backend_build_context *_ctx,
-				     const unsigned char *data, size_t size)
-{
-	struct sk_fts_backend_build_context *ctx =
-		(struct sk_fts_backend_build_context *) _ctx;
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *) _uctx;
 	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) _ctx->backend;
+		(struct sk_fts_backend *) _uctx->backend;
 
+	if (!sk_is_open(backend))
+		return FALSE;
 	i_assert(sk_is_locked(backend, F_WRLCK));
-	return sk_build_common(ctx, ctx->next_uid, data, size,
-			       ctx->next_where, ctx->next_content_type);
+
+	if (key->uid != uctx->uid) {
+		(void) sk_update_build_commit(uctx);
+		uctx->uid = key->uid;
+	}
+
+	switch (key->type) {
+	case FTS_BACKEND_BUILD_KEY_HDR:
+		if (backend->values.version > 1 &&
+		    fts_header_want_indexed(key->hdr_name))
+			uctx->cur_field2 =
+				sk_update_field_get(uctx, key->hdr_name,
+						    "text/plain");
+		/* fall through */
+	case FTS_BACKEND_BUILD_KEY_MIME_HDR:
+		uctx->cur_field = sk_update_field_get(uctx, sk_headers,
+						      "text/plain");
+
+		/* create a special string to allow searching for the existence
+		   of a header */
+		if (backend->values.version > 1) {
+			string_t *exists = t_str_new(128);
+			str_printfa(exists, "%s%s\n", SK_HEADER_EXISTS_PREFIX,
+				    key->hdr_name);
+			sk_update_field_append(uctx, uctx->cur_field,
+					       str_data(exists),
+					       str_len(exists));
+		}
+		break;
+	case FTS_BACKEND_BUILD_KEY_BODY_PART:
+	case FTS_BACKEND_BUILD_KEY_BODY_PART_BINARY:
+		if (strncasecmp(key->body_content_type, "multipart/", 10) == 0)
+			return FALSE;	/* ignore multipart preamble and epilogue */
+
+		uctx->cur_field = sk_update_field_get(uctx, sk_body,
+						      key->body_content_type);
+		break;
+	}
+	return TRUE;
 }
 
-static int fts_backend_sk_build_deinit(struct fts_backend_build_context *_ctx)
+static void
+fts_backend_sk_update_unset_build_key(struct fts_backend_update_context *_uctx)
 {
-	struct sk_fts_backend_build_context *ctx =
-		(struct sk_fts_backend_build_context *)_ctx;
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *) _uctx;
+
+	if (uctx->cur_field == NULL)
+		return;
+
+	if (uctx->cur_field->is_text) {
+		/* There can be multiple duplicate keys (duplicate
+		   header lines, multiple MIME body parts).  Make sure
+		   they are separated by whitespace. */
+		sk_update_field_append(uctx, uctx->cur_field, "\n", 1);
+	} else {
+		/* Non-text field so neither mangle it with a \n nor
+		   ever append to it again.  If another build key with
+		   the same content type comes along it will get its own
+		   new field.  Binary attachments must be indexed
+		   separately from one another even if they have the
+		   same content type.  */
+		uctx->cur_field->sealed = TRUE;
+	}
+	uctx->cur_field = NULL;
+	if (uctx->cur_field2 != NULL) {
+		sk_update_field_append(uctx, uctx->cur_field2, "\n", 1);
+		uctx->cur_field2 = NULL;
+	}
+}
+
+static int
+fts_backend_sk_update_build_more(struct fts_backend_update_context *_uctx,
+				 const unsigned char *data, size_t size)
+{
+	struct sk_fts_backend_update_context *uctx =
+		(struct sk_fts_backend_update_context *) _uctx;
 	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) _ctx->backend;
+		(struct sk_fts_backend *) _uctx->backend;
 	int ret = 0;
 
+	if (!sk_is_open(backend))
+		return -1;
 	i_assert(sk_is_locked(backend, F_WRLCK));
 
-	/* this deinit routine cannot be continued */
-	ctx->indexer_synchronous = TRUE;
-
-	if (!sk_build_cancelling(ctx)) {
-		if (sk_build_shadow(ctx) < 0)
-			ret = -1;
-		if (sk_build_flush(ctx) < 0)
-			ret = -1;
-	}
-	sk_indexer_end(ctx);
-	if (sk_open(backend, TRUE, FALSE) <= 0)	/* do not create if gone */
+	if (sk_update_field_append(uctx, uctx->cur_field, data, size) < 0)
 		ret = -1;
-	else {
-		/* don't do anything here that alters the actual index,
-		   so SKIndexFlush() will be fast */
-		if (sk_set_meta_values(backend, ctx->values) < 0)
-			ret = -1;
-		if (sk_flush(backend) < 0) {
-			sk_close(backend);
-			sk_delete(backend);
-			ret = -1;
-		}
-	}
-	sk_meta_values_deinit(&ctx->values);
-
-	sk_close(backend);
-	sk_unlock(backend);
-
-	if (ctx->next_content_type != NULL)
-		i_free(ctx->next_content_type);
-	i_free(ctx->cur_content_type);
-	buffer_free(&ctx->cur_text);
-	CFRelease_and_null(ctx->cur_shadow_ids);
-	if (ctx->spill_fd >= 0) {
-		if (close(ctx->spill_fd) < 0)
-			i_error("fts_sk: close(%s) failed: %m",
-				str_c(ctx->spill_path));
-		if (unlink(str_c(ctx->spill_path)) < 0 && errno != ENOENT)
-			i_error("fts_sk: unlink(%s) failed: %m",
-				str_c(ctx->spill_path));
-		ctx->spill_fd = -1;
-	}
-	if (ctx->spill_path != NULL)
-		str_free(&ctx->spill_path);
-
-	i_free(ctx);
+	if (uctx->cur_field2 != NULL &&
+	    sk_update_field_append(uctx, uctx->cur_field2, data, size) < 0)
+		ret = -1;
 	return ret;
 }
 
-static void fts_backend_sk_expunge(struct fts_backend *_backend,
-				   struct mail *mail)
+
+static int fts_backend_sk_refresh(struct fts_backend *_backend ATTR_UNUSED)
 {
-	struct sk_fts_backend *backend = (struct sk_fts_backend *)_backend;
-
-	if (!sk_is_locked(backend, F_WRLCK)) {
-		if (sk_lock_and_open(backend, F_WRLCK, FALSE) < 0)
-			return;
-	}
-
-	if (sk_expunge_defer(backend, mail->uid) < 0) {
-		sk_close(backend);
-		sk_delete(backend);
-		sk_unlock(backend);
-	}
+	return 0;
 }
 
-static void fts_backend_sk_expunge_finish(struct fts_backend *_backend,
-					  struct mailbox *box ATTR_UNUSED,
-					  bool committed)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *)_backend;
-
-	if (!sk_is_locked(backend, F_WRLCK)) {
-		/* failed to get lock to expunge */
-		i_assert((array_idx(&backend->indexes, 0))->skiref == NULL);
-		return;
-	}
-
-	if (committed) {
-		if (sk_expunge_commit(backend) < 0 || sk_flush(backend) < 0) {
-			sk_close(backend);
-			sk_delete(backend);
-		} else
-			sk_close(backend);
-	} else {
-		sk_expunge_cancel(backend);
-		sk_close(backend);
-	}
-
-	sk_unlock(backend);
-}
-
-static void fts_backend_sk_compact(struct fts_backend *_backend)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *)_backend;
-	int ret;
-
-	if (sk_lock_and_open(backend, F_WRLCK, FALSE) < 0)
-		return;
-	ret = sk_compact(backend);
-	sk_close(backend);
-	if (ret < 0)
-		sk_delete(backend);
-	sk_unlock(backend);
-}
-
-static int fts_backend_sk_lock(struct fts_backend *_backend)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *)_backend;
-
-	return sk_lock_and_open(backend, F_RDLCK, FALSE);
-}
-
-static void fts_backend_sk_unlock(struct fts_backend *_backend)
-{
-	struct sk_fts_backend *backend = (struct sk_fts_backend *)_backend;
-
-	i_assert(sk_is_locked(backend, F_RDLCK));
-	sk_close(backend);
-	sk_unlock(backend);
-}
-
-static int fts_backend_sk_lookup_one(struct fts_backend *_backend,
-				     const char *key,
-				     enum fts_lookup_flags flags,
-				     ARRAY_TYPE(seq_range) *definite_uids,
-				     ARRAY_TYPE(seq_range) *maybe_uids)
+static int fts_backend_sk_rescan(struct fts_backend *_backend)
 {
 	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
-	CFMutableStringRef query;
-	ARRAY_TYPE(seq_range) *uids = definite_uids;
-	int ret;
+	struct mailbox_list_iterate_context *iter;
+	const struct mailbox_info *info;
+	struct mailbox *box;
+	int ret = 0;
 
-	i_assert((flags & FTS_LOOKUP_FLAG_INVERT) == 0);
-	i_assert(sk_is_locked(backend, F_RDLCK));
+	iter = mailbox_list_iter_init(backend->backend.ns->list, "*",
+				      MAILBOX_LIST_ITER_SKIP_ALIASES |
+				      MAILBOX_LIST_ITER_NO_AUTO_BOXES);
+	while ((info = mailbox_list_iter_next(iter)) != NULL) {
+		if ((info->flags &
+		     (MAILBOX_NONEXISTENT | MAILBOX_NOSELECT)) != 0)
+			continue;
 
-	query = CFStringCreateMutable(kCFAllocatorDefault, 0);
-	sk_nonnull(query, "CFStringCreateMutable(query)");
-
-	if (!sk_build_query(query, key))
-		uids = maybe_uids;
-
-	array_clear(definite_uids);
-	array_clear(maybe_uids);
-
-	ret = sk_search(backend, query, flags, uids, NULL);
-	CFRelease_and_null(query);
+		box = mailbox_alloc(info->ns->list, info->vname, 0);
+		if (mailbox_open(box) == 0) {
+			sk_set_box(backend, box);
+			/* delete the indexes and enqueue a rebuild */
+			if (sk_delete(backend) < 0)
+				ret = -1;
+			sk_unset_box(backend);
+			fts_enqueue_update(box);
+		}
+		mailbox_free(&box);
+	}
+	if (mailbox_list_iter_deinit(&iter) < 0)
+		ret = -1;
 	return ret;
 }
 
-static int fts_backend_sk_lookup_all(struct fts_backend_lookup_context *ctx,
-				     ARRAY_TYPE(seq_range) *definite_uids,
-				     ARRAY_TYPE(seq_range) *maybe_uids,
-				     ARRAY_TYPE(fts_score_map) *score_map)
+static int fts_backend_sk_optimize(struct fts_backend *_backend)
 {
-	struct sk_fts_backend *backend =
-		(struct sk_fts_backend *) ctx->backend;
-	unsigned int i, count;
-	const struct fts_backend_lookup_field *fields;
-	enum fts_lookup_flags flags;
-	CFMutableStringRef query;
-	ARRAY_TYPE(seq_range) *uids = definite_uids;
+	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
+	struct mailbox_list_iterate_context *iter;
+	const struct mailbox_info *info;
+	struct mailbox *box;
 	int ret;
+	bool ok = TRUE;
 
-	i_assert(sk_is_locked(backend, F_RDLCK));
+	iter = mailbox_list_iter_init(backend->backend.ns->list, "*",
+				      MAILBOX_LIST_ITER_SKIP_ALIASES |
+				      MAILBOX_LIST_ITER_NO_AUTO_BOXES);
+	while ((info = mailbox_list_iter_next(iter)) != NULL) {
+		if ((info->flags &
+		     (MAILBOX_NONEXISTENT | MAILBOX_NOSELECT)) != 0)
+			continue;
 
-	fields = array_get(&ctx->fields, &count);
-
-	/* SearchKit does not support naked "NOT foo".  It needs a
-	   non-inverted search term from which to exclude the NOT term(s)). */
-	for (i = 0; i < count; i++)
-		if ((fields[i].flags & FTS_LOOKUP_FLAG_INVERT) == 0)
-			break;
-	if (i >= count)
-		return -1;
-
-	flags = fields[0].flags & (FTS_LOOKUP_FLAG_HEADER |
-				   FTS_LOOKUP_FLAG_BODY);
-	i_assert(flags != 0);
-
-	query = CFStringCreateMutable(kCFAllocatorDefault, 0);
-	sk_nonnull(query, "CFStringCreateMutable(query)");
-
-	for (i = 0; i < count; i++) {
-		if (i > 0) {
-			/* SearchKit can't search by document name, which is
-			   where our hint about header vs. body lives (see
-			   <rdar://problem/7793170>).  Make FTS fall back to
-			   lookup_one. */
-			if ((fields[i].flags & (FTS_LOOKUP_FLAG_HEADER |
-						FTS_LOOKUP_FLAG_BODY)) !=
-			    flags) {
-				CFRelease_and_null(query);
-				return -1;
+		box = mailbox_alloc(info->ns->list, info->vname, 0);
+		if (mailbox_open(box) == 0) {
+			sk_set_box(backend, box);
+			if (sk_lock_and_open(backend, F_WRLCK, FALSE) >= 0) {
+				ret = sk_compact(backend);
+				sk_close(backend);
+				if (ret < 0) {
+					sk_delete(backend);
+					ok = FALSE;
+				}
+				sk_unlock(backend);
 			}
-
-			CFStringAppend(query, CFSTR(" "));
+			sk_unset_box(backend);
 		}
+		mailbox_free(&box);
+	}
+	if (mailbox_list_iter_deinit(&iter) < 0)
+		ok = FALSE;
 
-		if (fields[i].flags & FTS_LOOKUP_FLAG_INVERT)
-			CFStringAppend(query, CFSTR("NOT "));
+	return ok ? 0 : -1;
+}
 
-		if (!sk_build_query(query, fields[i].key)) {
-			/* SearchKit can't do subphrase matches */
-			uids = maybe_uids;
+static int
+fts_backend_sk_lookup(struct fts_backend *_backend, struct mailbox *box,
+		      struct mail_search_arg *args, bool and_args,
+		      struct fts_result *result)
+{
+	struct sk_fts_backend *backend = (struct sk_fts_backend *) _backend;
+	struct sk_lookup_context *lctx;
+	int ret = -1;
+
+	sk_set_box(backend, box);
+	if (sk_lock_and_open(backend, F_RDLCK, FALSE) > 0) {
+		lctx = sk_lookup_new(backend);
+		if (lctx != NULL) {
+			ret = sk_lookup(lctx, args, and_args, result);
+			sk_lookup_free(&lctx);
 		}
 	}
-
-	array_clear(definite_uids);
-	array_clear(maybe_uids);
-
-	ret = sk_search(backend, query, flags, uids, score_map);
-	CFRelease_and_null(query);
+	sk_unset_box(backend);
+	result->scores_sorted = FALSE;
 	return ret;
 }
+
 
 struct fts_backend fts_backend_sk = {
 	.name = "sk",
-	.flags = FTS_BACKEND_FLAG_SUBSTRING_LOOKUPS |
-		 FTS_BACKEND_FLAG_BINARY_MIME_PARTS,
+	.flags = FTS_BACKEND_FLAG_BINARY_MIME_PARTS |
+		 FTS_BACKEND_FLAG_FUZZY_SEARCH,
 
 	{
+		fts_backend_sk_alloc,
 		fts_backend_sk_init,
 		fts_backend_sk_deinit,
 		fts_backend_sk_get_last_uid,
-		NULL,
-		fts_backend_sk_build_init,
-		fts_backend_sk_build_hdr,
-		fts_backend_sk_build_body_begin,
-		NULL,
-		fts_backend_sk_build_more,
-		fts_backend_sk_build_deinit,
-		fts_backend_sk_expunge,
-		fts_backend_sk_expunge_finish,
-		fts_backend_sk_compact,
-		fts_backend_sk_lock,
-		fts_backend_sk_unlock,
-		fts_backend_sk_lookup_one,
-		NULL,
-		fts_backend_sk_lookup_all
+		fts_backend_sk_update_init,
+		fts_backend_sk_update_deinit,
+		fts_backend_sk_update_set_mailbox,
+		fts_backend_sk_update_expunge,
+		fts_backend_sk_update_set_build_key,
+		fts_backend_sk_update_unset_build_key,
+		fts_backend_sk_update_build_more,
+		fts_backend_sk_refresh,
+		fts_backend_sk_rescan,
+		fts_backend_sk_optimize,
+		fts_backend_default_can_lookup,
+		fts_backend_sk_lookup,
+		NULL,		/* lookup_multi */
+		NULL		/* lookup_done */
 	}
 };

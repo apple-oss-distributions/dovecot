@@ -61,4 +61,72 @@ user_attrs = \
   =mail=maildir:/var/vmail/%d/%n/Maildir
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Attribute templates (v2.1)
+--------------------------
+
+With v2.1+ you can use more than one LDAP attribute in a variable. The new
+syntax is also easier to understand. For example:
+
+---%<-------------------------------------------------------------------------
+user_attrs = \
+  =quota_rule=*:bytes=%{ldap:quotaBytes}, \
+  =home=/home/%{ldap:userDomain}/%{ldap:userName}
+---%<-------------------------------------------------------------------------
+
+It's also possible to give default values to nonexistent attributes in v2.1.11+
+by using e.g.'%{ldap:userDomain:example.com} ' where if userDomain attribute
+doesn't exist, example.com is used instead.
+
+Subqueries and pointers (v2.2)
+------------------------------
+
+LDAP values can now have DN pointers to other entries that are queried.
+Example:
+
+---%<-------------------------------------------------------------------------
+user_attrs = \
+  =user=%{ldap:uid}, \
+  @mail=%{ldap:mailDN}, \
+  =uid=%{ldap:uidNumber@mail}, \
+  =gid=%{ldap:gidNumber@mail}, \
+  =home=%{ldap:rootPath@mail}/%d/%n
+---%<-------------------------------------------------------------------------
+
+This will do a regular lookup first. Then does another lookup with DN taken
+from mailDN's value. The *@mail attributes are assigned from the second
+lookup's results.
+
+---%<-------------------------------------------------------------------------
+user_attrs = \
+  =user=%{ldap:uid}, \
+  =home=%{ldap_ptr:activePath}, \
+  !primaryPath, !secondaryPath
+---%<-------------------------------------------------------------------------
+
+The activePath's value can be either "primaryPath" or "secondaryPath". The
+home's value will be the contents of that field. The !field tells Dovecot to
+fetch the field's value but not to do anything with it otherwise.
+
+Variables and domains
+---------------------
+
+User names and domains may be distinguished using the <Variables.txt> %n and
+%d.  They split the /previous username/ at the "@" character.  The /prevous
+username/ is:
+
+ * For LMTP, it will be user@hostname, where hostname depends on e.g. the
+   Postfix configuration.
+ * For IMAP, it will be whatever the password database has designated as the
+   username.  If the (LDAP) password database has "user_attrs = =user=%n", then
+   the domain part of the login name will be stripped by the password database.
+    The UserDB will not see any domain part, i.e. %n and %u are the same thing
+   for the UserDB.
+
+The UserDB may set a new username, too, using "user_attrs = =user=...".  This
+will be used for
+
+ * Logging
+ * %u and %d variables in other parts of the configuration (e.g. quota file
+   names)
+
+(This file was created from the wiki on 2013-08-05 04:42)

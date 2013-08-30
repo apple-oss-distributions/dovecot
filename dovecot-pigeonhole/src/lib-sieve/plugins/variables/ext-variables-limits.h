@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __EXT_VARIABLES_LIMITS_H
@@ -7,7 +7,7 @@
 #include "sieve-limits.h"
 
 /* From RFC 5229:
- * 
+ *
  * 6.  Implementation Limits
  *
  *  An implementation of this document MUST support at least 128 distinct

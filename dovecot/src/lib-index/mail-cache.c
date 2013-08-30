@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -7,10 +7,13 @@
 #include "nfs-workarounds.h"
 #include "file-cache.h"
 #include "mmap-util.h"
+#include "read-full.h"
 #include "write-full.h"
 #include "mail-cache-private.h"
 
 #include <unistd.h>
+
+#define MAIL_CACHE_MIN_HEADER_READ_SIZE 4096
 
 void mail_cache_set_syscall_error(struct mail_cache *cache,
 				  const char *function)
@@ -59,7 +62,6 @@ void mail_cache_file_close(struct mail_cache *cache)
 		file_cache_set_fd(cache->file_cache, -1);
 
 	cache->mmap_base = NULL;
-	cache->data = NULL;
 	cache->hdr = NULL;
 	cache->mmap_length = 0;
 	cache->last_field_header_offset = 0;
@@ -85,7 +87,7 @@ static void mail_cache_init_file_cache(struct mail_cache *cache)
 	file_cache_set_fd(cache->file_cache, cache->fd);
 
 	if (fstat(cache->fd, &st) == 0)
-		file_cache_set_size(cache->file_cache, st.st_size);
+		(void)file_cache_set_size(cache->file_cache, st.st_size);
 	else if (!ESTALE_FSTAT(errno))
 		mail_cache_set_syscall_error(cache, "fstat()");
 
@@ -145,6 +147,7 @@ int mail_cache_reopen(struct mail_cache *cache)
 {
 	struct mail_index_view *view;
 	const struct mail_index_ext *ext;
+	const void *data;
 
 	i_assert(!cache->locked);
 
@@ -167,7 +170,7 @@ int mail_cache_reopen(struct mail_cache *cache)
 
 	mail_cache_init_file_cache(cache);
 
-	if (mail_cache_map(cache, 0, 0) < 0)
+	if (mail_cache_map(cache, 0, 0, &data) < 0)
 		return -1;
 
 	if (mail_cache_header_fields_read(cache) < 0)
@@ -193,37 +196,68 @@ int mail_cache_reopen(struct mail_cache *cache)
 static void mail_cache_update_need_compress(struct mail_cache *cache)
 {
 	const struct mail_cache_header *hdr = cache->hdr;
-	unsigned int cont_percentage;
-	uoff_t max_del_space;
+	struct stat st;
+	unsigned int msg_count;
+	unsigned int records_count, cont_percentage, delete_percentage;
+	bool want_compress = FALSE;
 
-        cont_percentage = hdr->continued_record_count * 100 /
-		(cache->index->map->rec_map->records_count == 0 ? 1 :
-		 cache->index->map->rec_map->records_count);
-	if (cont_percentage >= MAIL_CACHE_COMPRESS_CONTINUED_PERCENTAGE &&
-	    hdr->used_file_size >= MAIL_CACHE_COMPRESS_MIN_SIZE) {
-		/* too many continued rows, compress */
+	if (hdr->minor_version == 0) {
+		/* compress to get ourself into the new header version */
 		cache->need_compress_file_seq = hdr->file_seq;
+		return;
 	}
 
-	/* see if we've reached the max. deleted space in file */
-	max_del_space = hdr->used_file_size / 100 *
-		MAIL_CACHE_COMPRESS_PERCENTAGE;
-	if (hdr->deleted_space >= max_del_space &&
-	    hdr->used_file_size >= MAIL_CACHE_COMPRESS_MIN_SIZE)
-		cache->need_compress_file_seq = hdr->file_seq;
+	msg_count = cache->index->map->rec_map->records_count;
+	if (msg_count == 0)
+		records_count = 1;
+	else if (hdr->record_count == 0 || hdr->record_count > msg_count*2) {
+		/* probably not the real record_count, but hole offset that
+		   Dovecot <=v2.1 versions used to use in this position.
+		   we already checked that minor_version>0, but this could
+		   happen if old Dovecot was used to access mailbox after
+		   it had been updated. */
+		records_count = I_MAX(msg_count, 1);
+		cache->hdr_copy.record_count = msg_count;
+		cache->hdr_modified = TRUE;
+	} else {
+		records_count = hdr->record_count;
+	}
+
+	cont_percentage = hdr->continued_record_count * 100 / records_count;
+	if (cont_percentage >= MAIL_CACHE_COMPRESS_CONTINUED_PERCENTAGE) {
+		/* too many continued rows, compress */
+		want_compress = TRUE;
+	}
+
+	delete_percentage = hdr->deleted_record_count * 100 /
+		(records_count + hdr->deleted_record_count);
+	if (delete_percentage >= MAIL_CACHE_COMPRESS_DELETE_PERCENTAGE) {
+		/* too many deleted records, compress */
+		want_compress = TRUE;
+	}
+
+	if (want_compress) {
+		if (fstat(cache->fd, &st) < 0) {
+			if (!ESTALE_FSTAT(errno))
+				mail_cache_set_syscall_error(cache, "fstat()");
+			return;
+		}
+		if (st.st_size >= MAIL_CACHE_COMPRESS_MIN_SIZE)
+			cache->need_compress_file_seq = hdr->file_seq;
+	}
+
 }
 
-static bool mail_cache_verify_header(struct mail_cache *cache)
+static bool mail_cache_verify_header(struct mail_cache *cache,
+				     const struct mail_cache_header *hdr)
 {
-	const struct mail_cache_header *hdr = cache->data;
-
 	/* check that the header is still ok */
 	if (cache->mmap_length < sizeof(struct mail_cache_header)) {
 		mail_cache_set_corrupted(cache, "File too small");
 		return FALSE;
 	}
 
-	if (hdr->version != MAIL_CACHE_VERSION) {
+	if (hdr->major_version != MAIL_CACHE_MAJOR_VERSION) {
 		/* version changed - upgrade silently */
 		mail_cache_unlink(cache);
 		return FALSE;
@@ -243,41 +277,128 @@ static bool mail_cache_verify_header(struct mail_cache *cache)
 		mail_cache_set_corrupted(cache, "file_seq is 0");
 		return FALSE;
 	}
-
-	/* only check the header if we're locked */
-	if (!cache->locked)
-		return TRUE;
-
-	if (hdr->used_file_size < sizeof(struct mail_cache_header)) {
-		mail_cache_set_corrupted(cache, "used_file_size too small");
-		return FALSE;
-	}
-	if ((hdr->used_file_size % sizeof(uint32_t)) != 0) {
-		mail_cache_set_corrupted(cache, "used_file_size not aligned");
-		return FALSE;
-	}
-
-	if (cache->mmap_base != NULL &&
-	    hdr->used_file_size > cache->mmap_length) {
-		mail_cache_set_corrupted(cache, "used_file_size too large");
-		return FALSE;
-	}
 	return TRUE;
 }
 
-int mail_cache_map(struct mail_cache *cache, size_t offset, size_t size)
+static int
+mail_cache_map_finish(struct mail_cache *cache, uoff_t offset, size_t size,
+		      const void *hdr_data, bool copy_hdr)
 {
+	const struct mail_cache_header *hdr = hdr_data;
+
+	if (offset == 0) {
+		/* verify the header validity only with offset=0. this way
+		   we won't waste time re-verifying it all the time */
+		if (!mail_cache_verify_header(cache, hdr)) {
+			cache->need_compress_file_seq =
+				!MAIL_CACHE_IS_UNUSABLE(cache) &&
+				cache->hdr->file_seq != 0 ?
+				cache->hdr->file_seq : 0;
+			cache->hdr = NULL;
+			return -1;
+		}
+	}
+	if (hdr_data != NULL) {
+		if (!copy_hdr)
+			cache->hdr = hdr;
+		else {
+			memcpy(&cache->hdr_ro_copy, hdr,
+			       sizeof(cache->hdr_ro_copy));
+			cache->hdr = &cache->hdr_ro_copy;
+		}
+		mail_cache_update_need_compress(cache);
+	} else {
+		i_assert(cache->hdr != NULL);
+	}
+	i_assert(cache->hdr->file_seq != 0);
+
+	if (offset + size > cache->mmap_length)
+		return 0;
+	return 1;
+}
+
+static int
+mail_cache_map_with_read(struct mail_cache *cache, size_t offset, size_t size,
+			 const void **data_r)
+{
+	const void *hdr_data;
+	void *data;
 	ssize_t ret;
 
-	cache->remap_counter++;
+	if (cache->read_buf == NULL) {
+		cache->read_buf =
+			buffer_create_dynamic(default_pool, size);
+	} else if (cache->read_offset <= offset &&
+		   cache->read_offset + cache->read_buf->used >= offset+size) {
+		/* already mapped */
+		*data_r = CONST_PTR_OFFSET(cache->read_buf->data,
+					   offset - cache->read_offset);
+		hdr_data = offset == 0 ? *data_r : NULL;
+		return mail_cache_map_finish(cache, offset, size, hdr_data, TRUE);
+	} else {
+		buffer_set_used_size(cache->read_buf, 0);
+	}
+	if (offset == 0 && size < MAIL_CACHE_MIN_HEADER_READ_SIZE) {
+		/* we can usually read the fields header after the cache
+		   header. we need them both, so try to read them all with one
+		   pread() call. */
+		size = MAIL_CACHE_MIN_HEADER_READ_SIZE;
+	}
+
+	data = buffer_append_space_unsafe(cache->read_buf, size);
+	ret = pread(cache->fd, data, size, offset);
+	if (ret < 0) {
+		if (errno != ESTALE)
+			mail_cache_set_syscall_error(cache, "read()");
+
+		buffer_set_used_size(cache->read_buf, 0);
+		cache->hdr = NULL;
+		cache->mmap_length = 0;
+		return -1;
+	}
+	buffer_set_used_size(cache->read_buf, ret);
+
+	cache->read_offset = offset;
+	cache->mmap_length = offset + cache->read_buf->used;
+
+	*data_r = data;
+	hdr_data = offset == 0 ? *data_r : NULL;
+	return mail_cache_map_finish(cache, offset,
+				     cache->read_buf->used, hdr_data, TRUE);
+}
+
+int mail_cache_map(struct mail_cache *cache, size_t offset, size_t size,
+		   const void **data_r)
+{
+	struct stat st;
+	const void *data;
+	ssize_t ret;
 
 	if (size == 0)
 		size = sizeof(struct mail_cache_header);
 
-	if (cache->file_cache != NULL) {
-		cache->data = NULL;
-		cache->hdr = NULL;
+	/* verify offset + size before trying to allocate a huge amount of
+	   memory due to them. note that we may be prefetching more than we
+	   actually need, so don't fail too early. */
+	if ((size > cache->mmap_length || offset + size > cache->mmap_length) &&
+	    (offset > 0 || size > sizeof(struct mail_cache_header))) {
+		if (fstat(cache->fd, &st) < 0) {
+			i_error("fstat(%s) failed: %m", cache->filepath);
+			return -1;
+		}
+		if (offset >= (uoff_t)st.st_size) {
+			*data_r = NULL;
+			return 0;
+		}
+		if (offset + size > (uoff_t)st.st_size)
+			size = st.st_size - offset;
+	}
 
+	cache->remap_counter++;
+	if (cache->map_with_read)
+		return mail_cache_map_with_read(cache, offset, size, data_r);
+
+	if (cache->file_cache != NULL) {
 		ret = file_cache_read(cache->file_cache, offset, size);
 		if (ret < 0) {
                         /* In case of ESTALE we'll simply fail without error
@@ -289,33 +410,24 @@ int mail_cache_map(struct mail_cache *cache, size_t offset, size_t size)
                            offsets. */
                         if (errno != ESTALE)
                                 mail_cache_set_syscall_error(cache, "read()");
+			cache->hdr = NULL;
 			return -1;
 		}
 
-		cache->data = file_cache_get_map(cache->file_cache,
-						 &cache->mmap_length);
-
-		if (offset == 0) {
-			if (!mail_cache_verify_header(cache)) {
-				cache->need_compress_file_seq =
-					!MAIL_CACHE_IS_UNUSABLE(cache) &&
-					cache->hdr->file_seq != 0 ?
-					cache->hdr->file_seq : 0;
-				return -1;
-			}
-			memcpy(&cache->hdr_ro_copy, cache->data,
-			       sizeof(cache->hdr_ro_copy));
-		}
-		cache->hdr = &cache->hdr_ro_copy;
-		if (offset == 0)
-			mail_cache_update_need_compress(cache);
-		return 0;
+		data = file_cache_get_map(cache->file_cache,
+					  &cache->mmap_length);
+		*data_r = offset > cache->mmap_length ? NULL :
+			CONST_PTR_OFFSET(data, offset);
+		return mail_cache_map_finish(cache, offset, size,
+					     offset == 0 ? data : NULL, TRUE);
 	}
 
 	if (offset < cache->mmap_length &&
 	    size <= cache->mmap_length - offset) {
 		/* already mapped */
-		return 0;
+		i_assert(cache->mmap_base != NULL);
+		*data_r = CONST_PTR_OFFSET(cache->mmap_base, offset);
+		return 1;
 	}
 
 	if (cache->mmap_base != NULL) {
@@ -338,28 +450,20 @@ int mail_cache_map(struct mail_cache *cache, size_t offset, size_t size)
 	cache->mmap_base = mmap_ro_file(cache->fd, &cache->mmap_length);
 	if (cache->mmap_base == MAP_FAILED) {
 		cache->mmap_base = NULL;
-		cache->data = NULL;
+		cache->mmap_length = 0;
 		mail_cache_set_syscall_error(cache, "mmap()");
 		return -1;
 	}
-	cache->data = cache->mmap_base;
-
-	if (!mail_cache_verify_header(cache)) {
-		cache->need_compress_file_seq =
-			!MAIL_CACHE_IS_UNUSABLE(cache) &&
-			cache->hdr->file_seq != 0 ?
-			cache->hdr->file_seq : 0;
-		return -1;
-	}
-
-	cache->hdr = cache->data;
-	if (offset == 0)
-		mail_cache_update_need_compress(cache);
-	return 0;
+	*data_r = offset > cache->mmap_length ? NULL :
+		CONST_PTR_OFFSET(cache->mmap_base, offset);
+	return mail_cache_map_finish(cache, offset, size,
+				     cache->mmap_base, FALSE);
 }
 
 static int mail_cache_try_open(struct mail_cache *cache)
 {
+	const void *data;
+
 	cache->opened = TRUE;
 
 	if (MAIL_INDEX_IS_IN_MEMORY(cache->index))
@@ -379,9 +483,8 @@ static int mail_cache_try_open(struct mail_cache *cache)
 
 	mail_cache_init_file_cache(cache);
 
-	if (mail_cache_map(cache, 0, sizeof(struct mail_cache_header)) < 0)
+	if (mail_cache_map(cache, 0, 0, &data) < 0)
 		return -1;
-
 	return 1;
 }
 
@@ -409,10 +512,9 @@ static struct mail_cache *mail_cache_alloc(struct mail_index *index)
 	cache->fd = -1;
 	cache->filepath =
 		i_strconcat(index->filepath, MAIL_CACHE_FILE_SUFFIX, NULL);
-	cache->field_pool = pool_alloconly_create("Cache fields", 1024);
-	cache->field_name_hash =
-		hash_table_create(default_pool, cache->field_pool, 0,
-				  strcase_hash, (hash_cmp_callback_t *)strcasecmp);
+	cache->field_pool = pool_alloconly_create("Cache fields", 2048);
+	hash_table_create(&cache->field_name_hash, cache->field_pool, 0,
+			  strcase_hash, strcasecmp);
 
 	cache->dotlock_settings.use_excl_lock =
 		(index->flags & MAIL_INDEX_OPEN_FLAG_DOTLOCK_USE_EXCL) != 0;
@@ -425,23 +527,14 @@ static struct mail_cache *mail_cache_alloc(struct mail_index *index)
 	if (!MAIL_INDEX_IS_IN_MEMORY(index) &&
 	    (index->flags & MAIL_INDEX_OPEN_FLAG_MMAP_DISABLE) != 0)
 		cache->file_cache = file_cache_new(-1);
+	cache->map_with_read =
+		(cache->index->flags & MAIL_INDEX_OPEN_FLAG_SAVEONLY) != 0;
 
 	cache->ext_id =
 		mail_index_ext_register(index, "cache", 0,
 					sizeof(uint32_t), sizeof(uint32_t));
 	mail_index_register_expunge_handler(index, cache->ext_id, FALSE,
 					    mail_cache_expunge_handler, cache);
-	mail_index_register_sync_handler(index, cache->ext_id,
-					 mail_cache_sync_handler,
-                                         MAIL_INDEX_SYNC_HANDLER_FILE |
-                                         MAIL_INDEX_SYNC_HANDLER_HEAD |
-					 (cache->file_cache == NULL ? 0 :
-					  MAIL_INDEX_SYNC_HANDLER_VIEW));
-
-	if (cache->file_cache != NULL) {
-		mail_index_register_sync_lost_handler(index,
-			mail_cache_sync_lost_handler);
-	}
 	return cache;
 }
 
@@ -470,18 +563,14 @@ void mail_cache_free(struct mail_cache **_cache)
 	struct mail_cache *cache = *_cache;
 
 	*_cache = NULL;
-	if (cache->file_cache != NULL) {
-		mail_index_unregister_sync_lost_handler(cache->index,
-			mail_cache_sync_lost_handler);
-
+	if (cache->file_cache != NULL)
 		file_cache_free(&cache->file_cache);
-	}
 
 	mail_index_unregister_expunge_handler(cache->index, cache->ext_id);
-	mail_index_unregister_sync_handler(cache->index, cache->ext_id);
-
 	mail_cache_file_close(cache);
 
+	if (cache->read_buf != NULL)
+		buffer_free(&cache->read_buf);
 	hash_table_destroy(&cache->field_name_hash);
 	pool_unref(&cache->field_pool);
 	i_free(cache->field_file_map);
@@ -542,7 +631,7 @@ static void mail_cache_unlock_file(struct mail_cache *cache)
 	if (cache->index->lock_method != FILE_LOCK_METHOD_DOTLOCK)
 		file_unlock(&cache->file_lock);
 	else
-		(void)file_dotlock_delete(&cache->dotlock);
+		file_dotlock_delete(&cache->dotlock);
 }
 
 static int
@@ -550,6 +639,7 @@ mail_cache_lock_full(struct mail_cache *cache, bool require_same_reset_id,
 		     bool nonblock)
 {
 	const struct mail_index_ext *ext;
+	const void *data;
 	struct mail_index_view *iview;
 	uint32_t reset_id;
 	int i, ret;
@@ -613,7 +703,9 @@ mail_cache_lock_full(struct mail_cache *cache, bool require_same_reset_id,
 			file_cache_invalidate(cache->file_cache, 0,
 					      sizeof(struct mail_cache_header));
 		}
-		if (mail_cache_map(cache, 0, 0) == 0)
+		if (cache->read_buf != NULL)
+			buffer_set_used_size(cache->read_buf, 0);
+		if (mail_cache_map(cache, 0, 0, &data) > 0)
 			cache->hdr_copy = *cache->hdr;
 		else {
 			(void)mail_cache_unlock(cache);
@@ -644,11 +736,10 @@ int mail_cache_unlock(struct mail_cache *cache)
 	if (cache->field_header_write_pending)
                 ret = mail_cache_header_fields_update(cache);
 
-	cache->locked = FALSE;
-
 	if (MAIL_CACHE_IS_UNUSABLE(cache)) {
 		/* we found it to be broken during the lock. just clean up. */
 		cache->hdr_modified = FALSE;
+		cache->locked = FALSE;
 		return -1;
 	}
 
@@ -666,6 +757,7 @@ int mail_cache_unlock(struct mail_cache *cache)
 			mail_cache_set_syscall_error(cache, "fdatasync()");
 	}
 
+	cache->locked = FALSE;
 	mail_cache_unlock_file(cache);
 	return ret;
 }
@@ -673,19 +765,50 @@ int mail_cache_unlock(struct mail_cache *cache)
 int mail_cache_write(struct mail_cache *cache, const void *data, size_t size,
 		     uoff_t offset)
 {
+	i_assert(cache->locked);
+
 	if (pwrite_full(cache->fd, data, size, offset) < 0) {
 		mail_cache_set_syscall_error(cache, "pwrite_full()");
 		return -1;
 	}
 
-	if (cache->file_cache != NULL) {
+	if (cache->file_cache != NULL)
 		file_cache_write(cache->file_cache, data, size, offset);
-
-		/* data pointer may change if file cache was grown */
-		cache->data = file_cache_get_map(cache->file_cache,
-						 &cache->mmap_length);
-	}
+	if (cache->read_buf != NULL)
+		buffer_set_used_size(cache->read_buf, 0);
 	return 0;
+}
+
+int mail_cache_append(struct mail_cache *cache, const void *data, size_t size,
+		      uint32_t *offset)
+{
+	struct stat st;
+
+	if (*offset == 0) {
+		if (fstat(cache->fd, &st) < 0) {
+			if (!ESTALE_FSTAT(errno))
+				mail_cache_set_syscall_error(cache, "fstat()");
+			return -1;
+		}
+		*offset = st.st_size;
+	}
+	if (*offset > (uint32_t)-1 || (uint32_t)-1 - *offset < size) {
+		mail_cache_set_corrupted(cache, "Cache file too large");
+		return -1;
+	}
+	if (mail_cache_write(cache, data, size, *offset) < 0)
+		return -1;
+
+	/* FIXME: this is updated only so that older Dovecot versions (<=v2.1)
+	   can read this file. we can remove this later. */
+	cache->hdr_modified = TRUE;
+	cache->hdr_copy.backwards_compat_used_file_size = *offset + size;
+	return 0;
+}
+
+bool mail_cache_exists(struct mail_cache *cache)
+{
+	return !MAIL_CACHE_IS_UNUSABLE(cache);
 }
 
 struct mail_cache_view *
@@ -702,10 +825,13 @@ mail_cache_view_open(struct mail_cache *cache, struct mail_index_view *iview)
 	return view;
 }
 
-void mail_cache_view_close(struct mail_cache_view *view)
+void mail_cache_view_close(struct mail_cache_view **_view)
 {
+	struct mail_cache_view *view = *_view;
+
 	i_assert(view->trans_view == NULL);
 
+	*_view = NULL;
 	if (view->cache->field_header_write_pending &&
 	    !view->cache->compressing)
                 (void)mail_cache_header_fields_update(view->cache);

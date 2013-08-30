@@ -20,12 +20,12 @@ ChangeLog: .hg/dirstate
 	hg log --style=changelog > ChangeLog
 endif
 
-# Testsuite tests
+# Testsuite tests (FIXME: ugly)
 
 TESTSUITE_BIN = $(top_builddir)/src/testsuite/testsuite $(TESTSUITE_OPTIONS)
 
 if TESTSUITE_VALGRIND
-TEST_BIN = valgrind -q --error-exitcode=1 --show-reachable=yes --leak-check=full $(TESTSUITE_BIN) 
+TEST_BIN = valgrind -q --error-exitcode=1 --show-reachable=yes --leak-check=full $(TESTSUITE_BIN)
 else
 TEST_BIN = $(TESTSUITE_BIN)
 endif
@@ -33,7 +33,7 @@ endif
 if BUILD_UNFINISHED
 test_unfinished =
 else
-test_unfinished = 
+test_unfinished =
 endif
 
 test_cases = \
@@ -76,6 +76,7 @@ test_cases = \
 	tests/extensions/include/variables.svtest \
 	tests/extensions/include/once.svtest \
 	tests/extensions/include/twice.svtest \
+	tests/extensions/include/optional.svtest \
 	tests/extensions/include/rfc.svtest \
 	tests/extensions/include/execute.svtest \
 	tests/extensions/imap4flags/basic.svtest \
@@ -126,7 +127,15 @@ test_cases = \
 	tests/extensions/ihave/execute.svtest \
 	tests/extensions/ihave/errors.svtest \
 	tests/extensions/ihave/restrictions.svtest \
+	tests/extensions/editheader/addheader.svtest \
+	tests/extensions/editheader/deleteheader.svtest \
+	tests/extensions/editheader/alternating.svtest \
+	tests/extensions/editheader/utf8.svtest \
+	tests/extensions/editheader/protected.svtest \
+	tests/extensions/editheader/errors.svtest \
 	tests/extensions/vnd.dovecot/debug/execute.svtest \
+	tests/extensions/vnd.dovecot/duplicate/errors.svtest \
+	tests/extensions/vnd.dovecot/duplicate/execute.svtest \
 	tests/deprecated/notify/basic.svtest \
 	tests/deprecated/notify/mailto.svtest \
 	tests/deprecated/notify/errors.svtest \
@@ -139,8 +148,26 @@ test_cases = \
 $(test_cases):
 	@$(TEST_BIN) $(top_srcdir)/$@
 
-.PHONY: $(test_cases)
+TEST_EXTPROGRAMS_BIN = $(TEST_BIN) \
+	-P src/plugins/sieve-extprograms/.libs/sieve_extprograms
 
+extprograms_test_cases = \
+	tests/plugins/extprograms/errors.svtest \
+	tests/plugins/extprograms/pipe/command.svtest \
+	tests/plugins/extprograms/pipe/errors.svtest \
+	tests/plugins/extprograms/pipe/execute.svtest \
+	tests/plugins/extprograms/filter/command.svtest \
+	tests/plugins/extprograms/filter/errors.svtest \
+	tests/plugins/extprograms/filter/execute.svtest \
+	tests/plugins/extprograms/execute/command.svtest \
+	tests/plugins/extprograms/execute/errors.svtest \
+	tests/plugins/extprograms/execute/execute.svtest
+
+$(extprograms_test_cases):
+	@$(TEST_EXTPROGRAMS_BIN) 	$(top_srcdir)/$@
+
+.PHONY: $(test_cases) $(extprograms_test_cases)
 test: $(test_cases)
+test-plugins: $(extprograms_test_cases)
 
 check: check-am test all-am

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "ioloop.h"
@@ -7,6 +7,7 @@
 #include "passdb.h"
 
 #include <stdlib.h>
+#include <ctype.h>
 
 static struct mech_module_list *mech_modules;
 
@@ -50,7 +51,7 @@ void mech_generic_auth_initial(struct auth_request *request,
 			       const unsigned char *data, size_t data_size)
 {
 	if (data == NULL) {
-		auth_request_handler_reply_continue(request, NULL, 0);
+		auth_request_handler_reply_continue(request, &uchar_nul, 0);
 	} else {
 		/* initial reply given, even if it was 0 bytes */
 		request->mech->auth_continue(request, data, data_size);
@@ -63,7 +64,6 @@ void mech_generic_auth_free(struct auth_request *request)
 }
 
 extern const struct mech_module mech_plain;
-extern const struct mech_module mech_x_plain_submit;	/* APPLE - urlauth */
 extern const struct mech_module mech_login;
 extern const struct mech_module mech_apop;
 extern const struct mech_module mech_cram_md5;
@@ -71,6 +71,7 @@ extern const struct mech_module mech_digest_md5;
 extern const struct mech_module mech_external;
 extern const struct mech_module mech_ntlm;
 extern const struct mech_module mech_otp;
+extern const struct mech_module mech_scram_sha1;
 extern const struct mech_module mech_skey;
 extern const struct mech_module mech_rpa;
 extern const struct mech_module mech_anonymous;
@@ -112,6 +113,20 @@ static void mech_register_add(struct mechanisms_register *reg,
 	reg->modules = list;
 }
 
+static const char *mech_get_plugin_name(const char *name)
+{
+	string_t *str = t_str_new(32);
+
+	str_append(str, "mech_");
+	for (; *name != '\0'; name++) {
+		if (*name == '-')
+			str_append_c(str, '_');
+		else
+			str_append_c(str, i_tolower(*name));
+	}
+	return str_c(str);
+}
+
 struct mechanisms_register *
 mech_register_init(const struct auth_settings *set)
 {
@@ -128,17 +143,22 @@ mech_register_init(const struct auth_settings *set)
 
 	mechanisms = t_strsplit_spaces(set->mechanisms, " ");
 	for (; *mechanisms != NULL; mechanisms++) {
-		if (strcasecmp(*mechanisms, "ANONYMOUS") == 0) {
+		const char *name = *mechanisms;
+
+		if (strcasecmp(name, "ANONYMOUS") == 0) {
 			if (*set->anonymous_username == '\0') {
 				i_fatal("ANONYMOUS listed in mechanisms, "
 					"but anonymous_username not set");
 			}
 		}
-		mech = mech_module_find(*mechanisms);
+		mech = mech_module_find(name);
 		if (mech == NULL) {
-			i_fatal("Unknown authentication mechanism '%s'",
-				*mechanisms);
+			/* maybe it's a plugin. try to load it. */
+			auth_module_load(mech_get_plugin_name(name));
+			mech = mech_module_find(name);
 		}
+		if (mech == NULL)
+			i_fatal("Unknown authentication mechanism '%s'", name);
 		mech_register_add(reg, mech);
 	}
 
@@ -158,7 +178,6 @@ void mech_register_deinit(struct mechanisms_register **_reg)
 void mech_init(const struct auth_settings *set)
 {
 	mech_register_module(&mech_plain);
-	mech_register_module(&mech_x_plain_submit);	/* APPLE - urlauth */
 	mech_register_module(&mech_login);
 	mech_register_module(&mech_apop);
 	mech_register_module(&mech_cram_md5);
@@ -174,6 +193,7 @@ void mech_init(const struct auth_settings *set)
 #endif
 	}
 	mech_register_module(&mech_otp);
+	mech_register_module(&mech_scram_sha1);
 	mech_register_module(&mech_skey);
 	mech_register_module(&mech_rpa);
 	mech_register_module(&mech_anonymous);
@@ -185,7 +205,6 @@ void mech_init(const struct auth_settings *set)
 void mech_deinit(const struct auth_settings *set)
 {
 	mech_unregister_module(&mech_plain);
-	mech_unregister_module(&mech_x_plain_submit);	/* APPLE - urlauth */
 	mech_unregister_module(&mech_login);
 	mech_unregister_module(&mech_apop);
 	mech_unregister_module(&mech_cram_md5);
@@ -201,6 +220,7 @@ void mech_deinit(const struct auth_settings *set)
 #endif
 	}
 	mech_unregister_module(&mech_otp);
+	mech_unregister_module(&mech_scram_sha1);
 	mech_unregister_module(&mech_skey);
 	mech_unregister_module(&mech_rpa);
 	mech_unregister_module(&mech_anonymous);

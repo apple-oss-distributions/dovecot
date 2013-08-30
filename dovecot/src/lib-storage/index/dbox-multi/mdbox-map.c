@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -51,10 +51,8 @@ mdbox_map_init(struct mdbox_storage *storage, struct mailbox_list *root_list)
 	struct mdbox_map *map;
 	const char *root, *index_root;
 
-	root = mailbox_list_get_path(root_list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_DIR);
-	index_root = mailbox_list_get_path(root_list, NULL,
-					   MAILBOX_LIST_PATH_TYPE_INDEX);
+	root = mailbox_list_get_root_forced(root_list, MAILBOX_LIST_PATH_TYPE_DIR);
+	index_root = mailbox_list_get_root_forced(root_list, MAILBOX_LIST_PATH_TYPE_INDEX);
 
 	map = i_new(struct mdbox_map, 1);
 	map->storage = storage;
@@ -68,7 +66,7 @@ mdbox_map_init(struct mdbox_storage *storage, struct mailbox_list *root_list)
 		MAP_STORAGE(map)->set->parsed_fsync_mode, 0);
 	mail_index_set_lock_method(map->index,
 		MAP_STORAGE(map)->set->parsed_lock_method,
-		mail_storage_get_lock_timeout(MAP_STORAGE(map), -1U));
+		mail_storage_get_lock_timeout(MAP_STORAGE(map), UINT_MAX));
 	map->root_list = root_list;
 	map->map_ext_id = mail_index_ext_register(map->index, "map",
 				sizeof(struct mdbox_map_mail_index_header),
@@ -76,11 +74,6 @@ mdbox_map_init(struct mdbox_storage *storage, struct mailbox_list *root_list)
 				sizeof(uint32_t));
 	map->ref_ext_id = mail_index_ext_register(map->index, "ref", 0,
 				sizeof(uint16_t), sizeof(uint16_t));
-
-	mailbox_list_get_permissions(root_list, NULL, &map->create_mode,
-				     &map->create_gid, &map->create_gid_origin);
-	mail_index_set_permissions(map->index, map->create_mode,
-				   map->create_gid, map->create_gid_origin);
 	return map;
 }
 
@@ -100,45 +93,39 @@ void mdbox_map_deinit(struct mdbox_map **_map)
 	i_free(map);
 }
 
-static int mdbox_map_mkdir_storage_path(struct mdbox_map *map, const char *path)
+static int mdbox_map_mkdir_storage(struct mdbox_map *map)
 {
-	struct stat st;
+	if (mailbox_list_mkdir_root(map->root_list, map->path,
+				    MAILBOX_LIST_PATH_TYPE_DIR) < 0) {
+		mail_storage_copy_list_error(MAP_STORAGE(map), map->root_list);
+		return -1;
+	}
 
-	if (stat(path, &st) == 0)
-		return 0;
-
-	if (mailbox_list_mkdir(map->root_list, path,
-			       MAILBOX_LIST_PATH_TYPE_DIR) < 0) {
+	if (strcmp(map->path, map->index_path) != 0 &&
+	    mailbox_list_mkdir_root(map->root_list, map->index_path,
+				    MAILBOX_LIST_PATH_TYPE_INDEX) < 0) {
 		mail_storage_copy_list_error(MAP_STORAGE(map), map->root_list);
 		return -1;
 	}
 	return 0;
 }
 
-static int mdbox_map_mkdir_storage(struct mdbox_map *map)
-{
-	if (mdbox_map_mkdir_storage_path(map, map->path) < 0)
-		return -1;
-
-	if (strcmp(map->path, map->index_path) != 0) {
-		if (mdbox_map_mkdir_storage_path(map, map->index_path) < 0)
-			return -1;
-	}
-	return 0;
-}
-
 static void mdbox_map_cleanup(struct mdbox_map *map)
 {
+	unsigned int interval =
+		MAP_STORAGE(map)->set->mail_temp_scan_interval;
 	struct stat st;
 
 	if (stat(map->path, &st) < 0)
 		return;
 
 	/* check once in a while if there are temp files to clean up */
-	if (st.st_atime > st.st_ctime + DBOX_TMP_DELETE_SECS) {
+	if (interval == 0) {
+		/* disabled */
+	} else if (st.st_atime > st.st_ctime + DBOX_TMP_DELETE_SECS) {
 		/* there haven't been any changes to this directory since we
 		   last checked it. */
-	} else if (st.st_atime < ioloop_time - DBOX_TMP_SCAN_SECS) {
+	} else if (st.st_atime < ioloop_time - (time_t)interval) {
 		/* time to scan */
 		(void)unlink_old_files(map->path, DBOX_TEMP_FILE_PREFIX,
 				       ioloop_time - DBOX_TMP_DELETE_SECS);
@@ -148,21 +135,40 @@ static void mdbox_map_cleanup(struct mdbox_map *map)
 static int mdbox_map_open_internal(struct mdbox_map *map, bool create_missing)
 {
 	enum mail_index_open_flags open_flags;
-	int ret;
+	struct mailbox_permissions perm;
+	int ret = 0;
 
 	if (map->view != NULL) {
 		/* already opened */
 		return 1;
 	}
 
+	mailbox_list_get_root_permissions(map->root_list, &perm);
+	mail_index_set_permissions(map->index, perm.file_create_mode,
+				   perm.file_create_gid,
+				   perm.file_create_gid_origin);
+
 	open_flags = MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY |
 		mail_storage_settings_to_index_flags(MAP_STORAGE(map)->set);
 	if (create_missing) {
-		open_flags |= MAIL_INDEX_OPEN_FLAG_CREATE;
-		if (mdbox_map_mkdir_storage(map) < 0)
+		if ((ret = mdbox_map_mkdir_storage(map)) < 0)
 			return -1;
+		if (ret > 0) {
+			/* storage/ directory already existed.
+			   the index should exist also. */
+		} else {
+			open_flags |= MAIL_INDEX_OPEN_FLAG_CREATE;
+		}
 	}
 	ret = mail_index_open(map->index, open_flags);
+	if (ret == 0 && create_missing) {
+		/* storage/ already existed, but indexes didn't. we'll need to
+		   take extra steps to make sure we won't overwrite any m.*
+		   files that may already exist. */
+		map->verify_existing_file_ids = TRUE;
+		open_flags |= MAIL_INDEX_OPEN_FLAG_CREATE;
+		ret = mail_index_open(map->index, open_flags);
+	}
 	if (ret < 0) {
 		mail_storage_set_internal_error(MAP_STORAGE(map));
 		mail_index_reset_error(map->index);
@@ -178,7 +184,8 @@ static int mdbox_map_open_internal(struct mdbox_map *map, bool create_missing)
 	mdbox_map_cleanup(map);
 
 	if (mail_index_get_header(map->view)->uid_validity == 0) {
-		if (mdbox_map_generate_uid_validity(map) < 0) {
+		if (mdbox_map_generate_uid_validity(map) < 0 ||
+		    mdbox_map_refresh(map) < 0) {
 			mail_storage_set_internal_error(MAP_STORAGE(map));
 			mail_index_reset_error(map->index);
 			mail_index_close(map->index);
@@ -201,7 +208,8 @@ int mdbox_map_open_or_create(struct mdbox_map *map)
 int mdbox_map_refresh(struct mdbox_map *map)
 {
 	struct mail_index_view_sync_ctx *ctx;
-	bool delayed_expunges;
+	bool delayed_expunges, fscked;
+	int ret = 0;
 
 	/* some open files may have read partially written mails. now that
 	   map syncing makes the new mails visible, we need to make sure the
@@ -220,12 +228,15 @@ int mdbox_map_refresh(struct mdbox_map *map)
 
 	ctx = mail_index_view_sync_begin(map->view,
 				MAIL_INDEX_VIEW_SYNC_FLAG_FIX_INCONSISTENT);
+	fscked = mail_index_reset_fscked(map->view->index);
 	if (mail_index_view_sync_commit(&ctx, &delayed_expunges) < 0) {
 		mail_storage_set_internal_error(MAP_STORAGE(map));
 		mail_index_reset_error(map->index);
-		return -1;
+		ret = -1;
 	}
-	return 0;
+	if (fscked)
+		mdbox_storage_set_corrupted(map->storage);
+	return ret;
 }
 
 static void
@@ -255,10 +266,8 @@ mdbox_map_lookup_seq(struct mdbox_map *map, uint32_t seq,
 	const struct mdbox_map_mail_index_record *rec;
 	const void *data;
 	uint32_t uid;
-	bool expunged;
 
-	mail_index_lookup_ext(map->view, seq, map->map_ext_id,
-			      &data, &expunged);
+	mail_index_lookup_ext(map->view, seq, map->map_ext_id, &data, NULL);
 	rec = data;
 
 	if (rec == NULL || rec->file_id == 0) {
@@ -311,7 +320,6 @@ int mdbox_map_lookup_full(struct mdbox_map *map, uint32_t map_uid,
 	const uint16_t *ref16_p;
 	const void *data;
 	uint32_t seq;
-	bool expunged;
 	int ret;
 
 	if (mdbox_map_open_or_create(map) < 0)
@@ -324,8 +332,7 @@ int mdbox_map_lookup_full(struct mdbox_map *map, uint32_t map_uid,
 		return -1;
 	*rec_r = *rec;
 
-	mail_index_lookup_ext(map->view, seq, map->ref_ext_id,
-			      &data, &expunged);
+	mail_index_lookup_ext(map->view, seq, map->ref_ext_id, &data, NULL);
 	if (data == NULL) {
 		mdbox_map_set_corrupted(map, "missing ref extension");
 		return -1;
@@ -341,19 +348,18 @@ int mdbox_map_view_lookup_rec(struct mdbox_map *map,
 {
 	const uint16_t *ref16_p;
 	const void *data;
-	bool expunged;
 
 	memset(rec_r, 0, sizeof(*rec_r));
 	mail_index_lookup_uid(view, seq, &rec_r->map_uid);
 
-	mail_index_lookup_ext(view, seq, map->map_ext_id, &data, &expunged);
+	mail_index_lookup_ext(view, seq, map->map_ext_id, &data, NULL);
 	if (data == NULL) {
 		mdbox_map_set_corrupted(map, "missing map extension");
 		return -1;
 	}
 	memcpy(&rec_r->rec, data, sizeof(rec_r->rec));
 
-	mail_index_lookup_ext(view, seq, map->ref_ext_id, &data, &expunged);
+	mail_index_lookup_ext(view, seq, map->ref_ext_id, &data, NULL);
 	if (data == NULL) {
 		mdbox_map_set_corrupted(map, "missing ref extension");
 		return -1;
@@ -422,7 +428,7 @@ int mdbox_map_get_zero_ref_files(struct mdbox_map *map,
 				      &data, &expunged);
 		if (data != NULL && !expunged) {
 			rec = data;
-			seq_range_array_add(file_ids_r, 0, rec->file_id);
+			seq_range_array_add(file_ids_r, rec->file_id);
 		}
 	}
 	return 0;
@@ -471,6 +477,8 @@ int mdbox_map_atomic_lock(struct mdbox_map_atomic_context *atomic)
 	   log's head_offset = tail_offset */
 	ret = mail_index_sync_begin(atomic->map->index, &atomic->sync_ctx,
 				    &atomic->sync_view, &atomic->sync_trans, 0);
+	if (mail_index_reset_fscked(atomic->map->index))
+		mdbox_storage_set_corrupted(atomic->map->storage);
 	if (ret <= 0) {
 		i_assert(ret != 0);
 		mail_storage_set_internal_error(MAP_STORAGE(atomic->map));
@@ -493,11 +501,13 @@ bool mdbox_map_atomic_is_locked(struct mdbox_map_atomic_context *atomic)
 void mdbox_map_atomic_set_failed(struct mdbox_map_atomic_context *atomic)
 {
 	atomic->success = FALSE;
+	atomic->failed = TRUE;
 }
 
 void mdbox_map_atomic_set_success(struct mdbox_map_atomic_context *atomic)
 {
-	atomic->success = TRUE;
+	if (!atomic->failed)
+		atomic->success = TRUE;
 }
 
 int mdbox_map_atomic_finish(struct mdbox_map_atomic_context **_atomic)
@@ -569,7 +579,7 @@ int mdbox_map_transaction_commit(struct mdbox_map_transaction_context *ctx)
 		mail_index_reset_error(ctx->atomic->map->index);
 		return -1;
 	}
-	ctx->atomic->success = TRUE;
+	mdbox_map_atomic_set_success(ctx->atomic);
 	return 0;
 }
 
@@ -590,7 +600,6 @@ int mdbox_map_update_refcount(struct mdbox_map_transaction_context *ctx,
 	struct mdbox_map *map = ctx->atomic->map;
 	const void *data;
 	uint32_t seq;
-	bool expunged;
 	int old_diff, new_diff;
 
 	if (unlikely(ctx->trans == NULL))
@@ -609,8 +618,7 @@ int mdbox_map_update_refcount(struct mdbox_map_transaction_context *ctx,
 		}
 		return -1;
 	}
-	mail_index_lookup_ext(map->view, seq, map->ref_ext_id,
-			      &data, &expunged);
+	mail_index_lookup_ext(map->view, seq, map->ref_ext_id, &data, NULL);
 	old_diff = data == NULL ? 0 : *((const uint16_t *)data);
 	ctx->changed = TRUE;
 	new_diff = mail_index_atomic_inc_ext(ctx->trans, seq,
@@ -657,7 +665,6 @@ int mdbox_map_remove_file_id(struct mdbox_map *map, uint32_t file_id)
 	const struct mail_index_header *hdr;
 	const struct mdbox_map_mail_index_record *rec;
 	const void *data;
-	bool expunged;
 	uint32_t seq;
 	int ret = 0;
 
@@ -671,7 +678,7 @@ int mdbox_map_remove_file_id(struct mdbox_map *map, uint32_t file_id)
 	hdr = mail_index_get_header(map->view);
 	for (seq = 1; seq <= hdr->messages_count; seq++) {
 		mail_index_lookup_ext(map->view, seq, map->map_ext_id,
-				      &data, &expunged);
+				      &data, NULL);
 		if (data == NULL) {
 			mdbox_map_set_corrupted(map, "missing map extension");
 			ret = -1;
@@ -775,10 +782,25 @@ static bool dbox_try_open(struct dbox_file *file, bool want_altpath)
 	return TRUE;
 }
 
+static bool dbox_file_is_ok_at(struct dbox_file *file, uoff_t offset)
+{
+	bool last;
+	int ret;
+
+	if (dbox_file_seek(file, offset) == 0)
+		return FALSE;
+
+	while ((ret = dbox_file_seek_next(file, &offset, &last)) > 0);
+	if (ret == 0 && !last)
+		return FALSE;
+	return TRUE;
+}
+
 static bool
 mdbox_map_file_try_append(struct mdbox_map_append_context *ctx,
 			  bool want_altpath,
-			  uint32_t file_id, time_t stamp, uoff_t mail_size,
+			  const struct mdbox_map_mail_index_record *rec,
+			  time_t stamp, uoff_t mail_size,
 			  struct dbox_file_append_context **file_append_r,
 			  struct ostream **output_r, bool *retry_later_r)
 {
@@ -794,7 +816,7 @@ mdbox_map_file_try_append(struct mdbox_map_append_context *ctx,
 	*output_r = NULL;
 	*retry_later_r = FALSE;
 
-	file = mdbox_file_init(storage, file_id);
+	file = mdbox_file_init(storage, rec->file_id);
 	if (!dbox_try_open(file, want_altpath)) {
 		dbox_file_unref(&file);
 		return TRUE;
@@ -809,6 +831,13 @@ mdbox_map_file_try_append(struct mdbox_map_append_context *ctx,
 		if (errno != ENOENT)
 			i_error("stat(%s) failed: %m", file->cur_path);
 		/* the file was unlinked between opening and locking it. */
+	} else if (st.st_size != rec->offset + rec->size &&
+		   /* check if there's any garbage at the end of file.
+		      note that there may be valid messages added by another
+		      session before we locked it (but after we refreshed
+		      map index). */
+		   !dbox_file_is_ok_at(file, rec->offset + rec->size)) {
+		/* error message was already logged */
 	} else {
 		file_append = dbox_file_append_init(file);
 		if (dbox_file_get_append_stream(file_append, output_r) <= 0) {
@@ -923,7 +952,7 @@ mdbox_map_find_primary_files(struct mdbox_map_append_context *ctx,
 				  &file_id) < 0)
 			continue;
 
-		seq_range_array_add(file_ids_r, 0, file_id);
+		seq_range_array_add(file_ids_r, file_id);
 	}
 	if (errno != 0) {
 		mail_storage_set_critical(storage,
@@ -975,7 +1004,7 @@ mdbox_map_find_appendable_file(struct mdbox_map_append_context *ctx,
 
 		if (seq_range_exists(&checked_file_ids, rec->file_id))
 			continue;
-		seq_range_array_add(&checked_file_ids, 0, rec->file_id);
+		seq_range_array_add(&checked_file_ids, rec->file_id);
 
 		if (++backwards_lookup_count > MAX_BACKWARDS_LOOKUPS) {
 			/* we've wasted enough time here */
@@ -995,7 +1024,7 @@ mdbox_map_find_appendable_file(struct mdbox_map_append_context *ctx,
 		}
 
 		mail_index_lookup_uid(map->view, seq, &uid);
-		if (!mdbox_map_file_try_append(ctx, want_altpath, rec->file_id,
+		if (!mdbox_map_file_try_append(ctx, want_altpath, rec,
 					       stamp, mail_size, file_append_r,
 					       output_r, &retry_later)) {
 			/* file is too old. the rest of the files are too. */
@@ -1120,13 +1149,39 @@ void mdbox_map_append_abort(struct mdbox_map_append_context *ctx)
 	array_delete(&ctx->appends, count-1, 1);
 }
 
+static int
+mdbox_find_highest_file_id(struct mdbox_map *map, uint32_t *file_id_r)
+{
+	const unsigned int prefix_len = strlen(MDBOX_MAIL_FILE_PREFIX);
+	DIR *dir;
+	struct dirent *d;
+	unsigned int id, highest_id = 0;
+
+	dir = opendir(map->path);
+	if (dir == NULL) {
+		i_error("opendir(%s) failed: %m", map->path);
+		return -1;
+	}
+	while ((d = readdir(dir)) != NULL) {
+		if (strncmp(d->d_name, MDBOX_MAIL_FILE_PREFIX, prefix_len) == 0 &&
+		    str_to_uint(d->d_name + prefix_len, &id) == 0) {
+			if (highest_id < id)
+				highest_id = id;
+		}
+	}
+	(void)closedir(dir);
+
+	*file_id_r = highest_id;
+	return 0;
+}
+
 static int mdbox_map_assign_file_ids(struct mdbox_map_append_context *ctx,
 				     bool separate_transaction)
 {
 	struct dbox_file_append_context *const *file_appends;
 	unsigned int i, count;
 	struct mdbox_map_mail_index_header hdr;
-	uint32_t first_file_id, file_id;
+	uint32_t first_file_id, file_id, existing_id;
 
 	/* start the syncing. we'll need it even if there are no file ids to
 	   be assigned. */
@@ -1135,6 +1190,17 @@ static int mdbox_map_assign_file_ids(struct mdbox_map_append_context *ctx,
 
 	mdbox_map_get_ext_hdr(ctx->map, ctx->atomic->sync_view, &hdr);
 	file_id = hdr.highest_file_id + 1;
+
+	if (ctx->map->verify_existing_file_ids) {
+		/* storage/ directory had been already created but
+		   without indexes. scan to see if there exists a higher
+		   m.* file id than what is in header, so we won't
+		   accidentally overwrite any existing files. */
+		if (mdbox_find_highest_file_id(ctx->map, &existing_id) < 0)
+			return -1;
+		if (file_id < existing_id+1)
+			file_id = existing_id+1;
+	}
 
 	/* assign file_ids for newly created files */
 	first_file_id = file_id;
@@ -1282,6 +1348,21 @@ int mdbox_map_append_move(struct mdbox_map_append_context *ctx,
 	return 0;
 }
 
+int mdbox_map_append_flush(struct mdbox_map_append_context *ctx)
+{
+	struct dbox_file_append_context **file_appends;
+	unsigned int i, count;
+
+	i_assert(ctx->trans == NULL);
+
+	file_appends = array_get_modifiable(&ctx->file_appends, &count);
+	for (i = 0; i < count; i++) {
+		if (dbox_file_append_flush(file_appends[i]) < 0)
+			return -1;
+	}
+	return 0;
+}
+
 int mdbox_map_append_commit(struct mdbox_map_append_context *ctx)
 {
 	struct dbox_file_append_context **file_appends;
@@ -1294,7 +1375,7 @@ int mdbox_map_append_commit(struct mdbox_map_append_context *ctx)
 		if (dbox_file_append_commit(&file_appends[i]) < 0)
 			return -1;
 	}
-	ctx->atomic->success = TRUE;
+	mdbox_map_atomic_set_success(ctx->atomic);
 	return 0;
 }
 

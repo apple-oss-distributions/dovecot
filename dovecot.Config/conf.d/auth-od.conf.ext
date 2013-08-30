@@ -1,4 +1,6 @@
-# Authentication using Open Directory.  Included from auth.conf.
+# Authentication using Open Directory.  Included from 10-auth.conf.
+#
+# Version 2.2.x (AR14759611)
 
 passdb {
   # OD cache refresh intervals.  The positive cache TTL applies to

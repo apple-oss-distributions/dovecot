@@ -18,7 +18,8 @@ a connection).
 If index files are missing, Dovecot creates them automatically when the mailbox
 is opened. If at any point creating a file or growing a file gives "not enough
 disk space" error, the indexes are transparently moved to memory for the rest
-of the session.
+of the session. This isn't done with mailbox formats that rely on index files
+(e.g. dbox).
 
 See <Design.Indexes.txt> for more technical information how the index files are
 handled.
@@ -134,4 +135,4 @@ transaction log on top of that. With empty mailboxes (eg. download+delete POP3
 users) it would even be possible to delete the whole main index and keep only
 the transaction log (although this isn't done currently).
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

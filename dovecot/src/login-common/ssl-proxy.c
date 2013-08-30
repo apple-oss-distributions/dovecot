@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ssl-proxy.h"
@@ -10,7 +10,9 @@ bool ssl_initialized = FALSE;
 /* no SSL support */
 
 int ssl_proxy_alloc(int fd ATTR_UNUSED, const struct ip_addr *ip ATTR_UNUSED,
-		    const struct login_settings *set ATTR_UNUSED,
+		    pool_t set_pool ATTR_UNUSED,
+		    const struct login_settings *login_set ATTR_UNUSED,
+		    const struct master_service_ssl_settings *ssl_set ATTR_UNUSED,
 		    struct ssl_proxy **proxy_r ATTR_UNUSED)
 {
 	i_error("Dovecot wasn't built with SSL support");
@@ -18,7 +20,9 @@ int ssl_proxy_alloc(int fd ATTR_UNUSED, const struct ip_addr *ip ATTR_UNUSED,
 }
 
 int ssl_proxy_client_alloc(int fd ATTR_UNUSED, struct ip_addr *ip ATTR_UNUSED,
-			   const struct login_settings *set ATTR_UNUSED,
+			   pool_t set_pool ATTR_UNUSED,
+			   const struct login_settings *login_set ATTR_UNUSED,
+			   const struct master_service_ssl_settings *ssl_set ATTR_UNUSED,
 			   ssl_handshake_callback_t *callback ATTR_UNUSED,
 			   void *context ATTR_UNUSED,
 			   struct ssl_proxy **proxy_r ATTR_UNUSED)
@@ -75,6 +79,11 @@ const char *ssl_proxy_get_security_string(struct ssl_proxy *proxy ATTR_UNUSED)
 const char *ssl_proxy_get_compression(struct ssl_proxy *proxy ATTR_UNUSED)
 {
 	return NULL;
+}
+
+const char *ssl_proxy_get_cert_error(struct ssl_proxy *proxy ATTR_UNUSED)
+{
+	return "";
 }
 
 void ssl_proxy_free(struct ssl_proxy **proxy ATTR_UNUSED) {}

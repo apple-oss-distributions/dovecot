@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "mail-storage.h"
@@ -27,15 +27,13 @@ int imap_expunge(struct mailbox *box, struct mail_search_arg *next_search_arg)
 	/* Refresh the flags so we'll expunge all messages marked as \Deleted
 	   by any session. */
 	t = mailbox_transaction_begin(box, MAILBOX_TRANSACTION_FLAG_REFRESH);
-	ctx = mailbox_search_init(t, search_args, NULL);
+	ctx = mailbox_search_init(t, search_args, NULL, 0, NULL);
 	mail_search_args_unref(&search_args);
 
-	mail = mail_alloc(t, 0, NULL);
-	while (mailbox_search_next(ctx, mail)) {
+	while (mailbox_search_next(ctx, &mail)) {
 		mail_expunge(mail);
 		expunges = TRUE;
 	}
-	mail_free(&mail);
 
 	if (mailbox_search_deinit(&ctx) < 0) {
 		mailbox_transaction_rollback(&t);

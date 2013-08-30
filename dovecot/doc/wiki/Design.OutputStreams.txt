@@ -29,4 +29,4 @@ in Dovecot to handle this is to just use unlimited buffer sizes and after each
 write check if the buffer size becomes too large, and when it does it stops
 writing until more space is available.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -46,20 +46,19 @@ extern struct ioloop *current_ioloop;
    Don't try to add multiple handlers for the same type. It's not checked and
    the behavior will be undefined. */
 struct io *io_add(int fd, enum io_condition condition,
-		  io_callback_t *callback, void *context);
+		  unsigned int source_linenum,
+		  io_callback_t *callback, void *context) ATTR_NULL(5);
 #define io_add(fd, condition, callback, context) \
-	CONTEXT_CALLBACK(io_add, io_callback_t, \
-			 callback, context, fd, condition)
-enum io_notify_result io_add_notify(const char *path, io_callback_t *callback,
-				    void *context, struct io **io_r);
-#ifdef CONTEXT_TYPE_SAFETY
-#  define io_add_notify(path, callback, context, io_r) \
-	({(void)(1 ? 0 : callback(context)); \
-	io_add_notify(path, (io_callback_t *)callback, context, io_r); })
-#else
-#  define io_add_notify(path, callback, context, io_r) \
-	io_add_notify(path, (io_callback_t *)callback, context, io_r)
-#endif
+	io_add(fd, condition, __LINE__ + \
+		CALLBACK_TYPECHECK(callback, void (*)(typeof(context))), \
+		(io_callback_t *)callback, context)
+enum io_notify_result
+io_add_notify(const char *path, io_callback_t *callback,
+	      void *context, struct io **io_r) ATTR_NULL(3);
+#define io_add_notify(path, callback, context, io_r) \
+	io_add_notify(path + \
+		CALLBACK_TYPECHECK(callback, void (*)(typeof(context))), \
+		(io_callback_t *)callback, context, io_r)
 
 /* Remove I/O handler, and set io pointer to NULL. */
 void io_remove(struct io **io);
@@ -68,11 +67,22 @@ void io_remove(struct io **io);
 void io_remove_closed(struct io **io);
 
 /* Timeout handlers */
-struct timeout *timeout_add(unsigned int msecs, timeout_callback_t *callback,
-			    void *context);
+struct timeout *
+timeout_add(unsigned int msecs, unsigned int source_linenum,
+	    timeout_callback_t *callback, void *context) ATTR_NULL(4);
 #define timeout_add(msecs, callback, context) \
-	CONTEXT_CALLBACK(timeout_add, timeout_callback_t, \
-			 callback, context, msecs)
+	timeout_add(msecs, __LINE__ + \
+		CALLBACK_TYPECHECK(callback, void (*)(typeof(context))) + \
+		COMPILE_ERROR_IF_TRUE(__builtin_constant_p(msecs) && \
+				      (msecs > 0 && msecs < 1000)), \
+		(io_callback_t *)callback, context)
+struct timeout *
+timeout_add_short(unsigned int msecs, unsigned int source_linenum,
+		  timeout_callback_t *callback, void *context) ATTR_NULL(4);
+#define timeout_add_short(msecs, callback, context) \
+	timeout_add_short(msecs, __LINE__ + \
+		CALLBACK_TYPECHECK(callback, void (*)(typeof(context))), \
+		(io_callback_t *)callback, context)
 /* Remove timeout handler, and set timeout pointer to NULL. */
 void timeout_remove(struct timeout **timeout);
 /* Reset timeout so it's next run after now+msecs. */
@@ -103,15 +113,34 @@ void io_loop_set_time_moved_callback(struct ioloop *ioloop,
 /* Change the current_ioloop. */
 void io_loop_set_current(struct ioloop *ioloop);
 
-/* This log is used for all further I/O and timeout callbacks that are added
-   until returning to ioloop. */
-struct ioloop_log *io_loop_log_new(struct ioloop *ioloop);
-void io_loop_log_ref(struct ioloop_log *log);
-void io_loop_log_unref(struct ioloop_log **log);
-/* Set the log's prefix. Note that this doesn't immediately call
-   i_set_failure_prefix(). */
-void io_loop_log_set_prefix(struct ioloop_log *log, const char *prefix);
-/* Set the default log prefix to use outside callbacks. */
-void io_loop_set_default_log_prefix(struct ioloop *ioloop, const char *prefix);
+/* This context is used for all further I/O and timeout callbacks that are
+   added until returning to ioloop. When a callback is called, this context is
+   again activated. */
+struct ioloop_context *io_loop_context_new(struct ioloop *ioloop);
+void io_loop_context_ref(struct ioloop_context *ctx);
+void io_loop_context_unref(struct ioloop_context **ctx);
+/* Call the activate callback when this context is activated (I/O callback is
+   about to be called), and the deactivate callback when the context is
+   deactivated (I/O callback has returned). You can add multiple callbacks. */
+void io_loop_context_add_callbacks(struct ioloop_context *ctx,
+				   io_callback_t *activate,
+				   io_callback_t *deactivate, void *context);
+/* Remove callbacks with the given callbacks and context. */
+void io_loop_context_remove_callbacks(struct ioloop_context *ctx,
+				      io_callback_t *activate,
+				      io_callback_t *deactivate, void *context);
+/* Returns the current context set to ioloop. */
+struct ioloop_context *io_loop_get_current_context(struct ioloop *ioloop);
+
+/* Move the given I/O into the current I/O loop if it's not already
+   there. New I/O is returned, while the old one is freed. */
+struct io *io_loop_move_io(struct io **io);
+/* Like io_loop_move_io(), but for timeouts. */
+struct timeout *io_loop_move_timeout(struct timeout **timeout);
+/* Returns TRUE if any IOs have been added to the ioloop. */
+bool io_loop_have_ios(struct ioloop *ioloop);
+/* Returns TRUE if there is a pending timeout that is going to be run
+   immediately. */
+bool io_loop_have_immediate_timeouts(struct ioloop *ioloop);
 
 #endif

@@ -1,14 +1,15 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
 #include "array.h"
 #include "ioloop.h"
 #include "eacces-error.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
+#include "strescape.h"
 #include "master-interface.h"
 #include "auth-master.h"
 
@@ -30,7 +31,7 @@ struct auth_master_connection {
 	enum auth_master_flags flags;
 
 	int fd;
-	struct ioloop *ioloop;
+	struct ioloop *ioloop, *prev_ioloop;
 	struct io *io;
 	struct istream *input;
 	struct ostream *output;
@@ -60,10 +61,8 @@ struct auth_master_lookup_ctx {
 
 struct auth_master_user_list_ctx {
 	struct auth_master_connection *conn;
-	pool_t pool;
-	ARRAY_TYPE(const_string) users;
-	const char *const *user_strings;
-	unsigned int idx, user_count;
+	string_t *username;
+	bool finished;
 	bool failed;
 };
 
@@ -106,6 +105,11 @@ void auth_master_deinit(struct auth_master_connection **_conn)
 	i_free(conn);
 }
 
+const char *auth_master_get_socket_path(struct auth_master_connection *conn)
+{
+	return conn->auth_socket_path;
+}
+
 static void auth_request_lookup_abort(struct auth_master_connection *conn)
 {
 	io_loop_stop(conn->ioloop);
@@ -117,7 +121,7 @@ static int auth_input_handshake(struct auth_master_connection *conn)
 	const char *line, *const *tmp;
 
 	while ((line = i_stream_next_line(conn->input)) != NULL) {
-		tmp = t_strsplit(line, "\t");
+		tmp = t_strsplit_tab(line);
 		if (strcmp(tmp[0], "VERSION") == 0 &&
 		    tmp[1] != NULL && tmp[2] != NULL) {
 			if (strcmp(tmp[1], dec2str(AUTH_PROTOCOL_MAJOR)) != 0) {
@@ -157,6 +161,39 @@ static int parse_reply(const char *cmd, const char *const *args,
 	return -1;
 }
 
+static const char *const *args_hide_passwords(const char *const *args)
+{
+	ARRAY_TYPE(const_string) new_args;
+	const char *p, *p2;
+	unsigned int i;
+
+	/* if there are any keys that contain "pass" string */
+	for (i = 0; args[i] != NULL; i++) {
+		p = strstr(args[i], "pass");
+		if (p != NULL && p < strchr(args[i], '='))
+			break;
+	}
+	if (args[i] == NULL)
+		return args;
+
+	/* there are. replace their values with <hidden> */
+	t_array_init(&new_args, i + 16);
+	array_append(&new_args, args, i);
+	for (; args[i] != NULL; i++) {
+		p = strstr(args[i], "pass");
+		p2 = strchr(args[i], '=');
+		if (p != NULL && p < p2) {
+			p = t_strconcat(t_strdup_until(args[i], p2),
+					"=<hidden>", NULL);
+			array_append(&new_args, &p, 1);
+		} else {
+			array_append(&new_args, &args[i], 1);
+		}
+	}
+	array_append_zero(&new_args);
+	return array_idx(&new_args, 0);
+}
+
 static bool auth_lookup_reply_callback(const char *cmd, const char *const *args,
 				       void *context)
 {
@@ -185,8 +222,10 @@ static bool auth_lookup_reply_callback(const char *cmd, const char *const *args,
 			}
 		}
 	}
-	if (debug)
+	if (debug) {
+		args = args_hide_passwords(args);
 		i_debug("auth input: %s", t_strarray_join(args, " "));
+	}
 	return TRUE;
 }
 
@@ -195,7 +234,7 @@ auth_handle_line(struct auth_master_connection *conn, const char *line)
 {
 	const char *cmd, *const *args, *id, *wanted_id;
 
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	cmd = *args; args++;
 	if (*args == NULL)
 		id = "";
@@ -248,7 +287,9 @@ static void auth_input(struct auth_master_connection *conn)
 
 	while ((line = i_stream_next_line(conn->input)) != NULL) {
 		T_BEGIN {
+			io_loop_set_current(conn->prev_ioloop);
 			ret = auth_handle_line(conn, line);
+			io_loop_set_current(conn->ioloop);
 		} T_END;
 		if (!ret)
 			return;
@@ -294,9 +335,13 @@ static void auth_idle_timeout(struct auth_master_connection *conn)
 
 static void auth_master_set_io(struct auth_master_connection *conn)
 {
+	if (conn->ioloop != NULL)
+		return;
+
 	if (conn->to != NULL)
 		timeout_remove(&conn->to);
 
+	conn->prev_ioloop = current_ioloop;
 	conn->ioloop = io_loop_create();
 	conn->input = i_stream_create_fd(conn->fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(conn->fd, MAX_OUTBUF_SIZE, FALSE);
@@ -306,25 +351,27 @@ static void auth_master_set_io(struct auth_master_connection *conn)
 	lib_signals_reset_ioloop();
 }
 
-static void auth_master_unset_io(struct auth_master_connection *conn,
-				 struct ioloop *prev_ioloop)
+static void auth_master_unset_io(struct auth_master_connection *conn)
 {
-	if (prev_ioloop != NULL) {
-		io_loop_set_current(prev_ioloop);
+	if (conn->prev_ioloop != NULL) {
+		io_loop_set_current(conn->prev_ioloop);
 		lib_signals_reset_ioloop();
 	}
-	io_loop_set_current(conn->ioloop);
+	if (conn->ioloop != NULL) {
+		io_loop_set_current(conn->ioloop);
 
-	timeout_remove(&conn->to);
-	io_remove(&conn->io);
-	i_stream_unref(&conn->input);
-	o_stream_unref(&conn->output);
-	io_loop_destroy(&conn->ioloop);
+		timeout_remove(&conn->to);
+		io_remove(&conn->io);
+		i_stream_unref(&conn->input);
+		o_stream_unref(&conn->output);
+		io_loop_destroy(&conn->ioloop);
+	}
 
 	if ((conn->flags & AUTH_MASTER_FLAG_NO_IDLE_TIMEOUT) == 0) {
-		if (prev_ioloop == NULL)
+		if (conn->prev_ioloop == NULL)
 			auth_connection_close(conn);
 		else {
+			i_assert(conn->to == NULL);
 			conn->to = timeout_add(1000*AUTH_MASTER_IDLE_SECS,
 					       auth_idle_timeout, conn);
 		}
@@ -344,46 +391,55 @@ static bool is_valid_string(const char *str)
 	return TRUE;
 }
 
-static int auth_master_run_cmd(struct auth_master_connection *conn,
-			       const char *cmd)
+static int auth_master_run_cmd_pre(struct auth_master_connection *conn,
+				   const char *cmd)
 {
-	struct ioloop *prev_ioloop;
 	const char *str;
 
 	if (conn->fd == -1) {
 		if (auth_master_connect(conn) < 0)
 			return -1;
 	}
-
-	prev_ioloop = current_ioloop;
 	auth_master_set_io(conn);
 
 	o_stream_cork(conn->output);
 	if (!conn->sent_handshake) {
 		str = t_strdup_printf("VERSION\t%d\t%d\n",
 				      AUTH_PROTOCOL_MAJOR, AUTH_PROTOCOL_MINOR);
-		o_stream_send_str(conn->output, str);
+		o_stream_nsend_str(conn->output, str);
 		conn->sent_handshake = TRUE;
 	}
 
-	o_stream_send_str(conn->output, cmd);
+	o_stream_nsend_str(conn->output, cmd);
 	o_stream_uncork(conn->output);
 
-	if (conn->output->stream_errno != 0) {
-		errno = conn->output->stream_errno;
+	if (o_stream_nfinish(conn->output) < 0) {
 		i_error("write(auth socket) failed: %m");
-		conn->aborted = TRUE;
-	} else {
-		io_loop_run(conn->ioloop);
+		auth_master_unset_io(conn);
+		auth_connection_close(conn);
+		return -1;
 	}
+	return 0;
+}
 
-	auth_master_unset_io(conn, prev_ioloop);
+static int auth_master_run_cmd_post(struct auth_master_connection *conn)
+{
+	auth_master_unset_io(conn);
 	if (conn->aborted) {
 		conn->aborted = FALSE;
 		auth_connection_close(conn);
 		return -1;
 	}
 	return 0;
+}
+
+static int auth_master_run_cmd(struct auth_master_connection *conn,
+			       const char *cmd)
+{
+	if (auth_master_run_cmd_pre(conn, cmd) < 0)
+		return -1;
+	io_loop_run(conn->ioloop);
+	return auth_master_run_cmd_post(conn);
 }
 
 static unsigned int
@@ -399,8 +455,10 @@ auth_master_next_request_id(struct auth_master_connection *conn)
 static void
 auth_user_info_export(string_t *str, const struct auth_user_info *info)
 {
-	str_append(str, "service=");
-	str_append(str, info->service);
+	if (info->service != NULL) {
+		str_append(str, "\tservice=");
+		str_append(str, info->service);
+	}
 
 	if (info->local_ip.family != 0)
 		str_printfa(str, "\tlip=%s", net_ip2addr(&info->local_ip));
@@ -438,7 +496,7 @@ int auth_master_user_lookup(struct auth_master_connection *conn,
 	conn->reply_context = &ctx;
 
 	str = t_str_new(128);
-	str_printfa(str, "USER\t%u\t%s\t",
+	str_printfa(str, "USER\t%u\t%s",
 		    auth_master_next_request_id(conn), user);
 	auth_user_info_export(str, info);
 	str_append_c(str, '\n');
@@ -481,6 +539,8 @@ void auth_user_fields_parse(const char *const *fields, pool_t pool,
 			reply_r->home = p_strdup(pool, *fields + 5);
 		else if (strncmp(*fields, "chroot=", 7) == 0)
 			reply_r->chroot = p_strdup(pool, *fields + 7);
+		else if (strcmp(*fields, "anonymous") == 0)
+			reply_r->anonymous = TRUE;
 		else {
 			const char *field = p_strdup(pool, *fields);
 			array_append(&reply_r->extra_fields, &field, 1);
@@ -512,7 +572,7 @@ int auth_master_pass_lookup(struct auth_master_connection *conn,
 	conn->reply_context = &ctx;
 
 	str = t_str_new(128);
-	str_printfa(str, "PASS\t%u\t%s\t",
+	str_printfa(str, "PASS\t%u\t%s",
 		    auth_master_next_request_id(conn), user);
 	auth_user_info_export(str, info);
 	str_append_c(str, '\n');
@@ -527,69 +587,132 @@ int auth_master_pass_lookup(struct auth_master_connection *conn,
 }
 
 static bool
+auth_cache_flush_reply_callback(const char *cmd, const char *const *args,
+				void *context)
+{
+	unsigned int *countp = context;
+
+	if (strcmp(cmd, "OK") != 0)
+		*countp = UINT_MAX;
+	else if (args[0] == NULL || str_to_uint(args[0], countp) < 0)
+		*countp = UINT_MAX;
+
+	io_loop_stop(current_ioloop);
+	return TRUE;
+}
+
+int auth_master_cache_flush(struct auth_master_connection *conn,
+			    const char *const *users, unsigned int *count_r)
+{
+	string_t *str;
+
+	*count_r = UINT_MAX;
+
+	conn->reply_callback = auth_cache_flush_reply_callback;
+	conn->reply_context = count_r;
+
+	str = t_str_new(128);
+	str_printfa(str, "CACHE-FLUSH\t%u", auth_master_next_request_id(conn));
+	if (users != NULL) {
+		for (; *users != NULL; users++) {
+			str_append_c(str, '\t');
+			str_append_tabescaped(str, *users);
+		}
+	}
+	str_append_c(str, '\n');
+
+	conn->prefix = "auth cache flush";
+	(void)auth_master_run_cmd(conn, str_c(str));
+	conn->prefix = DEFAULT_USERDB_LOOKUP_PREFIX;
+
+	return *count_r == UINT_MAX ? -1 : 0;
+}
+
+static bool
 auth_user_list_reply_callback(const char *cmd, const char *const *args,
 			      void *context)
 {
 	struct auth_master_user_list_ctx *ctx = context;
-	const char *user;
 
 	timeout_reset(ctx->conn->to);
+	str_truncate(ctx->username, 0);
+	io_loop_stop(ctx->conn->ioloop);
 
 	if (strcmp(cmd, "DONE") == 0) {
-		io_loop_stop(ctx->conn->ioloop);
 		if (args[0] != NULL && strcmp(args[0], "fail") == 0) {
 			i_error("User listing returned failure");
 			ctx->failed = TRUE;
 		}
-		return TRUE;
-	}
-	if (strcmp(cmd, "LIST") == 0 && args[0] != NULL) {
+		ctx->finished = TRUE;
+	} else if (strcmp(cmd, "LIST") == 0 && args[0] != NULL) {
 		/* we'll just read all the users into memory. otherwise we'd
 		   have to use a separate connection for listing and there's
 		   a higher chance of a failure since the connection could be
 		   open to dovecot-auth for a long time. */
-		user = p_strdup(ctx->pool, args[0]);
-		array_append(&ctx->users, &user, 1);
-		return TRUE;
+		str_append(ctx->username, args[0]);
+	} else {
+		i_error("User listing returned invalid input");
+		ctx->failed = TRUE;
 	}
 	return FALSE;
 }
 
 struct auth_master_user_list_ctx *
-auth_master_user_list_init(struct auth_master_connection *conn)
+auth_master_user_list_init(struct auth_master_connection *conn,
+			   const char *user_mask,
+			   const struct auth_user_info *info)
 {
 	struct auth_master_user_list_ctx *ctx;
-	const char *str;
-	pool_t pool;
+	string_t *str;
 
-	pool = pool_alloconly_create("auth master user list", 10240);
-	ctx = p_new(pool, struct auth_master_user_list_ctx, 1);
-	ctx->pool = pool;
+	ctx = i_new(struct auth_master_user_list_ctx, 1);
 	ctx->conn = conn;
-	i_array_init(&ctx->users, 128);
+	ctx->username = str_new(default_pool, 128);
 
 	conn->reply_callback = auth_user_list_reply_callback;
 	conn->reply_context = ctx;
 
-	str = t_strdup_printf("LIST\t%u\n", auth_master_next_request_id(conn));
+	str = t_str_new(128);
+	str_printfa(str, "LIST\t%u",
+		    auth_master_next_request_id(conn));
+	if (*user_mask != '\0')
+		str_printfa(str, "\tuser=%s", user_mask);
+	if (info != NULL)
+		auth_user_info_export(str, info);
+	str_append_c(str, '\n');
+
 	conn->prefix = "userdb list";
-	if (auth_master_run_cmd(conn, str) < 0)
+
+	if (auth_master_run_cmd_pre(conn, str_c(str)) < 0)
 		ctx->failed = TRUE;
-	ctx->user_strings = array_get(&ctx->users, &ctx->user_count);
+	io_loop_set_current(conn->prev_ioloop);
 	conn->prefix = DEFAULT_USERDB_LOOKUP_PREFIX;
 	return ctx;
 }
 
 const char *auth_master_user_list_next(struct auth_master_user_list_ctx *ctx)
 {
-	if (ctx->idx == ctx->user_count)
-		return NULL;
-	return ctx->user_strings[ctx->idx++];
-}
+	const char *line;
 
-unsigned int auth_master_user_list_count(struct auth_master_user_list_ctx *ctx)
-{
-	return ctx->user_count;
+	if (ctx->conn->input == NULL)
+		return NULL;
+
+	/* try to read already buffered input */
+	line = i_stream_next_line(ctx->conn->input);
+	if (line != NULL) {
+		T_BEGIN {
+			auth_handle_line(ctx->conn, line);
+		} T_END;
+	} else {
+		/* wait for more data */
+		io_loop_set_current(ctx->conn->ioloop);
+		io_loop_run(ctx->conn->ioloop);
+		io_loop_set_current(ctx->conn->prev_ioloop);
+	}
+
+	if (ctx->finished || ctx->failed)
+		return NULL;
+	return str_c(ctx->username);
 }
 
 int auth_master_user_list_deinit(struct auth_master_user_list_ctx **_ctx)
@@ -598,7 +721,8 @@ int auth_master_user_list_deinit(struct auth_master_user_list_ctx **_ctx)
 	int ret = ctx->failed ? -1 : 0;
 
 	*_ctx = NULL;
-	array_free(&ctx->users);
-	pool_unref(&ctx->pool);
+	auth_master_run_cmd_post(ctx->conn);
+	str_free(&ctx->username);
+	i_free(ctx);
 	return ret;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "userdb.h"
@@ -20,6 +20,7 @@ struct passwd_file_userdb_iterate_context {
 	struct userdb_iterate_context ctx;
 	struct istream *input;
 	char *path;
+	bool skip_passdb_entries;
 };
 
 struct passwd_file_userdb_module {
@@ -43,7 +44,7 @@ static void passwd_file_lookup(struct auth_request *auth_request,
 
 	pu = db_passwd_file_lookup(module->pwf, auth_request,
 				   module->username_format);
-	if (pu == NULL) {
+	if (pu == NULL || pu->uid == 0) {
 		callback(USERDB_RESULT_USER_UNKNOWN, auth_request);
 		return;
 	}
@@ -85,18 +86,20 @@ static void passwd_file_lookup(struct auth_request *auth_request,
 }
 
 static struct userdb_iterate_context *
-passwd_file_iterate_init(struct userdb_module *userdb,
+passwd_file_iterate_init(struct auth_request *auth_request,
 			 userdb_iter_callback_t *callback, void *context)
 {
+	struct userdb_module *_module = auth_request->userdb->userdb;
 	struct passwd_file_userdb_module *module =
-		(struct passwd_file_userdb_module *)userdb;
+		(struct passwd_file_userdb_module *)_module;
 	struct passwd_file_userdb_iterate_context *ctx;
 	int fd;
 
 	ctx = i_new(struct passwd_file_userdb_iterate_context, 1);
-	ctx->ctx.userdb = userdb;
+	ctx->ctx.auth_request = auth_request;
 	ctx->ctx.callback = callback;
 	ctx->ctx.context = context;
+	ctx->skip_passdb_entries = !module->pwf->userdb_warn_missing;
 	if (module->pwf->default_file == NULL) {
 		i_error("passwd-file: User iteration isn't currently supported "
 			"with %%variable paths");
@@ -120,7 +123,7 @@ static void passwd_file_iterate_next(struct userdb_iterate_context *_ctx)
 {
 	struct passwd_file_userdb_iterate_context *ctx =
 		(struct passwd_file_userdb_iterate_context *)_ctx;
-	const char *line;
+	const char *line, *p;
 
 	if (ctx->input == NULL)
 		line = NULL;
@@ -128,6 +131,12 @@ static void passwd_file_iterate_next(struct userdb_iterate_context *_ctx)
 		while ((line = i_stream_read_next_line(ctx->input)) != NULL) {
 			if (*line == '\0' || *line == ':' || *line == '#')
 				continue; /* no username or comment */
+			if (ctx->skip_passdb_entries &&
+			    ((p = strchr(line, ':')) == NULL ||
+			     strchr(p+1, ':') == NULL)) {
+				/* only passdb info */
+				continue;
+			}
 			break;
 		}
 		if (line == NULL && ctx->input->stream_errno != 0) {

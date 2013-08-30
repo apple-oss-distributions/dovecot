@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __EXT_ENVIRONMENT_COMMON_H
@@ -16,8 +16,8 @@
 
 extern const struct sieve_extension_def environment_extension;
 
-/* 
- * Commands 
+/*
+ * Commands
  */
 
 extern const struct sieve_command_def tst_environment;
@@ -51,7 +51,7 @@ void ext_environment_deinit(const struct sieve_extension *ext);
  */
 
 const char *ext_environment_item_get_value
-	(const struct sieve_extension *ext, const char *name, 
+	(const struct sieve_extension *ext, const char *name,
 		const struct sieve_script_env *senv);
 
 #endif /* __EXT_VARIABLES_COMMON_H */

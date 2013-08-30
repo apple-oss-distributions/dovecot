@@ -1,6 +1,6 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
- 
+
 #ifndef __EXT_DATE_COMMON_H
 #define __EXT_DATE_COMMON_H
 
@@ -11,20 +11,20 @@
 /*
  * Extension
  */
- 
+
 extern const struct sieve_extension_def date_extension;
 
 bool ext_date_interpreter_load
 	(const struct sieve_extension *ext, const struct sieve_runtime_env *renv,
 		sieve_size_t *address ATTR_UNUSED);
 
-/* 
+/*
  * Tests
  */
 
 extern const struct sieve_command_def date_test;
 extern const struct sieve_command_def currentdate_test;
- 
+
 /*
  * Operations
  */
@@ -60,8 +60,10 @@ struct ext_date_part {
 	const char *(*get_string)(struct tm *tm, int zone_offset);
 };
 
+const struct ext_date_part *ext_date_part_find(const char *part);
+
 const char *ext_date_part_extract
-	(const char *part, struct tm *tm, int zone_offset);
+	(const struct ext_date_part *dpart, struct tm *tm, int zone_offset);
 
 /*
  * Date stringlist
@@ -74,7 +76,7 @@ enum ext_date_timezone_special {
 
 struct sieve_stringlist *ext_date_stringlist_create
 (const struct sieve_runtime_env *renv, struct sieve_stringlist *field_values,
-	int time_zone, const char *date_part);
+	int time_zone, const struct ext_date_part *dpart);
 
 
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __MANAGESIEVE_COMMON_H
@@ -17,6 +17,10 @@
 
 /* Disconnect client when it sends too many bad commands in a row */
 #define CLIENT_MAX_BAD_COMMANDS 20
+
+#define CRITICAL_MSG \
+  "Internal error occured. Refer to server log for more information."
+#define CRITICAL_MSG_STAMP CRITICAL_MSG " [%Y-%m-%d %H:%M:%S]"
 
 #include "lib.h"
 #include "managesieve-client.h"

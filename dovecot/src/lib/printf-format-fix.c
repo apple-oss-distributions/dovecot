@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "printf-format-fix.h"
@@ -46,6 +46,7 @@ printf_format_fix_noalloc(const char *format, unsigned int *len_r)
 			case '\0':
 				i_panic("%% modifier missing");
 			}
+			p++;
 		}
 	}
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -11,6 +11,7 @@
 #include "file-dotlock.h"
 #include "nfs-workarounds.h"
 #include "mail-storage-private.h"
+#include "mailbox-list-private.h"
 #include "mail-namespace.h"
 #include "acl-cache.h"
 #include "acl-backend-vfile.h"
@@ -18,6 +19,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <utime.h>
 #include <sys/stat.h>
 
 #define ACL_ESTALE_RETRY_COUNT NFS_ESTALE_RETRY_COUNT
@@ -125,31 +127,47 @@ static void acl_backend_vfile_deinit(struct acl_backend *_backend)
 }
 
 static const char *
-acl_backend_vfile_get_local_dir(struct acl_backend *backend, const char *name)
+acl_backend_vfile_get_local_dir(struct acl_backend *backend,
+				const char *name)
 {
-	struct mail_namespace *ns;
-	const char *dir, *inbox;
+	struct mail_namespace *ns = mailbox_list_get_namespace(backend->list);
+	struct mailbox_list *list = ns->list;
+	struct mail_storage *storage;
+	enum mailbox_list_path_type type;
+	const char *dir, *inbox, *vname, *error;
 
 	if (*name == '\0')
 		name = NULL;
+	else if (!mailbox_list_is_valid_name(list, name, &error))
+		return NULL;
 
-	ns = mailbox_list_get_namespace(backend->list);
-	if (mail_storage_is_mailbox_file(ns->storage)) {
-		dir = mailbox_list_get_path(ns->list, name,
-					    MAILBOX_LIST_PATH_TYPE_CONTROL);
+	/* ACL files are very important. try to keep them among the main
+	   mail files. that's not possible though with a) if the mailbox is
+	   a file or b) if the mailbox path doesn't point to filesystem. */
+	vname = name == NULL ? "" : mailbox_list_get_vname(backend->list, name);
+	if (mailbox_list_get_storage(&list, vname, &storage) < 0)
+		return NULL;
+	i_assert(list == ns->list);
+
+	type = mail_storage_is_mailbox_file(storage) ||
+		(storage->class_flags & MAIL_STORAGE_CLASS_FLAG_NO_ROOT) != 0 ?
+		MAILBOX_LIST_PATH_TYPE_CONTROL : MAILBOX_LIST_PATH_TYPE_MAILBOX;
+	if (name == NULL) {
+		if (!mailbox_list_get_root_path(list, type, &dir))
+			return FALSE;
 	} else {
-		dir = mailbox_list_get_path(ns->list, name,
-					    MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	}
-	if (name == NULL && dir != NULL) {
-		/* verify that the directory isn't same as INBOX's directory.
-		   this is mainly for Maildir. */
-		inbox = mailbox_list_get_path(ns->list, "INBOX",
-					      MAILBOX_LIST_PATH_TYPE_MAILBOX);
-		if (strcmp(inbox, dir) == 0) {
-			/* can't have default ACLs with this setup */
+		if (mailbox_list_get_path(list, name, type, &dir) <= 0)
 			return NULL;
-		}
+	}
+
+	/* verify that the directory isn't same as INBOX's directory.
+	   this is mainly for Maildir. */
+	if (name == NULL &&
+	    mailbox_list_get_path(list, "INBOX",
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &inbox) > 0 &&
+	    strcmp(inbox, dir) == 0) {
+		/* can't have default ACLs with this setup */
+		return NULL;
 	}
 	return dir;
 }
@@ -161,36 +179,32 @@ acl_backend_vfile_object_init(struct acl_backend *_backend,
 	struct acl_backend_vfile *backend =
 		(struct acl_backend_vfile *)_backend;
 	struct acl_object_vfile *aclobj;
-	const char *dir;
+	const char *dir, *vname;
 
 	aclobj = i_new(struct acl_object_vfile, 1);
 	aclobj->aclobj.backend = _backend;
 	aclobj->aclobj.name = i_strdup(name);
 
-	if (backend->global_dir != NULL) T_BEGIN {
-		struct mail_namespace *ns =
-			mailbox_list_get_namespace(_backend->list);
-		string_t *vname;
+	T_BEGIN {
+		if (backend->global_dir != NULL) {
+			vname = mailbox_list_get_vname(backend->backend.list, name);
+			aclobj->global_path =
+				i_strconcat(backend->global_dir, "/", vname, NULL);
+		}
 
-		vname = t_str_new(128);
-		mail_namespace_get_vname(ns, vname, name);
-		aclobj->global_path = i_strconcat(backend->global_dir, "/",
-						  str_c(vname), NULL);
+		dir = acl_backend_vfile_get_local_dir(_backend, name);
+		aclobj->local_path = dir == NULL ? NULL :
+			i_strconcat(dir, "/"ACL_FILENAME, NULL);
 	} T_END;
-
-	dir = acl_backend_vfile_get_local_dir(_backend, name);
-	aclobj->local_path = dir == NULL ? NULL :
-		i_strconcat(dir, "/"ACL_FILENAME, NULL);
 	return &aclobj->aclobj;
 }
 
 static const char *
 get_parent_mailbox(struct acl_backend *backend, const char *name)
 {
-	struct mail_namespace *ns = mailbox_list_get_namespace(backend->list);
 	const char *p;
 
-	p = strrchr(name, ns->real_sep);
+	p = strrchr(name, mailbox_list_get_hierarchy_sep(backend->list));
 	return p == NULL ? NULL : t_strdup_until(name, p);
 }
 
@@ -241,11 +255,13 @@ acl_backend_vfile_has_acl(struct acl_backend *_backend, const char *name)
 	/* See if the mailbox exists. If we wanted recursive lookups we could
 	   skip this, but at least for now we assume that if an existing
 	   mailbox has no ACL it's equivalent to default ACLs. */
-	path = mailbox_list_get_path(_backend->list, name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	ret = path == NULL ? 0 :
-		acl_backend_vfile_exists(backend, path,
-					 &new_validity.mailbox_validity);
+	if (mailbox_list_get_path(_backend->list, name,
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &path) <= 0)
+		ret = -1;
+	else {
+		ret = acl_backend_vfile_exists(backend, path,
+					       &new_validity.mailbox_validity);
+	}
 	if (ret == 0 &&
 	    (dir = acl_backend_vfile_get_local_dir(_backend, name)) != NULL) {
 		local_path = t_strconcat(dir, "/", name, NULL);
@@ -278,7 +294,7 @@ acl_backend_vfile_object_init_parent(struct acl_backend *backend,
 	}
 	if (parent == NULL) {
 		/* use the root */
-		parent = "";
+		parent = acl_backend_get_default_object(backend)->name;
 	}
 	return acl_backend_vfile_object_init(backend, parent);
 }
@@ -486,25 +502,25 @@ acl_backend_vfile_read(struct acl_object_vfile *aclobj,
 
 	if (fstat(fd, &st) < 0) {
 		if (errno == ESTALE && try_retry) {
-			(void)close(fd);
+			i_close_fd(&fd);
 			return 0;
 		}
 
 		i_error("fstat(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	if (S_ISDIR(st.st_mode)) {
 		/* we opened a directory. */
 		*is_dir_r = TRUE;
-		(void)close(fd);
+		i_close_fd(&fd);
 		return 0;
 	}
 
 	if (aclobj->aclobj.backend->debug)
 		i_debug("acl vfile: reading file %s", path);
 
-	input = i_stream_create_fd(fd, 4096, FALSE);
+	input = i_stream_create_fd(fd, (size_t)-1, FALSE);
 	i_stream_set_return_partial_line(input, TRUE);
 	linenum = 1;
 	while ((line = i_stream_read_next_line(input)) != NULL) {
@@ -867,9 +883,7 @@ static int acl_backend_vfile_update_begin(struct acl_object_vfile *aclobj,
 					  struct dotlock **dotlock_r)
 {
 	struct acl_object *_aclobj = &aclobj->aclobj;
-	const char *gid_origin;
-	mode_t mode;
-	gid_t gid;
+	struct mailbox_permissions perm;
 	int fd;
 
 	if (aclobj->local_path == NULL) {
@@ -879,10 +893,12 @@ static int acl_backend_vfile_update_begin(struct acl_object_vfile *aclobj,
 	}
 
 	/* first lock the ACL file */
-	mailbox_list_get_permissions(_aclobj->backend->list, _aclobj->name,
-				     &mode, &gid, &gid_origin);
+	mailbox_list_get_permissions(_aclobj->backend->list,
+				     _aclobj->name, &perm);
 	fd = file_dotlock_open_group(&dotlock_set, aclobj->local_path, 0,
-				     mode, gid, gid_origin, dotlock_r);
+				     perm.file_create_mode,
+				     perm.file_create_gid,
+				     perm.file_create_gid_origin, dotlock_r);
 	if (fd == -1) {
 		i_error("file_dotlock_open(%s) failed: %m", aclobj->local_path);
 		return -1;
@@ -991,6 +1007,7 @@ vfile_object_add_right(struct acl_object_vfile *aclobj, unsigned int idx,
 		       const struct acl_rights_update *update)
 {
 	struct acl_rights right;
+	bool c1, c2;
 
 	if (update->modify_mode == ACL_MODIFY_MODE_REMOVE &&
 	    update->neg_modify_mode == ACL_MODIFY_MODE_REMOVE) {
@@ -1002,8 +1019,17 @@ vfile_object_add_right(struct acl_object_vfile *aclobj, unsigned int idx,
 	right.id_type = update->rights.id_type;
 	right.identifier = p_strdup(aclobj->rights_pool,
 				    update->rights.identifier);
-	array_insert(&aclobj->rights, idx, &right, 1);
-	return vfile_object_modify_right(aclobj, idx, update);
+
+	c1 = modify_right_list(aclobj->rights_pool, &right.rights,
+			       update->rights.rights, update->modify_mode);
+	c2 = modify_right_list(aclobj->rights_pool, &right.neg_rights,
+			       update->rights.neg_rights,
+			       update->neg_modify_mode);
+	if (c1 || c2) {
+		array_insert(&aclobj->rights, idx, &right, 1);
+		return TRUE;
+	}
+	return FALSE;
 }
 
 static void vfile_write_rights_list(string_t *dest, const char *const *rights)
@@ -1076,17 +1102,17 @@ acl_backend_vfile_update_write(struct acl_object_vfile *aclobj,
 	for (i = 0; i < count && !rights[i].global; i++) {
 		if (rights[i].rights != NULL) {
 			vfile_write_right(str, &rights[i], FALSE);
-			o_stream_send(output, str_data(str), str_len(str));
+			o_stream_nsend(output, str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 		if (rights[i].neg_rights != NULL) {
 			vfile_write_right(str, &rights[i], TRUE);
-			o_stream_send(output, str_data(str), str_len(str));
+			o_stream_nsend(output, str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 	}
 	str_free(&str);
-	if (o_stream_flush(output) < 0) {
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", path);
 		ret = -1;
 	}
@@ -1125,7 +1151,10 @@ acl_backend_vfile_object_update(struct acl_object *_aclobj,
 	struct acl_object_vfile *aclobj = (struct acl_object_vfile *)_aclobj;
 	struct acl_backend_vfile *backend =
 		(struct acl_backend_vfile *)_aclobj->backend;
+	struct acl_backend_vfile_validity *validity;
 	struct dotlock *dotlock;
+	struct utimbuf ut;
+	time_t orig_mtime;
 	const char *path;
 	unsigned int i;
 	int fd;
@@ -1148,12 +1177,26 @@ acl_backend_vfile_object_update(struct acl_object *_aclobj,
 		return 0;
 	}
 
+	validity = acl_cache_get_validity(_aclobj->backend->cache,
+					  _aclobj->name);
+	orig_mtime = validity->local_validity.last_mtime;
+
 	/* ACLs were really changed, write the new ones */
 	path = file_dotlock_get_lock_path(dotlock);
 	if (acl_backend_vfile_update_write(aclobj, fd, path) < 0) {
 		file_dotlock_delete(&dotlock);
 		acl_cache_flush(_aclobj->backend->cache, _aclobj->name);
 		return -1;
+	}
+	if (orig_mtime < update->last_change && update->last_change != 0) {
+		/* set mtime to last_change, if it's higher than the file's
+		   original mtime. if original mtime is higher, then we're
+		   merging some changes and it's better for the mtime to get
+		   updated. */
+		ut.actime = ioloop_time;
+		ut.modtime = update->last_change;
+		if (utime(path, &ut) < 0)
+			i_error("utime(%s) failed: %m", path);
 	}
 	acl_backend_vfile_update_cache(_aclobj, fd);
 	if (file_dotlock_replace(&dotlock, 0) < 0) {
@@ -1166,6 +1209,27 @@ acl_backend_vfile_object_update(struct acl_object *_aclobj,
 	    update->modify_mode == ACL_MODIFY_MODE_REPLACE ||
 	    update->modify_mode == ACL_MODIFY_MODE_CLEAR)
 		(void)acl_backend_vfile_acllist_rebuild(backend);
+	return 0;
+}
+
+static int acl_backend_vfile_object_last_changed(struct acl_object *_aclobj,
+						 time_t *last_changed_r)
+{
+	struct acl_backend_vfile_validity *old_validity;
+
+	*last_changed_r = 0;
+
+	old_validity = acl_cache_get_validity(_aclobj->backend->cache,
+					      _aclobj->name);
+	if (old_validity == NULL) {
+		if (acl_backend_vfile_object_refresh_cache(_aclobj) < 0)
+			return -1;
+		old_validity = acl_cache_get_validity(_aclobj->backend->cache,
+						      _aclobj->name);
+		if (old_validity == NULL)
+			return 0;
+	}
+	*last_changed_r = old_validity->local_validity.last_mtime;
 	return 0;
 }
 
@@ -1225,6 +1289,7 @@ struct acl_backend_vfuncs acl_backend_vfile = {
 	acl_backend_vfile_object_deinit,
 	acl_backend_vfile_object_refresh_cache,
 	acl_backend_vfile_object_update,
+	acl_backend_vfile_object_last_changed,
 	acl_backend_vfile_object_list_init,
 	acl_backend_vfile_object_list_next,
 	acl_backend_vfile_object_list_deinit

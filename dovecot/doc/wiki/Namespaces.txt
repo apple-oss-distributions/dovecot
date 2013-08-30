@@ -19,10 +19,18 @@ Dovecot namespaces can be used for several other purposes too:
 Configuration
 -------------
 
-By default no namespaces are explicitly defined in 'dovecot.conf'. In this
-situation Dovecot creates a private namespace automatically. This automatic
-namespace creation isn't done when namespaces are defined, so if you intend to
-simply add a new namespace, be sure to also add the default private namespace.
+In v2.1+ there's a default inbox namespace added in '10-mail.conf'. If the
+configuration doesn't explicitly specify a namespace (as was in v2.0 and older)
+a default namespace is created automatically.
+
+The section name in namespaces (e.g. 'namespace sectionname { .. } ' is used
+only internally within configuration. It's not required at all, but it allows
+you to update an existing namespace (like how '15-mailboxes.conf' does) or have
+userdb override namespace settings for specific users
+('namespace/sectionname/prefix=foo/').
+
+Namespace types
+---------------
 
 There are 3 types of namespaces:
 
@@ -45,22 +53,22 @@ the separator, you may break things.
 
 However, changing the separator doesn't change the on-disk "layout separator".
 For example:
-+-----------------------------+-----------+-----------+---------+---------------------+
-| mail_location               | Layout    | Separator | Mailbox | Directory           |
-|                             | separator |           | name    |                     |
-+-----------------------------+-----------+-----------+---------+---------------------+
-| maildir:~/Maildir           | .         | .         | foo.bar | ~/Maildir/.foo.bar/ |
-+-----------------------------+-----------+-----------+---------+---------------------+
-| maildir:~/Maildir           | .         | /         | foo/bar | ~/Maildir/.foo.bar/ |
-+-----------------------------+-----------+-----------+---------+---------------------+
-| maildir:~/Maildir:LAYOUT=fs | /         | .         | foo.bar | ~/Maildir/foo/bar/  |
-+-----------------------------+-----------+-----------+---------+---------------------+
-| maildir:~/Maildir:LAYOUT=fs | /         | /         | foo/bar | ~/Maildir/foo/bar/  |
-+-----------------------------+-----------+-----------+---------+---------------------+
++-----------------------------+--------+-----+----------+---------------------+
+| mail_location               | Layout | NS  | Mailbox  | Directory           |
+|                             | sep    | sep | name     |                     |
++-----------------------------+--------+-----+----------+---------------------+
+| maildir:~/Maildir           | .      | .   | foo.bar  | ~/Maildir/.foo.bar/ |
++-----------------------------+--------+-----+----------+---------------------+
+| maildir:~/Maildir           | .      | /   | foo/bar  | ~/Maildir/.foo.bar/ |
++-----------------------------+--------+-----+----------+---------------------+
+| maildir:~/Maildir:LAYOUT=fs | /      | .   | foo.bar  | ~/Maildir/foo/bar/  |
++-----------------------------+--------+-----+----------+---------------------+
+| maildir:~/Maildir:LAYOUT=fs | /      | /   | foo/bar  | ~/Maildir/foo/bar/  |
++-----------------------------+--------+-----+----------+---------------------+
 
-Note how the "Separator" changes only the "Mailbox name", but doesn't change
-the directory where the mails are stored. The "layout separator" can only be
-changed by changing the LAYOUT, which also affects the entire directory
+Note how the "namespace separator" changes only the "Mailbox name", but doesn't
+change the directory where the mails are stored. The "layout separator" can
+only be changed by changing the LAYOUT, which also affects the entire directory
 structure.
 
 The layout separator also restricts the mailbox names. For example if the
@@ -69,8 +77,9 @@ mailbox named "foo.bar". If you need to do this, you can use <listescape>
 [Plugins.Listescape.txt] plugin to add escape the mailbox names as necessary.
 
 A commonly used separator is '/'. It probably causes the least amount of
-trouble with different IMAP clients. '^' separator is troublesome with
-Thunderbird.
+trouble with different IMAP clients.'^' separator is troublesome with
+Thunderbird.When '\' should be used it must be quoted, so one sets separator =
+"\\"
 
 You should use the same hierarchy separator for all namespaces. All list=yes
 namespaces must use the same separator, but if you find it necessary (e.g. for
@@ -80,6 +89,8 @@ list=no namespaces.
 Namespace settings
 ------------------
 
+ * type: See the "Namespace types" section above
+ * separator: See the "Hierarchy separators" section above
  * prefix: The namespace prefix how it's visible in the NAMESPACE reply (if
    hidden=no) and mailbox list (if list=yes).
  * location: <Mailbox location> [MailLocation.txt]. The default is to use
@@ -97,6 +108,19 @@ Namespace settings
    with prefix=foo/bar/, Dovecot first sees if there's a prefix=foo/ namespace
    with subscriptions=yes and then a namespace with an empty prefix. If neither
    is found, an error is given.
+ * ignore_on_failure: Normally Dovecot fails if it can't successfully create a
+   namespace. Set this to "yes" to continue even if the namespace creation
+   fails (e.g. public namespace points to inaccessible location).
+ * disabled: Set to "yes" to quickly disable this namespace. Especially useful
+   when returned by a userdb lookup to give per-user namespaces.
+ * alias_for: If multiple namespaces point to the same location, they should be
+   marked as aliases against one primary namespace. This avoids duplicating
+   work for some commands (listing the same mailbox multiple times). The value
+   for alias_for is the primary namespace's prefix. For example if the primary
+   namespace has empty prefix, set 'alias_for=' for the alias namespace. Or if
+   primary has 'prefix=INBOX/', use 'alias_for=INBOX/'.
+ * mailbox { .. } settings can be used to autocreate/autosubscribe mailboxes
+   and set their SPECIAL-USE flags.
 
 Shared Mailboxes
 ----------------
@@ -129,10 +153,10 @@ namespace {
 }
 ---%<-------------------------------------------------------------------------
 
-Without the 'list = no' setting in the first namespace, clients see the "#mbox"
-namespace as a non-selectable mailbox named "#mbox" and having child mailboxes
-(ie. like a directory). The child mailboxes are all the mbox files in '~/mail'
-directory.
+Without the 'list = no' setting in the first namespace, clients would see the
+"#mbox" namespace as a non-selectable mailbox named "#mbox" but with child
+mailboxes (the mbox files in the '~/mail' directory), ie. like a directory. So
+specifically with 'inbox = yes', having 'list = no' is often desirable.
 
 Backwards Compatibility: UW-IMAP
 --------------------------------
@@ -143,27 +167,27 @@ mails using their existing namespace settings in clients.
 
 ---%<-------------------------------------------------------------------------
 # default namespace
-namespace {
+namespace inbox {
   separator = /
   prefix =
   inbox = yes
 }
 # for backwards compatibility:
-namespace {
+namespace compat1 {
   separator = /
   prefix = mail/
   hidden = yes
   list = no
   alias_for =
 }
-namespace {
+namespace compat2 {
   separator = /
   prefix = ~/mail/
   hidden = yes
   list = no
   alias_for =
 }
-namespace {
+namespace compat3 {
   separator = /
   prefix = ~%u/mail/
   hidden = yes
@@ -178,7 +202,7 @@ Backwards Compatibility: Courier IMAP
 You can continue using the same INBOX. namespace as Courier:
 
 ---%<-------------------------------------------------------------------------
-namespace {
+namespace inbox {
   separator = .
   prefix = INBOX.
   inbox = yes
@@ -189,13 +213,13 @@ Alternatively you can create the INBOX. as a compatibility name, so old clients
 can continue using it while new clients will use the empty prefix namespace:
 
 ---%<-------------------------------------------------------------------------
-namespace {
+namespace inbox {
   separator = /
   prefix =
   inbox = yes
 }
 
-namespace {
+namespace compat {
   separator = .
   prefix = INBOX.
   inbox = no
@@ -209,6 +233,14 @@ The "separator=/" allows the INBOX to have child mailboxes. Otherwise with
 "separator=." it wouldn't be possible to know if "INBOX.foo" means INBOX's
 "foo" child or the root "foo" mailbox in "INBOX." compatibility namespace. With
 "separator=/" the difference is clear with "INBOX/foo" vs. "INBOX.foo".
+
+Problems with this:
+
+ * Although clients may do LIST INBOX.*, they may still do LSUB *, resulting in
+   mixed results.
+ * If clients used empty namespace with Courier, they now see the mailboxes
+   with different names, resulting in redownloading of all mails (except
+   INBOX).
 
 Per-user Namespace Location From SQL
 ------------------------------------
@@ -241,4 +273,4 @@ user_query = SELECT Location as 'namespace/docs/location' FROM Namespaces WHERE
 ..
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -55,7 +55,7 @@ struct sieve_tool {
 	struct mail_user *mail_user_dovecot;
 	struct mail_user *mail_user;
 
-	struct mail_raw_user *mail_raw_user;
+	struct mail_user *mail_raw_user;
 	struct mail_raw *mail_raw;
 
 	unsigned int debug:1;
@@ -89,7 +89,7 @@ static const char *sieve_tool_sieve_get_homedir
 	return sieve_tool_get_homedir(tool);
 }
 
-const struct sieve_environment sieve_tool_sieve_env = {
+const struct sieve_callbacks sieve_tool_callbacks = {
 	sieve_tool_sieve_get_homedir,
 	sieve_tool_sieve_get_setting
 };
@@ -112,14 +112,14 @@ static void sieve_tool_get_user_data
 		home == NULL || *home == '\0' ) {
 
 		if ((pw = getpwuid(process_euid)) != NULL) {
-            user = pw->pw_name;
+			user = pw->pw_name;
 			home = pw->pw_dir;
-		} 
+		}
 	}
 
 	if ( username_r != NULL ) {
 		if ( user == NULL || *user == '\0' ) {
-            i_fatal("couldn't lookup our username (uid=%s)", 
+			i_fatal("couldn't lookup our username (uid=%s)",
 				dec2str(process_euid));
 		}
 
@@ -148,7 +148,7 @@ struct sieve_tool *sieve_tool_init
 	tool = i_new(struct sieve_tool, 1);
 	tool->name = i_strdup(name);
 	tool->no_config = no_config;
-	
+
 	i_array_init(&tool->sieve_plugins, 16);
 
 	return tool;
@@ -159,11 +159,11 @@ int sieve_tool_getopt(struct sieve_tool *tool)
 	int c;
 
 	while ( (c = master_getopt(master_service)) > 0 ) {
-		switch ( c ) { 
+		switch ( c ) {
 		case 'x':
 			/* extensions */
 			if ( tool->sieve_extensions != NULL ) {
-				i_fatal_status(EX_USAGE, 
+				i_fatal_status(EX_USAGE,
 					"duplicate -x option specified, but only one allowed.");
 			}
 
@@ -173,10 +173,10 @@ int sieve_tool_getopt(struct sieve_tool *tool)
 			if ( tool->username == NULL )
 				tool->username = i_strdup(optarg);
 			break;
-		case 'P': 
+		case 'P':
 			/* Plugin */
 			{
-				const char *plugin;			
+				const char *plugin;
 
 				plugin = t_strdup(optarg);
 				array_append(&tool->sieve_plugins, &plugin, 1);
@@ -211,18 +211,19 @@ static void sieve_tool_load_plugins
 			file = plugins[i];
 		}
 
-		sieve_plugins_load(tool->svinst, path, file);		
+		sieve_plugins_load(tool->svinst, path, file);
 	}
 }
 
 struct sieve_instance *sieve_tool_init_finish
-(struct sieve_tool *tool, bool init_mailstore)
+(struct sieve_tool *tool, bool init_mailstore, bool preserve_root)
 {
 	enum mail_storage_service_flags storage_service_flags =
 		MAIL_STORAGE_SERVICE_FLAG_NO_CHDIR |
 		MAIL_STORAGE_SERVICE_FLAG_NO_LOG_INIT |
 		MAIL_STORAGE_SERVICE_FLAG_USE_SYSEXITS;
 	struct mail_storage_service_input service_input;
+	struct sieve_environment svenv;
 	const char *username = tool->username;
 	const char *homedir = tool->homedir;
 	const char *errstr;
@@ -231,17 +232,23 @@ struct sieve_instance *sieve_tool_init_finish
 
 	if ( username == NULL ) {
 		sieve_tool_get_user_data(&username, &homedir);
-		
+
 		username = tool->username = i_strdup(username);
 
 		if ( tool->homedir != NULL )
 			i_free(tool->homedir);
 		tool->homedir = i_strdup(homedir);
-	} else
+
+		if ( preserve_root ) {
+			storage_service_flags |=
+				MAIL_STORAGE_SERVICE_FLAG_NO_RESTRICT_ACCESS;
+		}
+	} else {
 		storage_service_flags |=
 			MAIL_STORAGE_SERVICE_FLAG_USERDB_LOOKUP;
+	}
 
-	if ( !init_mailstore ) 
+	if ( !init_mailstore )
 		storage_service_flags |=
 			MAIL_STORAGE_SERVICE_FLAG_NO_NAMESPACES;
 
@@ -253,7 +260,7 @@ struct sieve_instance *sieve_tool_init_finish
 	tool->storage_service = mail_storage_service_init
 		(master_service, NULL, storage_service_flags);
 	if (mail_storage_service_lookup_next
-		(tool->storage_service, &service_input, &tool->service_user, 
+		(tool->storage_service, &service_input, &tool->service_user,
 			&tool->mail_user_dovecot, &errstr) <= 0)
 		i_fatal("%s", errstr);
 
@@ -261,9 +268,17 @@ struct sieve_instance *sieve_tool_init_finish
 		(master_service, "mail_full_filesystem_access=yes") < 0 )
 		i_unreached();
 
+	memset((void *)&svenv, 0, sizeof(svenv));
+	svenv.username = username;
+	(void)mail_user_get_home(tool->mail_user_dovecot, &svenv.home_dir);
+	svenv.hostname = my_hostdomain();
+	svenv.base_dir = tool->mail_user_dovecot->set->base_dir;
+	svenv.location = SIEVE_ENV_LOCATION_MS;
+	svenv.delivery_phase = SIEVE_DELIVERY_PHASE_POST;
+
 	/* Initialize Sieve Engine */
-	if ( (tool->svinst=sieve_init(&sieve_tool_sieve_env, tool, tool->debug)) 
-		== NULL )
+	if ( (tool->svinst=sieve_init
+		(&svenv, &sieve_tool_callbacks, tool, tool->debug)) == NULL )
 		i_fatal("failed to initialize sieve implementation");
 
 	/* Load Sieve plugins */
@@ -297,7 +312,7 @@ void sieve_tool_deinit(struct sieve_tool **_tool)
 	if ( tool->homedir != NULL )
 		i_free(tool->homedir);
 
-	if ( tool->sieve_extensions != NULL ) 
+	if ( tool->sieve_extensions != NULL )
 		i_free(tool->sieve_extensions);
 	array_free(&tool->sieve_plugins);
 
@@ -307,8 +322,8 @@ void sieve_tool_deinit(struct sieve_tool **_tool)
 		mail_raw_close(&tool->mail_raw);
 
 	if ( tool->mail_raw_user != NULL )
-		mail_raw_user_deinit(&tool->mail_raw_user);
-	
+		mail_user_unref(&tool->mail_raw_user);
+
 	/* Free mail service */
 
 	if ( tool->mail_user != NULL )
@@ -362,30 +377,30 @@ struct mail *sieve_tool_open_file_as_mail
 (struct sieve_tool *tool, const char *path)
 {
 	if ( tool->mail_raw_user == NULL )
-		tool->mail_raw_user = mail_raw_user_init
-			(master_service, tool->username, tool->mail_user_dovecot);
+		tool->mail_raw_user = mail_raw_user_create
+			(master_service, tool->mail_user_dovecot);
 
 	if ( tool->mail_raw != NULL )
 		mail_raw_close(&tool->mail_raw);
 
 	tool->mail_raw = mail_raw_open_file(tool->mail_raw_user, path);
 
-	return tool->mail_raw->mail; 
+	return tool->mail_raw->mail;
 }
 
 struct mail *sieve_tool_open_data_as_mail
 (struct sieve_tool *tool, string_t *mail_data)
 {
 	if ( tool->mail_raw_user == NULL )
-		tool->mail_raw_user = mail_raw_user_init
-			(master_service, tool->username, tool->mail_user_dovecot);
+		tool->mail_raw_user = mail_raw_user_create
+			(master_service, tool->mail_user_dovecot);
 
 	if ( tool->mail_raw != NULL )
 		mail_raw_close(&tool->mail_raw);
 
 	tool->mail_raw = mail_raw_open_data(tool->mail_raw_user, mail_data);
 
-	return tool->mail_raw->mail; 
+	return tool->mail_raw->mail;
 }
 
 /*
@@ -400,7 +415,7 @@ void sieve_tool_set_homedir(struct sieve_tool *tool, const char *homedir)
 
 		i_free(tool->homedir);
 	}
-	
+
 	tool->homedir = i_strdup(homedir);
 
 	if ( tool->mail_user_dovecot != NULL )
@@ -412,7 +427,7 @@ void sieve_tool_set_homedir(struct sieve_tool *tool, const char *homedir)
 void sieve_tool_set_setting_callback
 (struct sieve_tool *tool, sieve_tool_setting_callback_t callback, void *context)
 {
-	tool->setting_callback = callback;	
+	tool->setting_callback = callback;
 	tool->setting_callback_context = context;
 }
 
@@ -428,7 +443,7 @@ const char *sieve_tool_get_username
 	if ( tool->username == NULL ) {
 		sieve_tool_get_user_data(&username, NULL);
 		return username;
-	} 
+	}
 
 	return tool->username;
 }
@@ -465,21 +480,21 @@ void sieve_tool_get_envelope_data
 	(struct mail *mail, const char **recipient, const char **sender)
 {
 	/* Get recipient address */
-	if ( *recipient == NULL ) 
+	if ( *recipient == NULL )
 		(void)mail_get_first_header(mail, "Envelope-To", recipient);
-	if ( *recipient == NULL ) 
+	if ( *recipient == NULL )
 		(void)mail_get_first_header(mail, "To", recipient);
-	if ( *recipient == NULL ) 
+	if ( *recipient == NULL )
 		*recipient = "recipient@example.com";
-	
+
 	/* Get sender address */
-	if ( *sender == NULL ) 
+	if ( *sender == NULL )
 		(void)mail_get_first_header(mail, "Return-path", sender);
-	if ( *sender == NULL ) 
+	if ( *sender == NULL )
 		(void)mail_get_first_header(mail, "Sender", sender);
-	if ( *sender == NULL ) 
+	if ( *sender == NULL )
 		(void)mail_get_first_header(mail, "From", sender);
-	if ( *sender == NULL ) 
+	if ( *sender == NULL )
 		*sender = "sender@example.com";
 }
 
@@ -492,7 +507,7 @@ struct ostream *sieve_tool_open_output_stream(const char *filename)
 	struct ostream *outstream;
 	int fd;
 
-	if ( strcmp(filename, "-") == 0 ) 
+	if ( strcmp(filename, "-") == 0 )
 		outstream = o_stream_create_fd(1, 0, FALSE);
 	else {
 		if ( (fd = open(filename, O_WRONLY | O_TRUNC | O_CREAT, 0600)) < 0 ) {
@@ -519,7 +534,8 @@ struct sieve_binary *sieve_tool_script_compile
 	sieve_error_handler_accept_infolog(ehandler, TRUE);
 	sieve_error_handler_accept_debuglog(ehandler, svinst->debug);
 
-	if ( (sbin = sieve_compile(svinst, filename, name, ehandler, NULL)) == NULL )
+	if ( (sbin = sieve_compile
+		(svinst, filename, name, ehandler, 0, NULL)) == NULL )
 		i_error("failed to compile sieve script '%s'", filename);
 
 	sieve_error_handler_unref(&ehandler);
@@ -536,19 +552,20 @@ struct sieve_binary *sieve_tool_script_open
 	ehandler = sieve_stderr_ehandler_create(svinst, 0);
 	sieve_error_handler_accept_infolog(ehandler, TRUE);
 
-	if ( (sbin = sieve_open(svinst, filename, NULL, ehandler, NULL)) == NULL ) {
+	if ( (sbin = sieve_open
+		(svinst, filename, NULL, ehandler, 0, NULL)) == NULL ) {
 		sieve_error_handler_unref(&ehandler);
 		i_fatal("failed to compile sieve script");
 	}
 
 	sieve_error_handler_unref(&ehandler);
 
-	sieve_save(sbin, NULL, FALSE, NULL);
+	sieve_save(sbin, FALSE, NULL);
 	return sbin;
 }
 
 void sieve_tool_dump_binary_to
-(struct sieve_binary *sbin, const char *filename, bool hexdump)	
+(struct sieve_binary *sbin, const char *filename, bool hexdump)
 {
 	struct ostream *dumpstream;
 
@@ -556,7 +573,7 @@ void sieve_tool_dump_binary_to
 
 	dumpstream = sieve_tool_open_output_stream(filename);
 	if ( dumpstream != NULL ) {
-		if ( hexdump ) 
+		if ( hexdump )
 			(void) sieve_hexdump(sbin, dumpstream);
 		else
 			(void) sieve_dump(sbin, dumpstream, FALSE);

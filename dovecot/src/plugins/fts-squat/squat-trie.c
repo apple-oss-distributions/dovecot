@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -52,7 +52,7 @@ struct squat_trie_iterate_node {
 struct squat_trie_iterate_context {
 	struct squat_trie *trie;
 	struct squat_trie_iterate_node cur;
-	ARRAY_DEFINE(parents, struct squat_trie_iterate_node);
+	ARRAY(struct squat_trie_iterate_node) parents;
 	bool failed;
 };
 
@@ -274,10 +274,14 @@ static int squat_trie_is_file_stale(struct squat_trie *trie)
 	return 1;
 }
 
-void squat_trie_refresh(struct squat_trie *trie)
+int squat_trie_refresh(struct squat_trie *trie)
 {
-	if (squat_trie_is_file_stale(trie) > 0)
-		(void)squat_trie_open(trie);
+	int ret;
+
+	ret = squat_trie_is_file_stale(trie);
+	if (ret > 0)
+		ret = squat_trie_open(trie);
+	return ret;
 }
 
 static int squat_trie_lock(struct squat_trie *trie, int lock_type,
@@ -407,6 +411,7 @@ node_add_child(struct squat_trie *trie, struct squat_node *node,
 	}
 
 	chars = NODE_CHILDREN_CHARS(node);
+	i_assert(chars != NULL);
 	chars[node->child_count - 1] = chr;
 	return node->child_count - 1;
 }
@@ -585,8 +590,8 @@ node_write_children(struct squat_trie_build_context *ctx,
 
 	base_offset = ctx->output->offset;
 	child_count = node->child_count;
-	o_stream_send(ctx->output, &child_count, 1);
-	o_stream_send(ctx->output, chars, child_count);
+	o_stream_nsend(ctx->output, &child_count, 1);
+	o_stream_nsend(ctx->output, chars, child_count);
 
 	for (i = 0; i < child_count; i++) {
 		bufp = buf;
@@ -613,17 +618,17 @@ node_write_children(struct squat_trie_build_context *ctx,
 		if (children[i].leaf_string_length == 0) {
 			/* 4a) unused uids */
 			squat_pack_num(&bufp, children[i].unused_uids << 1);
-			o_stream_send(ctx->output, buf, bufp - buf);
+			o_stream_nsend(ctx->output, buf, bufp - buf);
 		} else {
 			i_assert(node_offsets[i] == 0);
 			/* 4b) unused uids + flag */
 			squat_pack_num(&bufp, (children[i].unused_uids << 1) | 1);
 			/* 5) leaf string length */
 			squat_pack_num(&bufp, children[i].leaf_string_length - 1);
-			o_stream_send(ctx->output, buf, bufp - buf);
-			o_stream_send(ctx->output,
-				      NODE_LEAF_STRING(&children[i]),
-				      children[i].leaf_string_length);
+			o_stream_nsend(ctx->output, buf, bufp - buf);
+			o_stream_nsend(ctx->output,
+				       NODE_LEAF_STRING(&children[i]),
+				       children[i].leaf_string_length);
 		}
 	}
 }
@@ -915,7 +920,7 @@ squat_trie_build_more_real(struct squat_trie_build_context *ctx,
 	uint8_t *char_lengths;
 	unsigned int i, start = 0;
 	bool multibyte_chars = FALSE;
-	int ret = 1;						/* APPLE */
+	int ret = 0;
 
 	uid = uid * 2 + (type == SQUAT_INDEX_TYPE_HEADER ? 1 : 0);
 
@@ -957,9 +962,9 @@ int squat_trie_build_more(struct squat_trie_build_context *ctx,
 			  uint32_t uid, enum squat_index_type type,
 			  const unsigned char *input, unsigned int size)
 {
-	int ret;
+	int ret = 0;
 
-	T_BEGIN {
+	if (size != 0) T_BEGIN {
 		ret = squat_trie_build_more_real(ctx, uid, type, input, size);
 	} T_END;
 	return ret;
@@ -1557,7 +1562,7 @@ int squat_trie_create_fd(struct squat_trie *trie, const char *path, int flags)
 	return fd;
 }
 
-int squat_trie_build_init(struct squat_trie *trie, uint32_t *last_uid_r,
+int squat_trie_build_init(struct squat_trie *trie,
 			  struct squat_trie_build_context **ctx_r)
 {
 	struct squat_trie_build_context *ctx;
@@ -1587,7 +1592,6 @@ int squat_trie_build_init(struct squat_trie *trie, uint32_t *last_uid_r,
 	ctx->uidlist_build_ctx = uidlist_build_ctx;
 	ctx->first_uid = trie->root.next_uid;
 
-	*last_uid_r = I_MAX((trie->root.next_uid+1)/2, 1) - 1;
 	*ctx_r = ctx;
 	return 0;
 }
@@ -1631,14 +1635,14 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 					i_error("file_wait_lock(%s) failed: %m",
 						path);
 				}
-				(void)close(fd);
+				i_close_fd(&fd);
 				return -1;
 			}
 		}
 
 		output = o_stream_create_fd(fd, 0, FALSE);
 		o_stream_cork(output);
-		o_stream_send(output, &trie->hdr, sizeof(trie->hdr));
+		o_stream_nsend(output, &trie->hdr, sizeof(trie->hdr));
 	} else {
 		/* we need to lock only while header is being written */
 		path = trie->path;
@@ -1654,9 +1658,9 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 		o_stream_cork(output);
 
 		if (trie->hdr.used_file_size != 0)
-			o_stream_seek(output, trie->hdr.used_file_size);
+			(void)o_stream_seek(output, trie->hdr.used_file_size);
 		else
-			o_stream_send(output, &trie->hdr, sizeof(trie->hdr));
+			o_stream_nsend(output, &trie->hdr, sizeof(trie->hdr));
 	}
 
 	ctx->output = output;
@@ -1665,7 +1669,7 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 
 	/* write 1 byte guard at the end of file, so that we can verify broken
 	   squat_unpack_num() input by checking if data==end */
-	o_stream_send(output, "", 1);
+	o_stream_nsend(output, "", 1);
 
 	if (trie->corrupted)
 		ret = -1;
@@ -1673,11 +1677,10 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 		ret = squat_trie_write_lock(ctx);
 	if (ret == 0) {
 		trie->hdr.used_file_size = output->offset;
-		o_stream_seek(output, 0);
-		o_stream_send(output, &trie->hdr, sizeof(trie->hdr));
+		(void)o_stream_seek(output, 0);
+		o_stream_nsend(output, &trie->hdr, sizeof(trie->hdr));
 	}
-	if (output->last_failed_errno != 0) {
-		errno = output->last_failed_errno;
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write() to %s failed: %m", path);
 		ret = -1;
 	}
@@ -1880,7 +1883,7 @@ squat_trie_filter_type(enum squat_index_type type,
 	for (i = 0; i < count; i++) {
 		for (uid = src_range[i].seq1; uid <= src_range[i].seq2; uid++) {
 			if ((uid & 1) == mask)
-				seq_range_array_add(dest, 0, uid/2);
+				seq_range_array_add(dest, uid/2);
 		}
 	}
 }

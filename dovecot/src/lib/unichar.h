@@ -27,6 +27,12 @@
 typedef uint32_t unichar_t;
 ARRAY_DEFINE_TYPE(unichars, unichar_t);
 
+/* Normalize UTF8 input and append it to output buffer.
+   Returns 0 if ok, -1 if input was invalid. Even if input was invalid,
+   as much as possible should be added to output. */
+typedef int normalizer_func_t(const void *input, size_t size,
+			      buffer_t *output);
+
 extern const unsigned char utf8_replacement_char[UTF8_REPLACEMENT_CHAR_LEN];
 extern const uint8_t *const uni_utf8_non1_bytes;
 
@@ -45,6 +51,8 @@ void uni_ucs4_to_utf8_c(unichar_t chr, buffer_t *output);
    -1 for invalid input. */
 int uni_utf8_get_char(const char *input, unichar_t *chr_r);
 int uni_utf8_get_char_n(const void *input, size_t max_len, unichar_t *chr_r);
+/* Returns UTF-8 string length. */
+unsigned int uni_utf8_strlen(const char *input) ATTR_PURE;
 /* Returns UTF-8 string length with maximum input size. */
 unsigned int uni_utf8_strlen_n(const void *input, size_t size) ATTR_PURE;
 
@@ -67,7 +75,7 @@ unichar_t uni_ucs4_to_titlecase(unichar_t chr) ATTR_CONST;
    output buffer. Returns 0 if ok, -1 if input was invalid. This generates
    output that's compatible with i;unicode-casemap comparator. Invalid input
    is replaced with unicode replacement character (0xfffd). */
-int uni_utf8_to_decomposed_titlecase(const void *input, size_t max_len,
+int uni_utf8_to_decomposed_titlecase(const void *input, size_t size,
 				     buffer_t *output);
 
 /* If input contains only valid UTF-8 characters, return TRUE without updating

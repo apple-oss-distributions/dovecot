@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -52,7 +52,7 @@ mdbox_storage_create(struct mail_storage *_storage, struct mail_namespace *ns,
 	_storage->unique_root_dir =
 		p_strdup(_storage->pool, ns->list->set.root_dir);
 
-	dir = mailbox_list_get_path(ns->list, NULL, MAILBOX_LIST_PATH_TYPE_DIR);
+	dir = mailbox_list_get_root_forced(ns->list, MAILBOX_LIST_PATH_TYPE_DIR);
 	storage->storage_dir = p_strconcat(_storage->pool, dir,
 					   "/"MDBOX_GLOBAL_DIR_NAME, NULL);
 	storage->alt_storage_dir = p_strconcat(_storage->pool,
@@ -87,7 +87,8 @@ mdbox_storage_find_root_dir(const struct mail_namespace *ns)
 	bool debug = ns->mail_set->mail_debug;
 	const char *home, *path;
 
-	if (mail_user_get_home(ns->owner, &home) > 0) {
+	if (ns->owner != NULL &&
+	    mail_user_get_home(ns->owner, &home) > 0) {
 		path = t_strconcat(home, "/mdbox", NULL);
 		if (access(path, R_OK|W_OK|X_OK) == 0) {
 			if (debug)
@@ -136,9 +137,9 @@ static bool mdbox_storage_autodetect(const struct mail_namespace *ns,
 	return TRUE;
 }
 
-struct mailbox *
+static struct mailbox *
 mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		    const char *name, enum mailbox_flags flags)
+		    const char *vname, enum mailbox_flags flags)
 {
 	struct mdbox_mailbox *mbox;
 	struct index_mailbox_context *ibox;
@@ -155,20 +156,23 @@ mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &mdbox_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags, DBOX_INDEX_PREFIX);
-	mail_index_set_fsync_mode(mbox->box.index,
-				  storage->set->parsed_fsync_mode,
-				  MAIL_INDEX_SYNC_TYPE_APPEND |
-				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	ibox = INDEX_STORAGE_CONTEXT(&mbox->box);
-	ibox->save_commit_pre = mdbox_transaction_save_commit_pre;
-	ibox->save_commit_post = mdbox_transaction_save_commit_post;
-	ibox->save_rollback = mdbox_transaction_save_rollback;
 	ibox->index_flags |= MAIL_INDEX_OPEN_FLAG_KEEP_BACKUPS |
 		MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY;
 
 	mbox->storage = (struct mdbox_storage *)storage;
+	return &mbox->box;
+}
+
+static int mdbox_mailbox_open(struct mailbox *box)
+{
+	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
+
+	if (dbox_mailbox_open(box) < 0)
+		return -1;
+
 	mbox->ext_id =
 		mail_index_ext_register(mbox->box.index, "mdbox", 0,
 					sizeof(struct mdbox_mail_index_record),
@@ -178,8 +182,8 @@ mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 					sizeof(struct mdbox_index_header), 0, 0);
 	mbox->guid_ext_id =
 		mail_index_ext_register(mbox->box.index, "guid",
-					0, MAIL_GUID_128_SIZE, 1);
-	return &mbox->box;
+					0, GUID_128_SIZE, 1);
+	return 0;
 }
 
 static void mdbox_mailbox_close(struct mailbox *box)
@@ -193,10 +197,12 @@ static void mdbox_mailbox_close(struct mailbox *box)
 }
 
 int mdbox_read_header(struct mdbox_mailbox *mbox,
-		      struct mdbox_index_header *hdr)
+		      struct mdbox_index_header *hdr, bool *need_resize_r)
 {
 	const void *data;
 	size_t data_size;
+
+	i_assert(mbox->box.opened);
 
 	mail_index_get_header_ext(mbox->box.view, mbox->hdr_ext_id,
 				  &data, &data_size);
@@ -204,12 +210,13 @@ int mdbox_read_header(struct mdbox_mailbox *mbox,
 	    (!mbox->creating || data_size != 0)) {
 		mail_storage_set_critical(&mbox->storage->storage.storage,
 			"mdbox %s: Invalid dbox header size: %"PRIuSIZE_T,
-			mbox->box.path, data_size);
+			mailbox_get_path(&mbox->box), data_size);
 		mdbox_storage_set_corrupted(mbox->storage);
 		return -1;
 	}
 	memset(hdr, 0, sizeof(*hdr));
 	memcpy(hdr, data, I_MIN(data_size, sizeof(*hdr)));
+	*need_resize_r = data_size < sizeof(*hdr);
 	return 0;
 }
 
@@ -218,33 +225,42 @@ void mdbox_update_header(struct mdbox_mailbox *mbox,
 			 const struct mailbox_update *update)
 {
 	struct mdbox_index_header hdr, new_hdr;
+	bool need_resize;
 
-	if (mdbox_read_header(mbox, &hdr) < 0)
+	if (mdbox_read_header(mbox, &hdr, &need_resize) < 0) {
 		memset(&hdr, 0, sizeof(hdr));
+		need_resize = TRUE;
+	}
 
 	new_hdr = hdr;
 
-	if (update != NULL && !mail_guid_128_is_empty(update->mailbox_guid)) {
+	if (update != NULL && !guid_128_is_empty(update->mailbox_guid)) {
 		memcpy(new_hdr.mailbox_guid, update->mailbox_guid,
 		       sizeof(new_hdr.mailbox_guid));
-	} else if (mail_guid_128_is_empty(new_hdr.mailbox_guid)) {
-		mail_generate_guid_128(new_hdr.mailbox_guid);
+	} else if (guid_128_is_empty(new_hdr.mailbox_guid)) {
+		guid_128_generate(new_hdr.mailbox_guid);
 	}
 
 	new_hdr.map_uid_validity =
 		mdbox_map_get_uid_validity(mbox->storage->map);
+	if (need_resize) {
+		mail_index_ext_resize_hdr(trans, mbox->hdr_ext_id,
+					  sizeof(new_hdr));
+	}
 	if (memcmp(&hdr, &new_hdr, sizeof(hdr)) != 0) {
 		mail_index_update_header_ext(trans, mbox->hdr_ext_id, 0,
 					     &new_hdr, sizeof(new_hdr));
 	}
 }
 
-static int mdbox_write_index_header(struct mailbox *box,
-				    const struct mailbox_update *update,
-				    struct mail_index_transaction *trans)
+static int ATTR_NULL(2, 3)
+mdbox_write_index_header(struct mailbox *box,
+			 const struct mailbox_update *update,
+			 struct mail_index_transaction *trans)
 {
 	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
 	struct mail_index_transaction *new_trans = NULL;
+	struct mail_index_view *view;
 	const struct mail_index_header *hdr;
 	uint32_t uid_validity, uid_next;
 
@@ -256,7 +272,8 @@ static int mdbox_write_index_header(struct mailbox *box,
 		trans = new_trans;
 	}
 
-	hdr = mail_index_get_header(box->view);
+	view = mail_index_view_open(box->index);
+	hdr = mail_index_get_header(view);
 	uid_validity = hdr->uid_validity;
 	if (update != NULL && update->uid_validity != 0)
 		uid_validity = update->uid_validity;
@@ -266,10 +283,6 @@ static int mdbox_write_index_header(struct mailbox *box,
 	}
 
 	if (hdr->uid_validity != uid_validity) {
-		if (hdr->uid_validity != 0) {
-			/* UIDVALIDITY change requires index to be reset */
-			mail_index_reset(trans);
-		}
 		mail_index_update_header(trans,
 			offsetof(struct mail_index_header, uid_validity),
 			&uid_validity, sizeof(uid_validity), TRUE);
@@ -289,17 +302,17 @@ static int mdbox_write_index_header(struct mailbox *box,
 			&first_recent_uid, sizeof(first_recent_uid), FALSE);
 	}
 	if (update != NULL && update->min_highest_modseq != 0 &&
-	    mail_index_modseq_get_highest(box->view) <
-	    					update->min_highest_modseq) {
+	    mail_index_modseq_get_highest(view) < update->min_highest_modseq) {
 		mail_index_modseq_enable(box->index);
 		mail_index_update_highest_modseq(trans,
 						 update->min_highest_modseq);
 	}
+	mail_index_view_close(&view);
 
 	mdbox_update_header(mbox, trans, update);
 	if (new_trans != NULL) {
 		if (mail_index_transaction_commit(&new_trans) < 0) {
-			mail_storage_set_index_error(box);
+			mailbox_set_index_error(box);
 			return -1;
 		}
 	}
@@ -357,21 +370,37 @@ static void mdbox_set_file_corrupted(struct dbox_file *file)
 }
 
 static int
-mdbox_mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE])
+mdbox_mailbox_get_guid(struct mdbox_mailbox *mbox, guid_128_t guid_r)
 {
-	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
 	struct mdbox_index_header hdr;
+	bool need_resize;
 
-	if (mdbox_read_header(mbox, &hdr) < 0)
+	if (mdbox_read_header(mbox, &hdr, &need_resize) < 0)
 		memset(&hdr, 0, sizeof(hdr));
 
-	if (mail_guid_128_is_empty(hdr.mailbox_guid)) {
+	if (guid_128_is_empty(hdr.mailbox_guid)) {
 		/* regenerate it */
-		if (mdbox_write_index_header(box, NULL, NULL) < 0 ||
-		    mdbox_read_header(mbox, &hdr) < 0)
+		if (mdbox_write_index_header(&mbox->box, NULL, NULL) < 0 ||
+		    mdbox_read_header(mbox, &hdr, &need_resize) < 0)
 			return -1;
 	}
-	memcpy(guid, hdr.mailbox_guid, MAIL_GUID_128_SIZE);
+	memcpy(guid_r, hdr.mailbox_guid, GUID_128_SIZE);
+	return 0;
+}
+
+static int
+mdbox_mailbox_get_metadata(struct mailbox *box,
+			   enum mailbox_metadata_items items,
+			   struct mailbox_metadata *metadata_r)
+{
+	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
+
+	if (index_mailbox_get_metadata(box, items, metadata_r) < 0)
+		return -1;
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		if (mdbox_mailbox_get_guid(mbox, metadata_r->guid) < 0)
+			return -1;
+	}
 	return 0;
 }
 
@@ -382,57 +411,17 @@ mdbox_mailbox_update(struct mailbox *box, const struct mailbox_update *update)
 		if (mailbox_open(box) < 0)
 			return -1;
 	}
-	if (update->cache_fields != NULL)
-		index_storage_mailbox_update_cache_fields(box, update);
-	return mdbox_write_index_header(box, update, NULL);
-}
-
-static int mdbox_mailbox_unref_mails(struct mdbox_mailbox *mbox)
-{
-	struct mdbox_map_atomic_context *atomic;
-	struct mdbox_map_transaction_context *map_trans;
-	const struct mail_index_header *hdr;
-	uint32_t seq, map_uid;
-	int ret = 0;
-
-	atomic = mdbox_map_atomic_begin(mbox->storage->map);
-	map_trans = mdbox_map_transaction_begin(atomic, FALSE);
-	hdr = mail_index_get_header(mbox->box.view);
-	for (seq = 1; seq <= hdr->messages_count; seq++) {
-		if (mdbox_mail_lookup(mbox, mbox->box.view, seq,
-				      &map_uid) < 0) {
-			ret = -1;
-			break;
-		}
-
-		if (mdbox_map_update_refcount(map_trans, map_uid, -1) < 0) {
-			ret = -1;
-			break;
-		}
-	}
-
-	if (ret == 0)
-		ret = mdbox_map_transaction_commit(map_trans);
-	mdbox_map_transaction_free(&map_trans);
-	if (mdbox_map_atomic_finish(&atomic) < 0)
-		ret = -1;
-	return ret;
-}
-
-static int mdbox_mailbox_delete(struct mailbox *box)
-{
-	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
-
-	if (box->opened) {
-		if (mdbox_mailbox_unref_mails(mbox) < 0)
-			return -1;
-	}
-	return index_storage_mailbox_delete(box);
+	if (mdbox_write_index_header(box, update, NULL) < 0)
+		return -1;
+	return index_storage_mailbox_update_common(box, update);
 }
 
 struct mail_storage mdbox_storage = {
 	.name = MDBOX_STORAGE_NAME,
-	.class_flags = MAIL_STORAGE_CLASS_FLAG_UNIQUE_ROOT,
+	.class_flags = MAIL_STORAGE_CLASS_FLAG_UNIQUE_ROOT |
+		MAIL_STORAGE_CLASS_FLAG_HAVE_MAIL_GUIDS |
+		MAIL_STORAGE_CLASS_FLAG_HAVE_MAIL_SAVE_GUIDS |
+		MAIL_STORAGE_CLASS_FLAG_BINARY_DATA,
 
 	.v = {
                 mdbox_get_setting_parser_info,
@@ -450,19 +439,25 @@ struct mail_storage mdbox_storage = {
 struct mailbox mdbox_mailbox = {
 	.v = {
 		index_storage_is_readonly,
-		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
-		dbox_mailbox_open,
+		index_storage_mailbox_exists,
+		mdbox_mailbox_open,
 		mdbox_mailbox_close,
 		index_storage_mailbox_free,
 		dbox_mailbox_create,
 		mdbox_mailbox_update,
-		mdbox_mailbox_delete,
+		index_storage_mailbox_delete,
 		index_storage_mailbox_rename,
 		index_storage_get_status,
-		mdbox_mailbox_get_guid,
-		NULL,
-		NULL,
+		mdbox_mailbox_get_metadata,
+		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
+		index_storage_list_index_has_changed,
+		index_storage_list_index_update_sync,
 		mdbox_storage_sync_init,
 		index_mailbox_sync_next,
 		index_mailbox_sync_deinit,
@@ -471,21 +466,8 @@ struct mailbox mdbox_mailbox = {
 		index_transaction_begin,
 		index_transaction_commit,
 		index_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		NULL,
-		NULL,
 		NULL,
 		dbox_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		index_storage_search_init,
 		index_storage_search_deinit,
 		index_storage_search_next_nonblock,
@@ -496,7 +478,9 @@ struct mailbox mdbox_mailbox = {
 		mdbox_save_finish,
 		mdbox_save_cancel,
 		mdbox_copy,
-		NULL,
+		mdbox_transaction_save_commit_pre,
+		mdbox_transaction_save_commit_post,
+		mdbox_transaction_save_rollback,
 		index_storage_is_inconsistent
 	}
 };

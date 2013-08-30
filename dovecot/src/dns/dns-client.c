@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -27,7 +27,8 @@ static void dns_client_destroy(struct dns_client **client);
 
 static int dns_client_input_line(struct dns_client *client, const char *line)
 {
-	struct ip_addr *ips;
+	struct ip_addr *ips, ip;
+	const char *name;
 	unsigned int i, ips_count;
 	int ret;
 
@@ -35,23 +36,33 @@ static int dns_client_input_line(struct dns_client *client, const char *line)
 		ret = net_gethostbyname(line + 3, &ips, &ips_count);
 		if (ret == 0 && ips_count == 0) {
 			/* shouldn't happen, but fix it anyway.. */
-			ret = NO_ADDRESS;
+			ret = EAI_NONAME;
 		}
 		if (ret != 0) {
-			o_stream_send_str(client->output,
+			o_stream_nsend_str(client->output,
 				t_strdup_printf("%d\n", ret));
 		} else {
-			o_stream_send_str(client->output,
+			o_stream_nsend_str(client->output,
 				t_strdup_printf("0 %u\n", ips_count));
 			for (i = 0; i < ips_count; i++) {
-				o_stream_send_str(client->output, t_strconcat(
+				o_stream_nsend_str(client->output, t_strconcat(
 					net_ip2addr(&ips[i]), "\n", NULL));
 			}
+		}
+	} else if (strncmp(line, "NAME\t", 5) == 0) {
+		if (net_addr2ip(line+5, &ip) < 0)
+			o_stream_nsend_str(client->output, "-1\n");
+		else if ((ret = net_gethostbyaddr(&ip, &name)) != 0) {
+			o_stream_nsend_str(client->output,
+				t_strdup_printf("%d\n", ret));
+		} else {
+			o_stream_nsend_str(client->output,
+				t_strdup_printf("0 %s\n", name));
 		}
 	} else if (strcmp(line, "QUIT") == 0) {
 		return -1;
 	} else {
-		o_stream_send_str(client->output, "Unknown command\n");
+		o_stream_nsend_str(client->output, "Unknown command\n");
 	}
 
 	if (client->output->overflow)
@@ -91,6 +102,7 @@ static struct dns_client *dns_client_create(int fd)
 	client->fd = fd;
 	client->input = i_stream_create_fd(fd, MAX_INBUF_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd, MAX_OUTBUF_SIZE, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	client->io = io_add(fd, IO_READ, dns_client_input, client);
 	client->to = timeout_add(INPUT_TIMEOUT_MSECS, dns_client_timeout,
 				 client);
@@ -128,8 +140,7 @@ static void client_connected(struct master_service_connection *conn)
 
 int main(int argc, char *argv[])
 {
-	master_service = master_service_init("dns-client", 0,
-					     &argc, &argv, NULL);
+	master_service = master_service_init("dns-client", 0, &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

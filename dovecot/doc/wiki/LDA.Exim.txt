@@ -23,8 +23,12 @@ Next create a new transport for dovecot-lda:
 ---%<-------------------------------------------------------------------------
 dovecot_delivery:
   driver = pipe
-  command = /usr/local/libexec/dovecot/dovecot-lda
-# use /usr/lib/dovecot/dovecot-lda  if using Debian's package
+
+  # Use /usr/lib/dovecot/dovecot-lda  if using Debian's package.
+  # You may or may not want to add -d $local_part@$domain depending on if you
+need a userdb lookup done.
+  command = /usr/local/libexec/dovecot/dovecot-lda -f $sender_address
+
   message_prefix =
   message_suffix =
   log_output
@@ -88,9 +92,9 @@ Multiple UIDs, without running dovecot-lda as root
 --------------------------------------------------
 
 In this mode, dovecot-lda won't be querying Dovecot's master socket, instead
-trusting Exim to setup its execution environment.This means you must set up
+trusting Exim to setup its execution environment. This means you must set up
 Exim to get the UID, GID, Home directory from LDAP/SQL/whatever. Here, we're
-setting themin the router and the transport automatically inherits them.
+setting them in the router and the transport automatically inherits them.
 
 Router configuration
 --------------------
@@ -99,7 +103,7 @@ Insert the following router after your external delivery routers and before
 your local system delivery routers.
 
 This assumes you're using macros set elsewhere to handle your external queries,
-as they can quickly become unwieldy to manage.Make sure you adjust it to suit
+as they can quickly become unwieldy to manage. Make sure you adjust it to suit
 your installation first!
 
 ---%<-------------------------------------------------------------------------
@@ -120,7 +124,7 @@ Transport configuration
 -----------------------
 
 This transport has been tested with Exim 4.69-9 and Dovecot 1:1.2.5-2
-(backported) on Debian Lenny.You also have to set
+(backported) on Debian Lenny. You also have to set
 
 ---%<-------------------------------------------------------------------------
 dovecot_lda:
@@ -137,7 +141,6 @@ the separator
 "INBOX|${substr_1:$local_part_suffix}" \
   command = /usr/lib/dovecot/dovecot-lda -e -k \
       -f "$sender_address" -a "$original_local_part@$original_domain"
-  use_shell
   environment = USER=$local_part@$domain
   home_directory = /var/mail/home/$domain/$local_part
   umask = 002
@@ -157,4 +160,4 @@ the separator
 You need to have <home directory> [VirtualUsers.Home.txt] set to have duplicate
 database enabled, among other reasons.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

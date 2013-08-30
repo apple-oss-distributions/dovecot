@@ -163,7 +163,7 @@ Namespace configuration:
 
 ---%<-------------------------------------------------------------------------
 # The default namespace that is visible to IMAP clients
-namespace default {
+namespace inbox {
   prefix =
   separator = /
   list = yes
@@ -179,7 +179,7 @@ namespace virtual {
   hidden = yes
 }
 
-# Copy of the default namespace. We'll use this in dovecot-virtual file.
+# Copy of the inbox namespace. We'll use this in dovecot-virtual file.
 namespace real {
   prefix = RealMails/
   separator = /
@@ -189,15 +189,14 @@ namespace real {
 ---%<-------------------------------------------------------------------------
 
 Note that none of the namespaces have inbox=yes. This is because for IMAP users
-you want the default namespace to have inbox=yes, but for POP3 users you want
-the virtual namespace to have inbox=yes. This requires setting the inbox=yes in
+you want the inbox namespace to have inbox=yes, but for POP3 users you want the
+virtual namespace to have inbox=yes. This requires setting the inbox=yes in
 <userdb extra fields> [UserDatabase.ExtraFields.txt]. For example with MySQL
 you can can do this like:
 
 ---%<-------------------------------------------------------------------------
 user_query = SELECT ..., \
-  CASE '%s' WHEN 'pop3' THEN NULL ELSE 'yes' END AS 'namespace/default/inbox',
-\
+  CASE '%s' WHEN 'pop3' THEN NULL ELSE 'yes' END AS 'namespace/inbox/inbox', \
   CASE '%s' WHEN 'pop3' THEN 'yes' ELSE NULL END AS 'namespace/virtual/inbox' \
   WHERE ...
 ---%<-------------------------------------------------------------------------
@@ -207,6 +206,7 @@ Finally specify what the virtual INBOX looks like for POP3 users:
 '/etc/dovecot/virtual/INBOX/dovecot-virtual' :
 
 ---%<-------------------------------------------------------------------------
+RealMails
 RealMails/*
 -RealMails/Trash
 -RealMails/Trash/*
@@ -225,4 +225,4 @@ IMAP UIDs. Instead use for GUIDs (with maildir the same as base filename):
 pop3_uidl_format = %g
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension variables
@@ -30,22 +30,20 @@
 
 static bool ext_environment_validator_load
 	(const struct sieve_extension *ext, struct sieve_validator *valdtr);
-	
-const struct sieve_extension_def environment_extension = { 
-	"environment", 
-	ext_environment_init, 
-	ext_environment_deinit,
-	ext_environment_validator_load,
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_OPERATION(tst_environment_operation), 
-	SIEVE_EXT_DEFINE_NO_OPERANDS
+
+const struct sieve_extension_def environment_extension = {
+	.name = "environment",
+	.load = ext_environment_init,
+	.unload = ext_environment_deinit,
+	.validator_load = ext_environment_validator_load,
+	SIEVE_EXT_DEFINE_OPERATION(tst_environment_operation)
 };
 
 static bool ext_environment_validator_load
 (const struct sieve_extension *ext, struct sieve_validator *valdtr)
 {
 	sieve_validator_register_command(valdtr, ext, &tst_environment);
-	
+
 	return TRUE;
 }
 

@@ -97,7 +97,8 @@ Optimizations
 Filesystem optimizations
 ------------------------
 
-See "Maildir and filesystems" section in <MailboxFormat.Maildir.txt>.
+See <MailboxFormat/Maildir#Maildir_and_filesystems>
+[MailboxFormat.Maildir.txt].
 
 Mailbox directory name
 ----------------------
@@ -137,4 +138,4 @@ The value for 'DIRNAME' should be chosen carefully so as to minimise the
 chances of clashing with mail folder names. In the example here, unusual
 upper/lower casing has been used.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

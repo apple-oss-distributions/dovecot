@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 /* Logic is pretty much based on dnotify by Oskar Liljeblad. */
 
@@ -7,7 +7,7 @@
 
 #ifdef IOLOOP_NOTIFY_DNOTIFY
 
-#include "ioloop-internal.h"
+#include "ioloop-private.h"
 #include "ioloop-notify-fd.h"
 #include "fd-set-nonblock.h"
 #include "fd-close-on-exec.h"
@@ -87,7 +87,7 @@ static void dnotify_input(struct ioloop *ioloop)
 	for (i = 0; i < ret; i++) {
 		io = io_notify_fd_find(&ctx->fd_ctx, fd_buf[i]);
 		if (io != NULL)
-			io->io.callback(io->io.context);
+			io_loop_call_io(&io->io);
 	}
 }
 
@@ -120,7 +120,7 @@ enum io_notify_result io_add_notify(const char *path, io_callback_t *callback,
 		if (errno != EINVAL)
 			i_error("fcntl(F_SETSIG) failed: %m");
 		ioloop_dnotify_disable(ctx);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return IO_NOTIFY_NOSUPPORT;
 	}
 	if (fcntl(fd, F_NOTIFY, DN_CREATE | DN_DELETE | DN_RENAME |
@@ -135,7 +135,7 @@ enum io_notify_result io_add_notify(const char *path, io_callback_t *callback,
 			ioloop_dnotify_disable(ctx);
 		}
 		(void)fcntl(fd, F_SETSIG, 0);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return IO_NOTIFY_NOSUPPORT;
 	}
 

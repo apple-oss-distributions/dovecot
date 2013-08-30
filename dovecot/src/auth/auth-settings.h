@@ -7,15 +7,22 @@ struct master_service_settings_output;
 struct auth_passdb_settings {
 	const char *driver;
 	const char *args;
+	const char *default_fields;
+	const char *override_fields;
+	const char *skip;
+	const char *result_success;
+	const char *result_failure;
+	const char *result_internalfail;
 	bool deny;
 	bool pass;
 	bool master;
-	bool submit;					/* APPLE - urlauth */
 };
 
 struct auth_userdb_settings {
 	const char *driver;
 	const char *args;
+	const char *default_fields;
+	const char *override_fields;
 };
 
 struct auth_settings {
@@ -33,9 +40,8 @@ struct auth_settings {
 	const char *krb5_keytab;
 	const char *gssapi_hostname;
 	const char *winbind_helper_path;
+	const char *proxy_self;
 	unsigned int failure_delay;
-	unsigned int first_valid_uid;
-	unsigned int last_valid_uid;
 
 	bool verbose, debug, debug_passwords;
 	const char *verbose_passwords;
@@ -45,18 +51,23 @@ struct auth_settings {
 
 	unsigned int worker_max_count;
 
-	ARRAY_DEFINE(passdbs, struct auth_passdb_settings *);
-	ARRAY_DEFINE(userdbs, struct auth_userdb_settings *);
+	/* settings that don't have auth_ prefix: */
+	ARRAY(struct auth_passdb_settings *) passdbs;
+	ARRAY(struct auth_userdb_settings *) userdbs;
 
 #ifdef APPLE_OS_X_SERVER
 	const char *aps_topic;
 #endif
+	const char *base_dir;
 	bool verbose_proctitle;
+	unsigned int first_valid_uid;
+	unsigned int last_valid_uid;
 
 	/* generated: */
 	char username_chars_map[256];
 	char username_translation_map[256];
 	const char *const *realms_arr;
+	const struct ip_addr *proxy_self_ips;
 };
 
 extern const struct setting_parser_info auth_setting_parser_info;
@@ -64,6 +75,7 @@ extern struct auth_settings *global_auth_settings;
 
 struct auth_settings *
 auth_settings_read(const char *service, pool_t pool,
-		   struct master_service_settings_output *output_r);
+		   struct master_service_settings_output *output_r)
+	ATTR_NULL(1);
 
 #endif

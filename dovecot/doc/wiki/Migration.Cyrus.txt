@@ -45,8 +45,8 @@ need a running Cyrus installation.
  * cyrus2dovecot [http://trukenmueller.de/cyrus2dovecot] (by Trukenmüller)
    doesn't preserve timestamps or flags.
 
-You can also use imapsync, as described in the <Migration.txt> page, but you'll
-lose all the message UIDs then.
+You can also do the <migration via IMAP protocol using dsync>
+[Migration.Dsync.txt].
 
 Migration of passwords
 ----------------------
@@ -61,4 +61,19 @@ with other mail servers (e.g. Dovecot).
 For Fedora Core 3 (and probably other versions) the command is just 'db_dump -p
 /etc/sasldb2'.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Namespaces
+----------
+
+Cyrus uses one of the following namespace configurations depending on the
+altnamespace and unixhierarchysep options:
+
+---%<-------------------------------------------------------------------------
+namespace inbox {
+  prefix = INBOX. # no altnamespace
+  #prefix = "" # altnamespace
+  separator = . # no unixhierarchysep
+  #separator = / # unixhierarchysep
+}
+---%<-------------------------------------------------------------------------
+
+(This file was created from the wiki on 2013-08-05 04:42)

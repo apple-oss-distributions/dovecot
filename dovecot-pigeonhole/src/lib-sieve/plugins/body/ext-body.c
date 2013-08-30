@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension body
@@ -11,8 +11,8 @@
  * Status: testing
  *
  */
- 
-/* FIXME: 
+
+/* FIXME:
  *
  * From RFC with respect to :text body transform:
  *
@@ -24,10 +24,10 @@
  *  formats to text or apply optical character recognition algorithms to
  *  image data.)"
  *
- * We might want to do this in the future, i.e. we must evaluate whether this is 
+ * We might want to do this in the future, i.e. we must evaluate whether this is
  * feasible.
  */
- 
+
 #include "lib.h"
 #include "array.h"
 
@@ -45,20 +45,17 @@
 
 #include "ext-body-common.h"
 
-/* 
- * Extension 
+/*
+ * Extension
  */
 
 static bool ext_body_validator_load
 (const struct sieve_extension *ext, struct sieve_validator *valdtr);
 
-const struct sieve_extension_def body_extension = { 
-	"body", 
-	NULL, NULL,
-	ext_body_validator_load, 
-	NULL, NULL, NULL, NULL, NULL,
-	SIEVE_EXT_DEFINE_OPERATION(body_operation), 
-	SIEVE_EXT_DEFINE_NO_OPERANDS
+const struct sieve_extension_def body_extension = {
+	.name = "body",
+	.validator_load =	ext_body_validator_load,
+	SIEVE_EXT_DEFINE_OPERATION(body_operation)
 };
 
 static bool ext_body_validator_load

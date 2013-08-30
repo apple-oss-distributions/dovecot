@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -26,8 +26,8 @@
 
 #include <string.h>
 
-/* 
- * Interpreter extension 
+/*
+ * Interpreter extension
  */
 
 struct sieve_interpreter_extension_reg {
@@ -37,32 +37,30 @@ struct sieve_interpreter_extension_reg {
 	void *context;
 };
 
-/* 
- * Interpreter 
+/*
+ * Interpreter
  */
 
 struct sieve_interpreter {
 	pool_t pool;
-			
-	struct sieve_error_handler *ehandler;
 
 	/* Runtime data for extensions */
-	ARRAY_DEFINE(extensions, struct sieve_interpreter_extension_reg); 
-	
-	sieve_size_t reset_vector;	
-		
+	ARRAY(struct sieve_interpreter_extension_reg) extensions;
+
+	sieve_size_t reset_vector;
+
 	/* Execution status */
-	
+
 	sieve_size_t pc;          /* Program counter */
 	bool interrupted;         /* Interpreter interrupt requested */
 	bool test_result;         /* Result of previous test command */
-	
+
 	/* Runtime environment */
 	struct sieve_runtime_env runenv;
 	struct sieve_runtime_trace trace;
 
 	/* Current operation */
-	struct sieve_operation oprtn; 
+	struct sieve_operation oprtn;
 
 	/* Location information */
 	struct sieve_binary_debug_reader *dreader;
@@ -70,9 +68,10 @@ struct sieve_interpreter {
 };
 
 static struct sieve_interpreter *_sieve_interpreter_create
-(struct sieve_binary *sbin, struct sieve_binary_block *sblock, 
+(struct sieve_binary *sbin, struct sieve_binary_block *sblock,
 	struct sieve_script *script, const struct sieve_message_data *msgdata,
-	const struct sieve_script_env *senv, struct sieve_error_handler *ehandler) 
+	const struct sieve_script_env *senv, struct sieve_error_handler *ehandler,
+	enum sieve_runtime_flags flags)
 {
 	unsigned int i, ext_count;
 	struct sieve_interpreter *interp;
@@ -82,18 +81,19 @@ static struct sieve_interpreter *_sieve_interpreter_create
 	unsigned int debug_block_id;
 	sieve_size_t *address;
 	bool success = TRUE;
-	
-	pool = pool_alloconly_create("sieve_interpreter", 4096);	
+
+	pool = pool_alloconly_create("sieve_interpreter", 4096);
 	interp = p_new(pool, struct sieve_interpreter, 1);
 	interp->pool = pool;
 
-	interp->ehandler = ehandler;
+	interp->runenv.ehandler = ehandler;
 	sieve_error_handler_ref(ehandler);
 
 	interp->runenv.interp = interp;
 	interp->runenv.oprtn = &interp->oprtn;
 	interp->runenv.sbin = sbin;
 	interp->runenv.sblock = sblock;
+	interp->runenv.flags = flags;
 	sieve_binary_ref(sbin);
 
 	svinst = sieve_binary_svinst(sbin);
@@ -109,16 +109,16 @@ static struct sieve_interpreter *_sieve_interpreter_create
 		interp->runenv.trace = &interp->trace;
 	}
 
-	if ( senv->exec_status == NULL ) 
+	if ( senv->exec_status == NULL )
 		interp->runenv.exec_status = p_new(interp->pool, struct sieve_exec_status, 1);
 	else
 		interp->runenv.exec_status = senv->exec_status;
 
-	if ( script == NULL )	
+	if ( script == NULL )
 		interp->runenv.script = sieve_binary_script(sbin);
 	else
 		interp->runenv.script = script;
-	
+
 	interp->runenv.pc = 0;
 	address = &(interp->runenv.pc);
 
@@ -127,13 +127,13 @@ static struct sieve_interpreter *_sieve_interpreter_create
 	p_array_init(&interp->extensions, pool, sieve_extensions_get_count(svinst));
 
 	/* Pre-load core language features implemented as 'extensions' */
-	ext_preloaded = sieve_extensions_get_preloaded(svinst, &ext_count); 
+	ext_preloaded = sieve_extensions_get_preloaded(svinst, &ext_count);
 	for ( i = 0; i < ext_count; i++ ) {
 		const struct sieve_extension_def *ext_def = ext_preloaded[i]->def;
 
 		if ( ext_def != NULL && ext_def->interpreter_load != NULL )
 			(void)ext_def->interpreter_load
-				(ext_preloaded[i], &interp->runenv, address);		
+				(ext_preloaded[i], &interp->runenv, address);
 	}
 
 	/* Load debug block */
@@ -151,63 +151,76 @@ static struct sieve_interpreter *_sieve_interpreter_create
 	}
 
 	/* Load other extensions listed in code */
-	if ( success && 
+	if ( success &&
 		sieve_binary_read_unsigned(sblock, address, &ext_count) ) {
 
 		for ( i = 0; i < ext_count; i++ ) {
 			unsigned int code = 0;
 			const struct sieve_extension *ext;
-			
+
 			if ( !sieve_binary_read_extension(sblock, address, &code, &ext) ) {
 				success = FALSE;
 				break;
 			}
- 
-			if ( ext->def != NULL && ext->def->interpreter_load != NULL && 
-				!ext->def->interpreter_load(ext, &interp->runenv, address) ) {
-				success = FALSE;
-				break;
+
+			if ( ext->def != NULL ) {
+				if ( ext->global && (flags & SIEVE_RUNTIME_FLAG_NOGLOBAL) != 0 ) {
+					sieve_runtime_error(&interp->runenv, NULL,
+						"failed to enable extension `%s': "
+						"its use is restricted to global scripts",
+						sieve_extension_name(ext));
+					success = FALSE;
+					break;
+				}
+
+				if ( ext->def->interpreter_load != NULL &&
+					!ext->def->interpreter_load(ext, &interp->runenv, address) ) {
+					success = FALSE;
+					break;
+				}
 			}
 		}
 	}	else
 		success = FALSE;
-	
+
 	if ( !success ) {
 		sieve_interpreter_free(&interp);
 		interp = NULL;
 	} else {
 		interp->reset_vector = *address;
 	}
-	
+
 	return interp;
 }
 
 struct sieve_interpreter *sieve_interpreter_create
 (struct sieve_binary *sbin, const struct sieve_message_data *msgdata,
-	const struct sieve_script_env *senv, struct sieve_error_handler *ehandler) 
+	const struct sieve_script_env *senv, struct sieve_error_handler *ehandler,
+	enum sieve_runtime_flags flags)
 {
 	struct sieve_binary_block *sblock;
 
-	if ( (sblock=sieve_binary_block_get(sbin, SBIN_SYSBLOCK_MAIN_PROGRAM)) 
+	if ( (sblock=sieve_binary_block_get(sbin, SBIN_SYSBLOCK_MAIN_PROGRAM))
 		== NULL )
 		return NULL;
 
- 	return _sieve_interpreter_create(sbin, sblock, NULL, msgdata, senv, ehandler);
+ 	return _sieve_interpreter_create
+		(sbin, sblock, NULL, msgdata, senv, ehandler, flags);
 }
 
 struct sieve_interpreter *sieve_interpreter_create_for_block
 (struct sieve_binary_block *sblock, struct sieve_script *script,
-	const struct sieve_message_data *msgdata, const struct sieve_script_env *senv, 
-	struct sieve_error_handler *ehandler) 
+	const struct sieve_message_data *msgdata, const struct sieve_script_env *senv,
+	struct sieve_error_handler *ehandler, enum sieve_runtime_flags flags)
 {
 	if ( sblock == NULL ) return NULL;
 
  	return _sieve_interpreter_create
 		(sieve_binary_block_get_binary(sblock), sblock, script, msgdata, senv,
-			ehandler);
+			ehandler, flags);
 }
 
-void sieve_interpreter_free(struct sieve_interpreter **interp) 
+void sieve_interpreter_free(struct sieve_interpreter **interp)
 {
 	const struct sieve_interpreter_extension_reg *eregs;
 	unsigned int ext_count, i;
@@ -223,9 +236,9 @@ void sieve_interpreter_free(struct sieve_interpreter **interp)
 
 	sieve_binary_debug_reader_deinit(&(*interp)->dreader);
 	sieve_binary_unref(&(*interp)->runenv.sbin);
-	sieve_error_handler_unref(&(*interp)->ehandler);
+	sieve_error_handler_unref(&(*interp)->runenv.ehandler);
 
-	pool_unref(&((*interp)->pool));	
+	pool_unref(&((*interp)->pool));
 	*interp = NULL;
 }
 
@@ -247,7 +260,7 @@ struct sieve_script *sieve_interpreter_script
 struct sieve_error_handler *sieve_interpreter_get_error_handler
 (struct sieve_interpreter *interp)
 {
-	return interp->ehandler;
+	return interp->runenv.ehandler;
 }
 
 struct sieve_instance *sieve_interpreter_svinst
@@ -264,6 +277,7 @@ void sieve_interpreter_set_result
 {
 	sieve_result_unref(&interp->runenv.result);
 	interp->runenv.result = result;
+	interp->runenv.msgctx = sieve_result_get_message_context(result);
 	sieve_result_ref(result);
 }
 
@@ -279,7 +293,7 @@ static inline void sieve_runtime_vmsg
 		if ( location == NULL )
 			location = sieve_runtime_get_full_command_location(renv);
 
-		msg_func(renv->interp->ehandler, location, fmt, args); 
+		msg_func(renv->ehandler, location, fmt, args);
 	} T_END;
 }
 
@@ -329,7 +343,7 @@ void sieve_runtime_critical
 			location = sieve_runtime_get_full_command_location(renv);
 
 		sieve_vcritical
-			(renv->svinst, renv->interp->ehandler, location, user_prefix, fmt, args); 
+			(renv->svinst, renv->ehandler, location, user_prefix, fmt, args);
 	} T_END;
 
 	va_end(args);
@@ -389,42 +403,42 @@ void sieve_interpreter_extension_register
 
 	if ( ext->id < 0 ) return;
 
-	reg = array_idx_modifiable(&interp->extensions, (unsigned int) ext->id);	
+	reg = array_idx_modifiable(&interp->extensions, (unsigned int) ext->id);
 	reg->intext = intext;
 	reg->ext = ext;
 	reg->context = context;
 }
 
 void sieve_interpreter_extension_set_context
-(struct sieve_interpreter *interp, const struct sieve_extension *ext, 
+(struct sieve_interpreter *interp, const struct sieve_extension *ext,
 	void *context)
 {
 	struct sieve_interpreter_extension_reg *reg;
 
 	if ( ext->id < 0 ) return;
-	
-	reg = array_idx_modifiable(&interp->extensions, (unsigned int) ext->id);	
+
+	reg = array_idx_modifiable(&interp->extensions, (unsigned int) ext->id);
 	reg->context = context;
 }
 
 void *sieve_interpreter_extension_get_context
-(struct sieve_interpreter *interp, const struct sieve_extension *ext) 
+(struct sieve_interpreter *interp, const struct sieve_extension *ext)
 {
 	const struct sieve_interpreter_extension_reg *reg;
 
 	if  ( ext->id < 0 || ext->id >= (int) array_count(&interp->extensions) )
 		return NULL;
-	
-	reg = array_idx(&interp->extensions, (unsigned int) ext->id);		
+
+	reg = array_idx(&interp->extensions, (unsigned int) ext->id);
 
 	return reg->context;
 }
 
-/* 
- * Program flow 
+/*
+ * Program flow
  */
 
-void sieve_interpreter_reset(struct sieve_interpreter *interp) 
+void sieve_interpreter_reset(struct sieve_interpreter *interp)
 {
 	interp->runenv.pc = interp->reset_vector;
 	interp->interrupted = FALSE;
@@ -449,25 +463,25 @@ int sieve_interpreter_program_jump
 	sieve_size_t *address = &(interp->runenv.pc);
 	sieve_size_t jmp_start = *address;
 	sieve_offset_t jmp_offset;
-	
+
 	if ( !sieve_binary_read_offset(renv->sblock, address, &jmp_offset) )
 	{
-		sieve_runtime_trace_error(renv, "invalid jump offset"); 
+		sieve_runtime_trace_error(renv, "invalid jump offset");
 		return SIEVE_EXEC_BIN_CORRUPT;
 	}
 
-	if ( jmp_start + jmp_offset <= sieve_binary_block_get_size(renv->sblock) && 
-		jmp_start + jmp_offset > 0 ) 
-	{	
+	if ( jmp_start + jmp_offset <= sieve_binary_block_get_size(renv->sblock) &&
+		jmp_start + jmp_offset > 0 )
+	{
 		if ( jump ) {
 			sieve_size_t jmp_addr = jmp_start + jmp_offset;
 
 			if ( sieve_runtime_trace_active(renv, SIEVE_TRLVL_COMMANDS) ) {
-				unsigned int jmp_line = 
+				unsigned int jmp_line =
 					sieve_runtime_get_source_location(renv, jmp_addr);
 
 				if ( sieve_runtime_trace_hasflag(renv, SIEVE_TRFLG_ADDRESSES) ) {
-					sieve_runtime_trace(renv, 0, "jumping to line %d [%08llx]", 
+					sieve_runtime_trace(renv, 0, "jumping to line %d [%08llx]",
 						jmp_line, (long long unsigned int) jmp_addr);
 				} else {
 					sieve_runtime_trace(renv, 0, "jumping to line %d", jmp_line);
@@ -476,12 +490,12 @@ int sieve_interpreter_program_jump
 
 			*address = jmp_addr;
 		} else {
-			sieve_runtime_trace(renv, 0, "not jumping");	
+			sieve_runtime_trace(renv, 0, "not jumping");
 		}
-		
+
 		return SIEVE_EXEC_OK;
 	}
-	
+
 	sieve_runtime_trace_error(renv, "jump offset out of range");
 	return SIEVE_EXEC_BIN_CORRUPT;
 }
@@ -502,12 +516,12 @@ bool sieve_interpreter_get_test_result
 	return interp->test_result;
 }
 
-/* 
- * Code execute 
+/*
+ * Code execute
  */
 
 static int sieve_interpreter_operation_execute
-(struct sieve_interpreter *interp) 
+(struct sieve_interpreter *interp)
 {
 	struct sieve_operation *oprtn = &(interp->oprtn);
 	sieve_size_t *address = &(interp->runenv.pc);
@@ -529,57 +543,57 @@ static int sieve_interpreter_operation_execute
 			} T_END;
 		} else {
 			sieve_runtime_trace
-				(&interp->runenv, SIEVE_TRLVL_COMMANDS, "OP: %s (NOOP)", 
+				(&interp->runenv, SIEVE_TRLVL_COMMANDS, "OP: %s (NOOP)",
 					sieve_operation_mnemonic(oprtn));
 		}
 
 		return result;
 	}
-	
+
 	/* Binary corrupt */
-	sieve_runtime_trace_error(&interp->runenv, "Encountered invalid operation");	
+	sieve_runtime_trace_error(&interp->runenv, "Encountered invalid operation");
 	return SIEVE_EXEC_BIN_CORRUPT;
-}		
+}
 
 int sieve_interpreter_continue
-(struct sieve_interpreter *interp, bool *interrupted) 
+(struct sieve_interpreter *interp, bool *interrupted)
 {
 	sieve_size_t *address = &(interp->runenv.pc);
 	int ret = SIEVE_EXEC_OK;
-	
+
 	sieve_result_ref(interp->runenv.result);
 	interp->interrupted = FALSE;
-	
+
 	if ( interrupted != NULL )
 		*interrupted = FALSE;
-	
-	while ( ret == SIEVE_EXEC_OK && !interp->interrupted && 
+
+	while ( ret == SIEVE_EXEC_OK && !interp->interrupted &&
 		*address < sieve_binary_block_get_size(interp->runenv.sblock) ) {
-		
+
 		ret = sieve_interpreter_operation_execute(interp);
 
 		if ( ret != SIEVE_EXEC_OK ) {
-			sieve_runtime_trace(&interp->runenv, SIEVE_TRLVL_NONE, 
+			sieve_runtime_trace(&interp->runenv, SIEVE_TRLVL_NONE,
 				"[[EXECUTION ABORTED]]");
 		}
 	}
-	
+
 	if ( interrupted != NULL )
 		*interrupted = interp->interrupted;
-			
+
 	sieve_result_unref(&interp->runenv.result);
 	return ret;
 }
 
 int sieve_interpreter_start
-(struct sieve_interpreter *interp, struct sieve_result *result, bool *interrupted) 
+(struct sieve_interpreter *interp, struct sieve_result *result, bool *interrupted)
 {
 	const struct sieve_interpreter_extension_reg *eregs;
 	unsigned int ext_count, i;
-	
+
 	interp->runenv.result = result;
-	interp->runenv.msgctx = sieve_result_get_message_context(result);		
-	
+	interp->runenv.msgctx = sieve_result_get_message_context(result);
+
 	/* Signal registered extensions that the interpreter is being run */
 	eregs = array_get(&interp->extensions, &ext_count);
 	for ( i = 0; i < ext_count; i++ ) {
@@ -587,21 +601,21 @@ int sieve_interpreter_start
 			eregs[i].intext->run(eregs[i].ext, &interp->runenv, eregs[i].context);
 	}
 
-	return sieve_interpreter_continue(interp, interrupted); 
+	return sieve_interpreter_continue(interp, interrupted);
 }
 
 int sieve_interpreter_run
 (struct sieve_interpreter *interp, struct sieve_result *result)
 {
 	int ret = 0;
-	
+
 	sieve_interpreter_reset(interp);
 	sieve_result_ref(result);
-	
+
 	ret = sieve_interpreter_start(interp, result, NULL);
-	
+
 	sieve_result_unref(&result);
-	
+
 	return ret;
 }
 

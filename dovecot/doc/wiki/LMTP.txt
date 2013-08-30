@@ -4,7 +4,7 @@ LMTP Server
 LMTP uses the same settings as <LDA.txt>, as specified in 'conf.d/15-lda.conf'
 in example configuration. There is also a bit of extra configuration in
 'conf.d/20-lmtp.conf'. The main difference is that the LDA is a short-running
-process, started as a binary from command line, while LMTP is a long-runing
+process, started as a binary from command line, while LMTP is a long-running
 process started by Dovecot's master process.
 
 Envelope Addresses
@@ -74,6 +74,33 @@ to issue passdb lookups:
 lmtp_proxy = yes
 ---%<-------------------------------------------------------------------------
 
+Performance
+-----------
+
+For higher volume sites, it may be desirable to increase the number of active
+listener processes.  A range of 5 to 20 is probably good for most sites:
+
+---%<-------------------------------------------------------------------------
+service lmtp {
+  process_min_avail = 5
+}
+---%<-------------------------------------------------------------------------
+
+Logging
+-------
+
+If you want to store LMTP delivery logs to a different file, you can do it
+with:
+
+---%<-------------------------------------------------------------------------
+service lmtp {
+  executable = lmtp -L
+}
+protocol lmtp {
+  info_log_path = /var/log/dovecot-lmtp.log
+}
+---%<-------------------------------------------------------------------------
+
 Plugins
 -------
 
@@ -82,4 +109,10 @@ Plugins
  * Sieve language support can be added with the <Pigeonhole Sieve plugin>
    [Pigeonhole.Sieve.txt].
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Using LMTP with different MTAs
+------------------------------
+
+ * <Postfix> [HowTo.PostfixDovecotLMTP.txt]
+ * <Exim> [LMTP.Exim.txt]
+
+(This file was created from the wiki on 2013-08-05 04:42)

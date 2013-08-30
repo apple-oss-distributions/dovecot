@@ -1,8 +1,35 @@
 /*
- *  Contains: Header definitions for Cyrus to Dovecot maildir mail migration
- *	Written by: Michale Dasenbrock
- *  Copyright:  © 2008-2011 Apple Inc., All rights reserved.
+ * Contains: Header definitions for Cyrus to Dovecot maildir mail migration
+ * Written by: Michale Dasenbrock
  *
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without  
+ * modification, are permitted provided that the following conditions  
+ * are met:
+ * 
+ * 1.  Redistributions of source code must retain the above copyright  
+ * notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above  
+ * copyright notice, this list of conditions and the following  
+ * disclaimer in the documentation and/or other materials provided  
+ * with the distribution.
+ * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
+ * contributors may be used to endorse or promote products derived  
+ * from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
+ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
+ * SUCH DAMAGE.
  */
 
 #ifndef __CVT_MAIL_H__
@@ -28,6 +55,26 @@
 #define FLAG_DELETED (1<<2)
 #define FLAG_DRAFT (1<<3)
 
+typedef enum {
+	kNO_FLAGS	= 0x00000000,
+	kE_FLAG		= 0x00000001,
+	kF_FLAG		= 0x00000002,
+	kG_FLAG		= 0x00000004,
+	kI_FLAG		= 0x00000008,
+	kL_FLAG		= 0x00000010,
+	kM_FLAG		= 0x00000020,
+	kP_FLAG		= 0x00000040,
+	kR_FLAG		= 0x00000080,
+	kU_FLAG		= 0x00000100,
+} TOOL_FLAGS;
+
+#define IMAP_CONF_FILE	@"/etc"
+#define IMAP_BINS_DIR	@"/usr/bin/cyrus/bin"
+
+const char *SRC_MAIL_DB_DIR		= "/var/imap";
+const char *SRC_MAIL_DATA_DIR	= "/var/spool/imap";
+const char *DST_MAIL_DATA_DIR	= "/Library/Server/Mail/Data/mail";
+
 #define MAILBOX_HEADER_MAGIC ("\241\002\213\015Cyrus mailbox header\n" \
      "\"The best thing about this system was that it had lots of goals.\"\n" \
      "\t--Jim Morris on Andrew\n")
@@ -36,6 +83,8 @@
 #define	DOVECOT_PARTITION_MAPS		@"/Library/Server/Mail/Config/dovecot/partition_map.conf"
 #define	MAIL_MIGRATION_PLIST		@"/Library/Server/Mail/Data/db/.mailmigration.plist"
 #define	MAIL_USER_SETTINGS_PLIST	@"/Library/Server/Mail/Data/db/.mailusersettings.plist"
+
+#define MAIL_TOOL_LOG_FILE			"/Library/Logs/Mail/mail-tool.log"
 
 /* Migration key/values */
 #define	kXMLKeyMigrationFlag			@"kMigrationFlag"
@@ -99,8 +148,10 @@ struct s_seen_uids {
 };
 
 struct s_seen_line {
-	char	*mbox_uid;
-	char	*seen_uids;
+	NSString *mbox_uid_str;
+	char	 *mbox_uid;
+	NSString *seen_uids_str;
+	char	 *seen_uids;
 };
 
 struct s_seen_data
@@ -113,30 +164,9 @@ struct s_seen_data
 };
 
 // ------------------------------------------------------------------
-
-void	usage				( int in_exit_code );
-int		verify_path			( const char *in_path );
-int		scan_account		( char *in_cy_spool_dir, char *in_dst_root, char *in_acct_dir );
-int		set_quota			( char *in_dst_root, char *in_dir );
-int		set_subscribe		( char *in_dst_root, char *in_dir );
-int		create_maildir_dirs	( char *root, char *dir, int is_root );
-int		migrate_mail		( char *in_src_path, char *dest, int is_root );
-int		migrate_message		( char *in_src, unsigned long in_size, char *dst_a, char *in_flags, unsigned long *out_size );
-int		read_seen_file		( const char *in_seen_file );
-int		parse_seen_file		( const char *in_mailbox, const unsigned long in_uidvalidity );
-int		is_seen				( unsigned long in_uid );
-void	free_seen_file		( void );
-
-// ------------------------------------------------------------------
 // Utility functions
 
 char   *cpy_str				( const char *in_str );
 char   *read_line			( FILE *in_file );
-
-// ------------------------------------------------------------------
-// Prototype from cyrus mailbox.h
-
-void	mailbox_make_uniqueid	( char *name, unsigned long uidvalidity, char *uniqueid );
-
 
 #endif // __CVT_MAIL_H__

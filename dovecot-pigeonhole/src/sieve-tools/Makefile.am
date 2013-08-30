@@ -1,8 +1,4 @@
-bin_PROGRAMS = sievec sieve-dump sieve-test
-
-if BUILD_UNFINISHED
-bin_PROGRAMS += sieve-filter
-endif
+bin_PROGRAMS = sievec sieve-dump sieve-test sieve-filter
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-sieve \
@@ -13,7 +9,7 @@ AM_CPPFLAGS = \
 
 libs = \
 	$(top_builddir)/src/lib-sieve/libdovecot-sieve.la \
-	$(top_builddir)/src/lib-sieve-tool/libsieve-tool.la 
+	$(top_builddir)/src/lib-sieve-tool/libsieve-tool.la
 
 libs_ldadd = $(libs) $(LIBDOVECOT_STORAGE) $(LIBDOVECOT_LDA) $(LIBDOVECOT)
 libs_deps = $(libs) $(LIBDOVECOT_STORAGE_DEPS) $(LIBDOVECOT_LDA_DEPS) $(LIBDOVECOT_DEPS)
@@ -25,7 +21,7 @@ sievec_LDADD = $(libs_ldadd)
 sievec_DEPENDENCIES = $(libs_deps)
 
 sievec_SOURCES = \
-	sievec.c 
+	sievec.c
 
 # Sieve Dump Tool
 
@@ -34,7 +30,7 @@ sieve_dump_LDADD = $(libs_ldadd)
 sieve_dump_DEPENDENCIES = $(libs_deps)
 
 sieve_dump_SOURCES = \
-	sieve-dump.c 
+	sieve-dump.c
 
 # Sieve Test Tool
 
@@ -43,7 +39,7 @@ sieve_test_LDADD = $(libs_ldadd)
 sieve_test_DEPENDENCIES = $(libs_deps)
 
 sieve_test_SOURCES = \
-	sieve-test.c 
+	sieve-test.c
 
 ## Unfinished tools
 
@@ -54,6 +50,6 @@ sieve_filter_LDADD = $(libs_ldadd)
 sieve_filter_DEPENDENCIES = $(libs_deps)
 
 sieve_filter_SOURCES = \
-	sieve-filter.c 
+	sieve-filter.c
 
 noinst_HEADERS =

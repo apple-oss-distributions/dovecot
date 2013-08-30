@@ -39,9 +39,9 @@ struct input_stack {
 struct config_parser_context {
 	pool_t pool;
 	const char *path;
-	const char *module;
+	const char *const *modules;
 
-	ARRAY_DEFINE(all_parsers, struct config_filter_parser *);
+	ARRAY(struct config_filter_parser *) all_parsers;
 	struct config_module_parser *root_parsers;
 	struct config_section_stack *cur_section;
 	struct input_stack *cur_input;
@@ -55,12 +55,13 @@ struct config_parser_context {
 
 	struct config_filter_context *filter;
 	unsigned int expand_values:1;
+	unsigned int hide_errors:1;
 };
 
 extern void (*hook_config_parser_begin)(struct config_parser_context *ctx);
 
 int config_apply_line(struct config_parser_context *ctx, const char *key,
-		      const char *line, const char *section_name);
+		      const char *line, const char *section_name) ATTR_NULL(4);
 void config_parser_apply_line(struct config_parser_context *ctx,
 			      enum config_line_type type,
 			      const char *key, const char *value);

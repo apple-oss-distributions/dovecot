@@ -2,10 +2,11 @@
 #define USERDB_H
 
 #include "md5.h"
-#include "auth-stream.h"
+#include "auth-fields.h"
 
 struct auth;
 struct auth_request;
+struct auth_userdb_settings;
 
 enum userdb_result {
 	USERDB_RESULT_INTERNAL_FAILURE = -1,
@@ -33,11 +34,14 @@ struct userdb_module {
 	/* number of time init() has been called */
 	int init_refcount;
 
+	struct userdb_template *default_fields_tmpl;
+	struct userdb_template *override_fields_tmpl;
+
 	const struct userdb_module_interface *iface;
 };
 
 struct userdb_iterate_context {
-	struct userdb_module *userdb;
+	struct auth_request *auth_request;
 	userdb_iter_callback_t *callback;
 	void *context;
 	bool failed;
@@ -54,18 +58,20 @@ struct userdb_module_interface {
 		       userdb_callback_t *callback);
 
 	struct userdb_iterate_context *
-		(*iterate_init)(struct userdb_module *userdb,
+		(*iterate_init)(struct auth_request *auth_request,
 				userdb_iter_callback_t *callback,
 				void *context);
 	void (*iterate_next)(struct userdb_iterate_context *ctx);
 	int (*iterate_deinit)(struct userdb_iterate_context *ctx);
 };
 
-uid_t userdb_parse_uid(struct auth_request *request, const char *str);
-gid_t userdb_parse_gid(struct auth_request *request, const char *str);
+uid_t userdb_parse_uid(struct auth_request *request, const char *str)
+	ATTR_NULL(1);
+gid_t userdb_parse_gid(struct auth_request *request, const char *str)
+	ATTR_NULL(1);
 
 struct userdb_module *
-userdb_preinit(pool_t pool, const char *driver, const char *args);
+userdb_preinit(pool_t pool, const struct auth_userdb_settings *set);
 void userdb_init(struct userdb_module *userdb);
 void userdb_deinit(struct userdb_module *userdb);
 

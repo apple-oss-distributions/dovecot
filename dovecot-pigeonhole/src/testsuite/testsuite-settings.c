@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -16,35 +16,32 @@ struct testsuite_setting {
 	char *value;
 };
 
-static struct hash_table *settings; 
+static HASH_TABLE(const char *, struct testsuite_setting *) settings;
 
 static const char *testsuite_setting_get
 	(void *context, const char *identifier);
 
 void testsuite_settings_init(void)
 {
-	settings = hash_table_create
-		(default_pool, default_pool, 0, str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&settings, default_pool, 0, str_hash, strcmp);
 
 	sieve_tool_set_setting_callback(sieve_tool, testsuite_setting_get, NULL);
 }
 
 void testsuite_settings_deinit(void)
 {
-	struct hash_iterate_context *itx = 
+	struct hash_iterate_context *itx =
 		hash_table_iterate_init(settings);
-	void *key; 
-	void *value;
-	
-	while ( hash_table_iterate(itx, &key, &value) ) {
-		struct testsuite_setting *setting = (struct testsuite_setting *) value;
+	const char *key;
+	struct testsuite_setting *setting;
 
+	while ( hash_table_iterate(itx, settings, &key, &setting) ) {
 		i_free(setting->identifier);
 		i_free(setting->value);
 		i_free(setting);
 	}
 
-	hash_table_iterate_deinit(&itx); 	
+	hash_table_iterate_deinit(&itx);
 
 	hash_table_destroy(&settings);
 }
@@ -52,7 +49,7 @@ void testsuite_settings_deinit(void)
 static const char *testsuite_setting_get
 (void *context ATTR_UNUSED, const char *identifier)
 {
-	struct testsuite_setting *setting = (struct testsuite_setting *) 
+	struct testsuite_setting *setting =
 		hash_table_lookup(settings, identifier);
 
 	if ( setting == NULL ) {
@@ -64,7 +61,7 @@ static const char *testsuite_setting_get
 
 void testsuite_setting_set(const char *identifier, const char *value)
 {
-	struct testsuite_setting *setting = (struct testsuite_setting *) 
+	struct testsuite_setting *setting =
 		hash_table_lookup(settings, identifier);
 
 	if ( setting != NULL ) {
@@ -74,14 +71,14 @@ void testsuite_setting_set(const char *identifier, const char *value)
 		setting = i_new(struct testsuite_setting, 1);
 		setting->identifier = i_strdup(identifier);
 		setting->value = i_strdup(value);
-	
-		hash_table_insert(settings, (void *) identifier, (void *) setting);
+
+		hash_table_insert(settings, identifier, setting);
 	}
 }
 
 void testsuite_setting_unset(const char *identifier)
 {
-	struct testsuite_setting *setting = (struct testsuite_setting *) 
+	struct testsuite_setting *setting =
 		hash_table_lookup(settings, identifier);
 
 	if ( setting != NULL ) {

@@ -1,12 +1,12 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "str-sanitize.h"
 #include "istream.h"
-#include "istream-crlf.h"
 #include "istream-header-filter.h"
+#include "ostream.h"
 
 #include "rfc2822.h"
 
@@ -15,8 +15,9 @@
 #include "sieve-address.h"
 #include "sieve-commands.h"
 #include "sieve-code.h"
+#include "sieve-message.h"
 #include "sieve-actions.h"
-#include "sieve-validator.h" 
+#include "sieve-validator.h"
 #include "sieve-generator.h"
 #include "sieve-interpreter.h"
 #include "sieve-code-dumper.h"
@@ -26,15 +27,15 @@
 
 #include <stdio.h>
 
-/* 
- * Configuration 
+/*
+ * Configuration
  */
 
 #define CMD_REDIRECT_DUPLICATE_KEEP (3600 * 24)
 
-/* 
- * Redirect command 
- * 
+/*
+ * Redirect command
+ *
  * Syntax
  *   redirect <address: string>
  */
@@ -44,19 +45,19 @@ static bool cmd_redirect_validate
 static bool cmd_redirect_generate
 	(const struct sieve_codegen_env *cgenv, struct sieve_command *cmd);
 
-const struct sieve_command_def cmd_redirect = { 
-	"redirect", 
+const struct sieve_command_def cmd_redirect = {
+	"redirect",
 	SCT_COMMAND,
-	1, 0, FALSE, FALSE, 
+	1, 0, FALSE, FALSE,
 	NULL, NULL,
 	cmd_redirect_validate,
 	NULL,
-	cmd_redirect_generate, 
-	NULL 
+	cmd_redirect_generate,
+	NULL
 };
 
-/* 
- * Redirect operation 
+/*
+ * Redirect operation
  */
 
 static bool cmd_redirect_operation_dump
@@ -64,37 +65,37 @@ static bool cmd_redirect_operation_dump
 static int cmd_redirect_operation_execute
 	(const struct sieve_runtime_env *renv, sieve_size_t *address);
 
-const struct sieve_operation_def cmd_redirect_operation = { 
+const struct sieve_operation_def cmd_redirect_operation = {
 	"REDIRECT",
-	NULL, 
+	NULL,
 	SIEVE_OPERATION_REDIRECT,
-	cmd_redirect_operation_dump, 
-	cmd_redirect_operation_execute 
+	cmd_redirect_operation_dump,
+	cmd_redirect_operation_execute
 };
 
-/* 
- * Redirect action 
+/*
+ * Redirect action
  */
 
 static bool act_redirect_equals
-	(const struct sieve_script_env *senv, const struct sieve_action *act1, 
+	(const struct sieve_script_env *senv, const struct sieve_action *act1,
 		const struct sieve_action *act2);
 static int act_redirect_check_duplicate
 	(const struct sieve_runtime_env *renv,
-		const struct sieve_action *act, 
+		const struct sieve_action *act,
 		const struct sieve_action *act_other);
 static void act_redirect_print
 	(const struct sieve_action *action, const struct sieve_result_print_env *rpenv,
-		bool *keep);	
-static bool act_redirect_commit
+		bool *keep);
+static int act_redirect_commit
 	(const struct sieve_action *action, const struct sieve_action_exec_env *aenv,
 		void *tr_context, bool *keep);
-		
+
 const struct sieve_action_def act_redirect = {
 	"redirect",
 	SIEVE_ACTFLAG_TRIES_DELIVER,
 	act_redirect_equals,
-	act_redirect_check_duplicate, 
+	act_redirect_check_duplicate,
 	NULL,
 	act_redirect_print,
 	NULL, NULL,
@@ -106,13 +107,14 @@ struct act_redirect_context {
 	const char *to_address;
 };
 
-/* 
- * Validation 
+/*
+ * Validation
  */
 
 static bool cmd_redirect_validate
-(struct sieve_validator *validator, struct sieve_command *cmd) 
+(struct sieve_validator *validator, struct sieve_command *cmd)
 {
+	struct sieve_instance *svinst = sieve_validator_svinst(validator);
 	struct sieve_ast_argument *arg = cmd->first_positional;
 
 	/* Check and activate address argument */
@@ -151,15 +153,22 @@ static bool cmd_redirect_validate
 		return ( norm_address != NULL );
 	}
 
+	if ( svinst->max_redirects == 0 ) {
+		sieve_command_validate_error(validator, cmd,
+			"local policy prohibits the use of a redirect action");
+		return FALSE;
+	}
+
+
 	return TRUE;
 }
 
 /*
  * Code generation
  */
- 
+
 static bool cmd_redirect_generate
-(const struct sieve_codegen_env *cgenv, struct sieve_command *cmd) 
+(const struct sieve_codegen_env *cgenv, struct sieve_command *cmd)
 {
 	sieve_operation_emit(cgenv->sblock, NULL,  &cmd_redirect_operation);
 
@@ -167,10 +176,10 @@ static bool cmd_redirect_generate
 	return sieve_generate_arguments(cgenv, cmd, NULL);
 }
 
-/* 
+/*
  * Code dump
  */
- 
+
 static bool cmd_redirect_operation_dump
 (const struct sieve_dumptime_env *denv, sieve_size_t *address)
 {
@@ -204,12 +213,12 @@ static int cmd_redirect_operation_execute
 	 */
 
 	/* Optional operands (side effects only) */
-	if ( sieve_action_opr_optional_read(renv, address, NULL, &ret, &slist) != 0 ) 
+	if ( sieve_action_opr_optional_read(renv, address, NULL, &ret, &slist) != 0 )
 		return ret;
 
 	/* Read the address */
-	if ( (ret=sieve_opr_string_read_ex(renv, address, "address", &redirect, 
-		&literal_address)) <= 0 )
+	if ( (ret=sieve_opr_string_read_ex
+		(renv, address, "address", FALSE, &redirect, &literal_address)) <= 0 )
 		return ret;
 
 	/*
@@ -232,6 +241,12 @@ static int cmd_redirect_operation_execute
 		norm_address = str_c(redirect);
 	}
 
+	if ( svinst->max_redirects == 0 ) {
+		sieve_runtime_error(renv, NULL,
+			"local policy prohibits the use of a redirect action");
+		return SIEVE_EXEC_FAILURE;
+	}
+
 	if ( sieve_runtime_trace_active(renv, SIEVE_TRLVL_ACTIONS) ) {
 		sieve_runtime_trace(renv, 0, "redirect action");
 		sieve_runtime_trace_descend(renv);
@@ -247,7 +262,7 @@ static int cmd_redirect_operation_execute
 
 	if ( sieve_result_add_action
 		(renv, NULL, &act_redirect, slist, (void *) act,
-			svinst->max_redirects) < 0 )
+			svinst->max_redirects, TRUE) < 0 )
 		return SIEVE_EXEC_FAILURE;
 
 	return SIEVE_EXEC_OK;
@@ -258,130 +273,130 @@ static int cmd_redirect_operation_execute
  */
 
 static bool act_redirect_equals
-(const struct sieve_script_env *senv ATTR_UNUSED, 
+(const struct sieve_script_env *senv ATTR_UNUSED,
 	const struct sieve_action *act1, const struct sieve_action *act2)
 {
 	struct act_redirect_context *rd_ctx1 =
 		(struct act_redirect_context *) act1->context;
-	struct act_redirect_context *rd_ctx2 = 
+	struct act_redirect_context *rd_ctx2 =
 		(struct act_redirect_context *) act2->context;
 
 	/* Address is already normalized */
 	return ( sieve_address_compare
 		(rd_ctx1->to_address, rd_ctx2->to_address, TRUE) == 0 );
 }
- 
+
 static int act_redirect_check_duplicate
 (const struct sieve_runtime_env *renv ATTR_UNUSED,
-	const struct sieve_action *act, 
+	const struct sieve_action *act,
 	const struct sieve_action *act_other)
 {
 	return ( act_redirect_equals(renv->scriptenv, act, act_other) ? 1 : 0 );
 }
 
 static void act_redirect_print
-(const struct sieve_action *action, 
-	const struct sieve_result_print_env *rpenv, bool *keep)	
+(const struct sieve_action *action,
+	const struct sieve_result_print_env *rpenv, bool *keep)
 {
-	struct act_redirect_context *ctx = 
+	struct act_redirect_context *ctx =
 		(struct act_redirect_context *) action->context;
-	
-	sieve_result_action_printf(rpenv, "redirect message to: %s", 
+
+	sieve_result_action_printf(rpenv, "redirect message to: %s",
 		str_sanitize(ctx->to_address, 128));
-	
+
 	*keep = FALSE;
 }
 
-static bool act_redirect_send	
-(const struct sieve_action_exec_env *aenv, struct act_redirect_context *ctx)
+static int act_redirect_send
+(const struct sieve_action_exec_env *aenv, struct mail *mail,
+	struct act_redirect_context *ctx)
 {
-	static const char *hide_headers[] = 
+	static const char *hide_headers[] =
 		{ "Return-Path", "X-Sieve", "X-Sieve-Redirected-From" };
 
-	const struct sieve_message_data *msgdata = aenv->msgdata;
+	struct sieve_message_context *msgctx = aenv->msgctx;
 	const struct sieve_script_env *senv = aenv->scriptenv;
-	const char *sender = sieve_message_get_sender(aenv->msgctx);
-	const char *recipient = sieve_message_get_final_recipient(aenv->msgctx);
-	struct istream *input, *crlf_input;
+	const char *sender = sieve_message_get_sender(msgctx);
+	const char *recipient = sieve_message_get_final_recipient(msgctx);
+	struct istream *input;
+	struct ostream *output;
 	void *smtp_handle;
-	FILE *f;
-	const unsigned char *data;
-	size_t size;
-	int ret;
-	
+
 	/* Just to be sure */
 	if ( !sieve_smtp_available(senv) ) {
 		sieve_result_global_warning
 			(aenv, "redirect action has no means to send mail.");
-		return TRUE;
+		return SIEVE_EXEC_FAILURE;
 	}
-	
-	if (mail_get_stream(msgdata->mail, NULL, NULL, &input) < 0)
-		return FALSE;
-		
+
+	if (mail_get_stream(mail, NULL, NULL, &input) < 0)
+		return SIEVE_EXEC_TEMP_FAILURE;
+
 	/* Open SMTP transport */
-	smtp_handle = sieve_smtp_open(senv, ctx->to_address, sender, &f);
+	smtp_handle = sieve_smtp_open(senv, ctx->to_address, sender, &output);
 
 	/* Remove unwanted headers */
 	input = i_stream_create_header_filter
-		(input, HEADER_FILTER_EXCLUDE, hide_headers,
-			N_ELEMENTS(hide_headers), null_header_filter_callback, NULL);
-	
-	/* Make sure the message contains CRLF consistently */
-	crlf_input = i_stream_create_crlf(input);
+		(input, HEADER_FILTER_EXCLUDE | HEADER_FILTER_NO_CR, hide_headers,
+			N_ELEMENTS(hide_headers), *null_header_filter_callback, (void *)NULL);
 
-	/* Prepend sieve headers (should not affect signatures) */
-	rfc2822_header_field_write(f, "X-Sieve", SIEVE_IMPLEMENTATION);
-	if ( recipient != NULL )
-		rfc2822_header_field_write(f, "X-Sieve-Redirected-From", recipient);
+	T_BEGIN {
+		string_t *hdr = t_str_new(256);
 
-	/* Pipe the message to the outgoing SMTP transport */
-	while ((ret = i_stream_read_data(crlf_input, &data, &size, 0)) > 0) {	
-		if (fwrite(data, size, 1, f) == 0)
-			break;
-		i_stream_skip(crlf_input, size);
-	}
+		/* Prepend sieve headers (should not affect signatures) */
+		rfc2822_header_append(hdr, "X-Sieve", SIEVE_IMPLEMENTATION, FALSE, NULL);
+		if ( recipient != NULL ) {
+			rfc2822_header_append
+				(hdr, "X-Sieve-Redirected-From", recipient, FALSE, NULL);
+		}
+		o_stream_send(output, str_data(hdr), str_len(hdr));
+	} T_END;
 
-	i_stream_unref(&crlf_input);
-	i_stream_unref(&input);
+	o_stream_send_istream(output, input);
+  i_stream_unref(&input);
 
 	/* Close SMTP transport */
 	if ( !sieve_smtp_close(senv, smtp_handle) ) {
-		sieve_result_global_error(aenv, 
+		sieve_result_global_error(aenv,
 			"failed to redirect message to <%s> "
 			"(refer to server log for more information)",
 			str_sanitize(ctx->to_address, 80));
-		return FALSE;
+		return SIEVE_EXEC_FAILURE;
 	}
-	
-	return TRUE;
+
+	return SIEVE_EXEC_OK;
 }
 
-static bool act_redirect_commit
-(const struct sieve_action *action, 
+static int act_redirect_commit
+(const struct sieve_action *action,
 	const struct sieve_action_exec_env *aenv, void *tr_context ATTR_UNUSED,
 	bool *keep)
 {
 	struct act_redirect_context *ctx =
 		(struct act_redirect_context *) action->context;
+	struct mail *mail =	( action->mail != NULL ?
+		action->mail : sieve_message_get_mail(aenv->msgctx) );
 	const struct sieve_message_data *msgdata = aenv->msgdata;
 	const struct sieve_script_env *senv = aenv->scriptenv;
+	const char *orig_recipient = sieve_message_get_orig_recipient(aenv->msgctx);
 	const char *dupeid;
+	int ret;
 
 	/* Prevent mail loops if possible */
-	dupeid = msgdata->id == NULL ? 
-		NULL : t_strdup_printf("%s-%s", msgdata->id, ctx->to_address);
+	dupeid = msgdata->id == NULL ? NULL : t_strdup_printf
+		("%s-%s-%s", msgdata->id, orig_recipient, ctx->to_address);
 	if (dupeid != NULL) {
 		/* Check whether we've seen this message before */
 		if (sieve_action_duplicate_check(senv, dupeid, strlen(dupeid))) {
 			sieve_result_global_log(aenv, "discarded duplicate forward to <%s>",
 				str_sanitize(ctx->to_address, 128));
-			return TRUE;
+			*keep = FALSE;
+			return SIEVE_EXEC_OK;
 		}
 	}
 
 	/* Try to forward the message */
-	if ( act_redirect_send(aenv, ctx) ) {
+	if ( (ret=act_redirect_send(aenv, mail, ctx)) == SIEVE_EXEC_OK) {
 
 		/* Mark this message id as forwarded to the specified destination */
 		if (dupeid != NULL) {
@@ -389,8 +404,8 @@ static bool act_redirect_commit
 				ioloop_time + CMD_REDIRECT_DUPLICATE_KEEP);
 		}
 
-		sieve_result_global_log(aenv, "forwarded to <%s>", 
-			str_sanitize(ctx->to_address, 128));	
+		sieve_result_global_log(aenv, "forwarded to <%s>",
+			str_sanitize(ctx->to_address, 128));
 
 		/* Indicate that message was successfully forwarded */
 		aenv->exec_status->message_forwarded = TRUE;
@@ -398,10 +413,10 @@ static bool act_redirect_commit
 		/* Cancel implicit keep */
 		*keep = FALSE;
 
-		return TRUE;
+		return SIEVE_EXEC_OK;
 	}
- 
-	return FALSE;
+
+	return ret;
 }
 
 

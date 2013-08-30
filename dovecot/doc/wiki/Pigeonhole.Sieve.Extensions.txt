@@ -7,4 +7,4 @@ specific configuration and usage information:
  * <vacation and vacation-seconds> [Pigeonhole.Sieve.Extensions.Vacation.txt]
  * <spamtest and virustest> [Pigeonhole.Sieve.Extensions.SpamtestVirustest.txt]
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

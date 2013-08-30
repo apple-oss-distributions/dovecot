@@ -1,7 +1,11 @@
 doveadm_moduledir = $(moduledir)/doveadm
 
+pkglibexecdir = $(libexecdir)/dovecot
+pkglibexec_PROGRAMS = quota-status
+
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
+	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-dict \
 	-I$(top_srcdir)/src/lib-index \
 	-I$(top_srcdir)/src/lib-mail \
@@ -10,6 +14,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage/index/maildir \
 	-I$(top_srcdir)/src/doveadm
 
+NOPLUGIN_LDFLAGS =
 lib10_doveadm_quota_plugin_la_LDFLAGS = -module -avoid-version
 lib10_quota_plugin_la_LDFLAGS = -module -avoid-version
 
@@ -26,8 +31,20 @@ quota_dist_sources = \
         quota-plugin.c \
 	quota-storage.c
 
+quota_common_objects = \
+	quota.lo \
+	quota-count.lo \
+	quota-fs.lo \
+	quota-dict.lo \
+	quota-dirsize.lo \
+	quota-maildir.lo \
+        quota-plugin.lo \
+	quota-storage.lo \
+	$(RQUOTA_XDR_LO)
+
 lib10_quota_plugin_la_SOURCES = $(quota_dist_sources)
 nodist_lib10_quota_plugin_la_SOURCES = $(RQUOTA_XDR)
+lib10_quota_plugin_la_LIBADD = $(QUOTA_LIBS)
 
 doveadm_module_LTLIBRARIES = \
 	lib10_doveadm_quota_plugin.la
@@ -35,8 +52,22 @@ doveadm_module_LTLIBRARIES = \
 lib10_doveadm_quota_plugin_la_SOURCES = \
 	doveadm-quota.c
 
+quota_status_SOURCES = \
+	quota-status.c
+
+quota_status_LDADD = \
+	$(quota_common_objects) \
+	$(LIBDOVECOT_STORAGE) \
+	$(LIBDOVECOT) \
+	$(QUOTA_LIBS)
+quota_status_DEPENDENCIES = \
+	$(quota_common_objects) \
+	$(LIBDOVECOT_STORAGE_DEPS) \
+	$(LIBDOVECOT_DEPS)
+
 if HAVE_RQUOTA
 RQUOTA_XDR = rquota_xdr.c
+RQUOTA_XDR_LO = rquota_xdr.lo
 #RQUOTA_X = /usr/include/rpcsvc/rquota.x
 RQUOTA_X = $(srcdir)/rquota.x
 rquota_xdr.c: Makefile $(RQUOTA_X)
@@ -58,7 +89,8 @@ quota-fs.lo: rquota.h
 
 endif
 
-noinst_HEADERS = \
+pkginc_libdir=$(pkgincludedir)
+pkginc_lib_HEADERS = \
 	quota.h \
 	quota-fs.h \
 	quota-plugin.h \

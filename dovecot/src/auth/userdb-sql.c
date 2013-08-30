@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "userdb.h"
@@ -67,6 +67,8 @@ static void sql_query_callback(struct sql_result *sql_result,
 	int ret;
 
 	ret = sql_result_next_row(sql_result);
+	if (ret >= 0)
+		db_sql_success(module->conn);
 	if (ret < 0) {
 		if (!module->conn->default_user_query) {
 			auth_request_log_error(auth_request, "sql",
@@ -134,34 +136,35 @@ static void sql_iter_query_callback(struct sql_result *sql_result,
 	sql_result_ref(sql_result);
 
 	if (ctx->freed)
-		userdb_sql_iterate_deinit(&ctx->ctx);
+		(void)userdb_sql_iterate_deinit(&ctx->ctx);
 	else if (ctx->call_iter)
 		userdb_sql_iterate_next(&ctx->ctx);
 }
 
 static struct userdb_iterate_context *
-userdb_sql_iterate_init(struct userdb_module *userdb,
+userdb_sql_iterate_init(struct auth_request *auth_request,
 			userdb_iter_callback_t *callback, void *context)
 {
-	static struct var_expand_table static_tab[] = {
-		/* nothing for now, but e.g. %{hostname} can be used */
-		{ '\0', NULL, NULL }
-	};
+	struct userdb_module *_module = auth_request->userdb->userdb;
 	struct sql_userdb_module *module =
-		(struct sql_userdb_module *)userdb;
+		(struct sql_userdb_module *)_module;
 	struct sql_userdb_iterate_context *ctx;
 	string_t *query;
 
 	query = t_str_new(512);
-	var_expand(query, module->conn->set.iterate_query, static_tab);
+	var_expand(query, module->conn->set.iterate_query,
+		   auth_request_get_var_expand_table(auth_request,
+						     userdb_sql_escape));
 
 	ctx = i_new(struct sql_userdb_iterate_context, 1);
-	ctx->ctx.userdb = userdb;
+	ctx->ctx.auth_request = auth_request;
 	ctx->ctx.callback = callback;
 	ctx->ctx.context = context;
+	auth_request_ref(auth_request);
 
 	sql_query(module->conn->db, str_c(query),
 		  sql_iter_query_callback, ctx);
+	auth_request_log_debug(auth_request, "sql", "%s", str_c(query));
 	return &ctx->ctx;
 }
 
@@ -199,7 +202,7 @@ static void userdb_sql_iterate_next(struct userdb_iterate_context *_ctx)
 {
 	struct sql_userdb_iterate_context *ctx =
 		(struct sql_userdb_iterate_context *)_ctx;
-	struct userdb_module *_module = _ctx->userdb;
+	struct userdb_module *_module = _ctx->auth_request->userdb->userdb;
 	struct sql_userdb_module *module = (struct sql_userdb_module *)_module;
 	const char *user;
 	int ret;
@@ -211,6 +214,8 @@ static void userdb_sql_iterate_next(struct userdb_iterate_context *_ctx)
 	}
 
 	ret = sql_result_next_row(ctx->result);
+	if (ret >= 0)
+		db_sql_success(module->conn);
 	if (ret > 0) {
 		if (userdb_sql_iterate_get_user(ctx, &user) < 0)
 			i_error("sql: Iterate query didn't return 'user' field");
@@ -242,6 +247,7 @@ static int userdb_sql_iterate_deinit(struct userdb_iterate_context *_ctx)
 		(struct sql_userdb_iterate_context *)_ctx;
 	int ret = _ctx->failed ? -1 : 0;
 
+	auth_request_unref(&_ctx->auth_request);
 	if (ctx->result == NULL) {
 		/* sql query hasn't finished yet */
 		ctx->freed = TRUE;
@@ -259,7 +265,7 @@ userdb_sql_preinit(pool_t pool, const char *args)
 	struct sql_userdb_module *module;
 
 	module = p_new(pool, struct sql_userdb_module, 1);
-	module->conn = db_sql_init(args);
+	module->conn = db_sql_init(args, TRUE);
 
 	module->module.cache_key =
 		auth_cache_parse_key(pool, module->conn->set.user_query);
@@ -276,7 +282,7 @@ static void userdb_sql_init(struct userdb_module *_module)
 	_module->blocking = (flags & SQL_DB_FLAG_BLOCKING) != 0;
 
 	if (!_module->blocking || worker)
-		sql_connect(module->conn->db);
+		db_sql_connect(module->conn);
 }
 
 static void userdb_sql_deinit(struct userdb_module *_module)

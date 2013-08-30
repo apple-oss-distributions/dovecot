@@ -13,19 +13,20 @@ struct quota {
 	struct mail_user *user;
 	struct quota_settings *set;
 
-	ARRAY_DEFINE(roots, struct quota_root *);
-	ARRAY_DEFINE(namespaces, struct mail_namespace *);
+	ARRAY(struct quota_root *) roots;
+	ARRAY(struct mail_namespace *) namespaces;
 };
 
 struct quota_settings {
 	pool_t pool;
 
-	ARRAY_DEFINE(root_sets, struct quota_root_settings *);
+	ARRAY(struct quota_root_settings *) root_sets;
 	int (*test_alloc)(struct quota_transaction_context *ctx,
 			  uoff_t size, bool *too_large_r);
 
 	const char *quota_exceeded_msg;
 	unsigned int debug:1;
+	unsigned int initialized:1;
 };
 
 struct quota_rule {
@@ -33,7 +34,7 @@ struct quota_rule {
 
 	int64_t bytes_limit, count_limit;
 	/* relative to default_rule */
-	unsigned int bytes_percent, count_percent;
+	int bytes_percent, count_percent;
 
 	/* Don't include this mailbox in quota */
 	unsigned int ignore:1;
@@ -66,7 +67,7 @@ struct quota_backend_vfuncs {
 	int (*update)(struct quota_root *root, 
 		      struct quota_transaction_context *ctx);
 	bool (*match_box)(struct quota_root *root, struct mailbox *box);
-
+	void (*flush)(struct quota_root *root);
 };
 
 struct quota_backend {
@@ -84,8 +85,13 @@ struct quota_root_settings {
 
 	const struct quota_backend *backend;
 	struct quota_rule default_rule;
-	ARRAY_DEFINE(rules, struct quota_rule);
-	ARRAY_DEFINE(warning_rules, struct quota_warning_rule);
+	ARRAY(struct quota_rule) rules;
+	ARRAY(struct quota_warning_rule) warning_rules;
+
+	/* If user is under quota before saving a mail, allow the last mail to
+	   bring the user over quota by this many bytes. */
+	uint64_t last_mail_max_extra_bytes;
+	struct quota_rule grace_rule;
 
 	/* Limits in default_rule override backend's quota limits */
 	unsigned int force_default_rule:1;
@@ -101,7 +107,10 @@ struct quota_root {
 	/* this quota root applies only to this namespace. it may also be
 	   a public namespace without an owner. */
 	struct mail_namespace *ns;
-	/* this is set in quota init(), because namespaces aren't known yet */
+	/* this is set in quota init(), because namespaces aren't known yet.
+	   when accessing shared users the ns_prefix may be non-NULL but
+	   ns=NULL, so when checking if quota root applies only to a specific
+	   namespace use the ns_prefix!=NULL check. */
 	const char *ns_prefix;
 
 	/* initially the same as set->default_rule.*_limit, but some backends
@@ -113,7 +122,7 @@ struct quota_root {
 	int resource_ret;
 
 	/* Module-specific contexts. See quota_module_id. */
-	ARRAY_DEFINE(quota_module_contexts, void);
+	ARRAY(void) quota_module_contexts;
 
 	/* don't enforce quota when saving */
 	unsigned int no_enforcing:1;
@@ -131,14 +140,23 @@ struct quota_transaction_context {
 
 	int64_t bytes_used, count_used;
 	/* how many bytes/mails can be saved until limit is reached.
-	   (set once, not updated by bytes_used/count_used) */
-	uint64_t bytes_ceil, count_ceil;
+	   (set once, not updated by bytes_used/count_used).
+
+	   if last_mail_max_extra_bytes>0, the bytes_ceil is initially
+	   increased by that much, while bytes_ceil2 contains the real ceiling.
+	   after the first allocation is done, bytes_ceil is set to
+	   bytes_ceil2. */
+	uint64_t bytes_ceil, bytes_ceil2, count_ceil;
+	/* how many bytes/mails we are over quota (either *_ceil or *_over
+	   is always zero) */
+	uint64_t bytes_over, count_over;
 
 	struct mail *tmp_mail;
 
 	unsigned int limits_set:1;
 	unsigned int failed:1;
 	unsigned int recalculate:1;
+	unsigned int sync_transaction:1;
 };
 
 /* Register storage to all user's quota roots. */

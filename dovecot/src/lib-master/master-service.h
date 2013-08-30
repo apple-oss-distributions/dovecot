@@ -1,7 +1,10 @@
 #ifndef MASTER_SERVICE_H
 #define MASTER_SERVICE_H
 
-#include "network.h"
+#include "net.h"
+
+#include <unistd.h> /* for getopt() opt* variables */
+#include <stdio.h> /* for getopt() opt* variables in Solaris */
 
 enum master_service_flags {
 	/* stdin/stdout already contains a client which we want to serve */
@@ -12,7 +15,8 @@ enum master_service_flags {
 	   _FLAG_STANDALONE is set, logging is done to stderr. */
 	MASTER_SERVICE_FLAG_DONT_LOG_TO_STDERR	= 0x04,
 	/* Service is going to do multiple configuration lookups,
-	   keep the connection to config service open. */
+	   keep the connection to config service open. Also opens the config
+	   socket before dropping privileges. */
 	MASTER_SERVICE_FLAG_KEEP_CONFIG_OPEN	= 0x08,
 	/* Don't read settings, but use whatever is in environment */
 	MASTER_SERVICE_FLAG_NO_CONFIG_SETTINGS	= 0x10,
@@ -22,12 +26,19 @@ enum master_service_flags {
 	MASTER_SERVICE_FLAG_NO_IDLE_DIE		= 0x80,
 	/* Show number of connections in process title
 	   (only if verbose_proctitle setting is enabled) */
-	MASTER_SERVICE_FLAG_UPDATE_PROCTITLE	= 0x100
+	MASTER_SERVICE_FLAG_UPDATE_PROCTITLE	= 0x100,
+	/* SSL settings are always looked up when we have ssl listeners.
+	   This flag enables looking up SSL settings even without ssl
+	   listeners (i.e. the service does STARTTLS). */
+	MASTER_SERVICE_FLAG_USE_SSL_SETTINGS	= 0x200,
+	/* Don't initialize SSL context automatically. */
+	MASTER_SERVICE_FLAG_NO_SSL_INIT		= 0x400
 };
 
 struct master_service_connection {
 	int fd;
 	int listen_fd;
+	const char *name;
 
 	struct ip_addr remote_ip;
 	unsigned int remote_port;
@@ -56,7 +67,10 @@ int master_getopt(struct master_service *service);
 bool master_service_parse_option(struct master_service *service,
 				 int opt, const char *arg);
 /* Finish service initialization. The caller should drop privileges
-   before calling this. */
+   before calling this. This also notifies the master that the service was
+   successfully started and there shouldn't be any service throttling even if
+   it crashes afterwards, so this should be called after all of the
+   initialization code is finished. */
 void master_service_init_finish(struct master_service *service);
 
 /* Clean environment from everything except the ones listed in
@@ -76,6 +90,11 @@ void master_service_set_die_with_master(struct master_service *service,
    done forcibly. If NULL, the service is stopped immediately. */
 void master_service_set_die_callback(struct master_service *service,
 				     void (*callback)(void));
+/* "idle callback" is called when master thinks we're idling and asks us to
+   die. We'll do it only if the idle callback returns TRUE. This callback isn't
+   even called if the master service code knows that we're handling clients. */
+void master_service_set_idle_die_callback(struct master_service *service,
+					  bool (*callback)(void));
 /* Call the given callback when there are no available connections and master
    has indicated that it can't create any more processes to handle requests.
    The callback could decide to kill one of the existing connections. */
@@ -87,6 +106,15 @@ void master_service_set_client_limit(struct master_service *service,
 				     unsigned int client_limit);
 /* Returns the maximum number of clients we can handle. */
 unsigned int master_service_get_client_limit(struct master_service *service);
+/* Returns how many processes of this type can be created before reaching the
+   limit. */
+unsigned int master_service_get_process_limit(struct master_service *service);
+/* Returns service { process_min_avail } */
+unsigned int master_service_get_process_min_avail(struct master_service *service);
+/* Returns the service's idle_kill timeout in seconds. Normally master handles
+   sending the kill request when the process has no clients, but some services
+   with permanent client connections may need to handle this themselves. */
+unsigned int master_service_get_idle_kill_secs(struct master_service *service);
 
 /* Set maximum number of client connections we will handle before shutting
    down. */
@@ -108,7 +136,8 @@ const char *master_service_get_name(struct master_service *service);
 
 /* Start the service. Blocks until finished */
 void master_service_run(struct master_service *service,
-			master_service_connection_callback_t *callback);
+			master_service_connection_callback_t *callback)
+	ATTR_NULL(2);
 /* Stop a running service. */
 void master_service_stop(struct master_service *service);
 /* Stop once we're done serving existing new connections, but don't accept
@@ -116,11 +145,17 @@ void master_service_stop(struct master_service *service);
 void master_service_stop_new_connections(struct master_service *service);
 /* Returns TRUE if we've received a SIGINT/SIGTERM and we've decided to stop. */
 bool master_service_is_killed(struct master_service *service);
+/* Returns TRUE if our master process is already stopped. This process may or
+   may not be dying itself. */
+bool master_service_is_master_stopped(struct master_service *service);
 
 /* Send command to anvil process, if we have fd to it. */
 void master_service_anvil_send(struct master_service *service, const char *cmd);
 /* Call to accept the client connection. Otherwise the connection is closed. */
 void master_service_client_connection_accept(struct master_service_connection *conn);
+/* Used to create "extra client connections" outside the common accept()
+   method. */
+void master_service_client_connection_created(struct master_service *service);
 /* Call whenever a client connection is destroyed. */
 void master_service_client_connection_destroyed(struct master_service *service);
 
@@ -132,5 +167,9 @@ void master_service_deinit(struct master_service **service);
    VERSION <tab> service_name <tab> major version <tab> minor version */
 bool version_string_verify(const char *line, const char *service_name,
 			   unsigned major_version);
+/* Same as version_string_verify(), but return the minor version. */
+bool version_string_verify_full(const char *line, const char *service_name,
+				unsigned major_version,
+				unsigned int *minor_version_r);
 
 #endif

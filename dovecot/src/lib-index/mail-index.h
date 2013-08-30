@@ -3,11 +3,12 @@
 
 #include "file-lock.h"
 #include "fsync-mode.h"
+#include "guid.h"
 #include "mail-types.h"
 #include "seq-range-array.h"
 
 #define MAIL_INDEX_MAJOR_VERSION 7
-#define MAIL_INDEX_MINOR_VERSION 2
+#define MAIL_INDEX_MINOR_VERSION 3
 
 #define MAIL_INDEX_HEADER_MIN_SIZE 120
 
@@ -26,7 +27,10 @@ enum mail_index_open_flags {
 	MAIL_INDEX_OPEN_FLAG_KEEP_BACKUPS	= 0x100,
 	/* If we run out of disk space, fail modifications instead of moving
 	   indexes to memory. */
-	MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY	= 0x200
+	MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY	= 0x200,
+	/* We're only going to save new messages to the index.
+	   Avoid unnecessary reads. */
+	MAIL_INDEX_OPEN_FLAG_SAVEONLY		= 0x400
 };
 
 enum mail_index_header_compat_flags {
@@ -41,9 +45,11 @@ enum mail_index_header_flag {
 
 enum mail_index_mail_flags {
 	/* For private use by backend. Replacing flags doesn't change this. */
-	MAIL_INDEX_MAIL_FLAG_BACKEND	= 0x40,
+	MAIL_INDEX_MAIL_FLAG_BACKEND		= 0x40,
 	/* Message flags haven't been written to backend */
-	MAIL_INDEX_MAIL_FLAG_DIRTY	= 0x80
+	MAIL_INDEX_MAIL_FLAG_DIRTY		= 0x80,
+	/* Force updating this message's modseq via a flag update record */
+	MAIL_INDEX_MAIL_FLAG_UPDATE_MODSEQ	= 0x100
 };
 
 #define MAIL_INDEX_FLAGS_MASK \
@@ -85,8 +91,8 @@ struct mail_index_header {
 	uint32_t log_file_tail_offset;
 	uint32_t log_file_head_offset;
 
-	uint64_t sync_size;
-	uint32_t sync_stamp;
+	uint64_t unused_old_sync_size;
+	uint32_t unused_old_sync_stamp;
 
 	/* daily first UIDs that have been added to index. */
 	uint32_t day_stamp;
@@ -119,16 +125,24 @@ enum mail_index_transaction_flags {
 	   have already committed a transaction that had changed the flags. */
 	MAIL_INDEX_TRANSACTION_FLAG_AVOID_FLAG_UPDATES	= 0x04,
 	/* fsync() this transaction (unless fsyncs are disabled) */
-	MAIL_INDEX_TRANSACTION_FLAG_FSYNC		= 0x08
+	MAIL_INDEX_TRANSACTION_FLAG_FSYNC		= 0x08,
+	/* Sync transaction describes changes to mailbox that already happened
+	   to another mailbox with whom we're syncing with (dsync) */
+	MAIL_INDEX_TRANSACTION_FLAG_SYNC		= 0x10
 };
 
 enum mail_index_sync_type {
-	MAIL_INDEX_SYNC_TYPE_APPEND		= 0x01,
 	MAIL_INDEX_SYNC_TYPE_EXPUNGE		= 0x02,
 	MAIL_INDEX_SYNC_TYPE_FLAGS		= 0x04,
 	MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD	= 0x08,
-	MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE	= 0x10,
-	MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET	= 0x20
+	MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE	= 0x10
+};
+
+enum mail_index_fsync_mask {
+	MAIL_INDEX_FSYNC_MASK_APPENDS	= 0x01,
+	MAIL_INDEX_FSYNC_MASK_EXPUNGES	= 0x02,
+	MAIL_INDEX_FSYNC_MASK_FLAGS	= 0x04,
+	MAIL_INDEX_FSYNC_MASK_KEYWORDS	= 0x08
 };
 
 enum mail_index_sync_flags {
@@ -143,7 +157,8 @@ enum mail_index_sync_flags {
 	MAIL_INDEX_SYNC_FLAG_REQUIRE_CHANGES	= 0x08,
 	/* Create the transaction with FSYNC flag */
 	MAIL_INDEX_SYNC_FLAG_FSYNC		= 0x10,
-	/* If we see "delete index" request transaction, finish it */
+	/* If we see "delete index" request transaction, finish it.
+	   This flag also allows committing more changes to a deleted index. */
 	MAIL_INDEX_SYNC_FLAG_DELETING_INDEX	= 0x20
 };
 
@@ -168,12 +183,13 @@ struct mail_index_sync_rec {
 	unsigned int keyword_idx;
 
 	/* MAIL_INDEX_SYNC_TYPE_EXPUNGE: */
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 };
 
 enum mail_index_view_sync_type {
 	/* Flags or keywords changed */
-	MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS		= 0x01
+	MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS		= 0x01,
+	MAIL_INDEX_VIEW_SYNC_TYPE_MODSEQ	= 0x02
 };
 
 struct mail_index_view_sync_rec {
@@ -208,13 +224,18 @@ void mail_index_free(struct mail_index **index);
 /* Specify how often to do fsyncs. If mode is FSYNC_MODE_OPTIMIZED, the mask
    can be used to specify which transaction types to fsync. */
 void mail_index_set_fsync_mode(struct mail_index *index, enum fsync_mode mode,
-			       enum mail_index_sync_type mask);
+			       enum mail_index_fsync_mask mask);
 void mail_index_set_permissions(struct mail_index *index,
 				mode_t mode, gid_t gid, const char *gid_origin);
-/* Set locking method and maximum time to wait for a lock (-1U = default). */
+/* Set locking method and maximum time to wait for a lock
+   (UINT_MAX = default). */
 void mail_index_set_lock_method(struct mail_index *index,
 				enum file_lock_method lock_method,
 				unsigned int max_timeout_secs);
+/* When creating a new index file or reseting an existing one, add the given
+   extension header data immediately to it. */
+void mail_index_set_ext_init_data(struct mail_index *index, uint32_t ext_id,
+				  const void *data, size_t size);
 
 /* Open index. Returns 1 if ok, 0 if index doesn't exist and CREATE flags
    wasn't given, -1 if error. */
@@ -236,7 +257,8 @@ struct mail_cache *mail_index_get_cache(struct mail_index *index);
 /* Refresh index so mail_index_lookup*() will return latest values. Note that
    immediately after this call there may already be changes, so if you need to
    rely on validity of the returned values, use some external locking for it. */
-int mail_index_refresh(struct mail_index *index);
+int ATTR_NOWARN_UNUSED_RESULT
+mail_index_refresh(struct mail_index *index);
 
 /* View can be used to look into index. Sequence numbers inside view change
    only when you synchronize it. The view acquires required locks
@@ -358,6 +380,9 @@ void mail_index_mark_corrupted(struct mail_index *index);
 /* Check and fix any found problems. Returns -1 if we couldn't lock for sync,
    0 if everything went ok. */
 int mail_index_fsck(struct mail_index *index);
+/* Returns TRUE if mail_index_fsck() has been called since the last
+   mail_index_reset_fscked() call. */
+bool mail_index_reset_fscked(struct mail_index *index);
 
 /* Synchronize changes in view. You have to go through all records, or view
    will be marked inconsistent. Only sync_mask type records are
@@ -417,10 +442,11 @@ void mail_index_lookup_first(struct mail_index_view *view,
 /* Append a new record to index. */
 void mail_index_append(struct mail_index_transaction *t, uint32_t uid,
 		       uint32_t *seq_r);
-/* Assign UIDs for mails with uid=0 or uid<first_uid. Assumes that mailbox is
-   locked in a way that UIDs can be safely assigned. Returns UIDs for all
-   asigned messages, in their sequence order (so UIDs are not necessary
-   ascending). */
+/* Assign UIDs for mails with uid=0 or uid<first_uid. All the assigned UIDs
+   are higher than the highest unassigned UID (i.e. it doesn't try to fill UID
+   gaps). Assumes that mailbox is locked in a way that UIDs can be safely
+   assigned. Returns UIDs for all asigned messages, in their sequence order
+   (so UIDs are not necessary ascending). */
 void mail_index_append_finish_uids(struct mail_index_transaction *t,
 				   uint32_t first_uid,
 				   ARRAY_TYPE(seq_range) *uids_r);
@@ -429,7 +455,7 @@ void mail_index_append_finish_uids(struct mail_index_transaction *t,
 void mail_index_expunge(struct mail_index_transaction *t, uint32_t seq);
 /* Like mail_index_expunge(), but also write message GUID to transaction log. */
 void mail_index_expunge_guid(struct mail_index_transaction *t, uint32_t seq,
-			     const uint8_t guid_128[MAIL_GUID_128_SIZE]);
+			     const guid_128_t guid_128);
 /* Update flags in index. */
 void mail_index_update_flags(struct mail_index_transaction *t, uint32_t seq,
 			     enum modify_type modify_type,
@@ -438,6 +464,15 @@ void mail_index_update_flags_range(struct mail_index_transaction *t,
 				   uint32_t seq1, uint32_t seq2,
 				   enum modify_type modify_type,
 				   enum mail_flags flags);
+/* Specified attribute's value was changed. This is just a notification so the
+   change gets assigned its own modseq and any log readers can find out about
+   this change. */
+void mail_index_attribute_set(struct mail_index_transaction *t,
+			      bool pvt, const char *key,
+			      time_t timestamp, uint32_t value_len);
+/* Attribute was deleted. */
+void mail_index_attribute_unset(struct mail_index_transaction *t,
+				bool pvt, const char *key, time_t timestamp);
 /* Update message's modseq to be at least min_modseq. */
 void mail_index_update_modseq(struct mail_index_transaction *t, uint32_t seq,
 			      uint64_t min_modseq);
@@ -472,7 +507,7 @@ const ARRAY_TYPE(keywords) *mail_index_get_keywords(struct mail_index *index);
 /* Create a keyword list structure. */
 struct mail_keywords *
 mail_index_keywords_create(struct mail_index *index,
-			   const char *const keywords[]);
+			   const char *const keywords[]) ATTR_NULL(2);
 struct mail_keywords *
 mail_index_keywords_create_from_indexes(struct mail_index *index,
 					const ARRAY_TYPE(keyword_indexes)
@@ -520,6 +555,9 @@ bool mail_index_ext_lookup(struct mail_index *index, const char *name,
 void mail_index_ext_resize(struct mail_index_transaction *t, uint32_t ext_id,
 			   uint32_t hdr_size, uint16_t record_size,
 			   uint16_t record_align);
+/* Resize header, keeping the old record size. */
+void mail_index_ext_resize_hdr(struct mail_index_transaction *t,
+			       uint32_t ext_id, uint32_t hdr_size);
 
 /* Reset extension. Any updates for this extension which were issued before the
    writer had seen this reset are discarded. reset_id is used to figure this
@@ -560,8 +598,7 @@ void mail_index_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 				const void **data_r, bool *expunged_r);
 /* Get current extension sizes. Returns 1 if ok, 0 if extension doesn't exist
    in view. Any of the _r parameters may be NULL. */
-void mail_index_ext_get_size(struct mail_index_view *view,
-			     uint32_t ext_id, struct mail_index_map *map,
+void mail_index_ext_get_size(struct mail_index_map *map, uint32_t ext_id,
 			     uint32_t *hdr_size_r, uint16_t *record_size_r,
 			     uint16_t *record_align_r);
 /* Update extension header field. */
@@ -572,7 +609,8 @@ void mail_index_update_header_ext(struct mail_index_transaction *t,
    was already updated in this transaction, it's set to contain the data it's
    now overwriting. */
 void mail_index_update_ext(struct mail_index_transaction *t, uint32_t seq,
-			   uint32_t ext_id, const void *data, void *old_data);
+			   uint32_t ext_id, const void *data, void *old_data)
+	ATTR_NULL(5);
 /* Increase/decrease number in extension atomically. Returns the sum of the
    diffs for this seq. */
 int mail_index_atomic_inc_ext(struct mail_index_transaction *t,

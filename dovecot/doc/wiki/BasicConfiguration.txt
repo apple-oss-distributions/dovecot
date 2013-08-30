@@ -7,7 +7,7 @@ installation.
 Find Dovecot configuration file location using:
 
 ---%<-------------------------------------------------------------------------
-doveconf -n | head -1
+doveconf -n | head -n1
 ---%<-------------------------------------------------------------------------
 
 Your configuration file doesn't exist if you installed Dovecot from sources.
@@ -140,4 +140,4 @@ mail_privileged_group = mail
 Note: Specifying the privileged user must be done as shown. Simply adding
 'dovecot' user to the 'mail' group does /*not*/ grant write permission.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -52,7 +52,7 @@ static int file_copy_to_tmp(const char *srcpath, const char *tmppath,
 
 	if (fstat(fd_in, &st) < 0) {
 		i_error("fstat(%s) failed: %m", srcpath);
-		(void)close(fd_in);
+		i_close_fd(&fd_in);
 		return -1;
 	}
 
@@ -61,7 +61,7 @@ static int file_copy_to_tmp(const char *srcpath, const char *tmppath,
 	umask(old_umask);
 	if (fd_out == -1) {
 		i_error("open(%s, O_CREAT) failed: %m", tmppath);
-		(void)close(fd_in);
+		i_close_fd(&fd_in);
 		return -1;
 	}
 
@@ -69,7 +69,7 @@ static int file_copy_to_tmp(const char *srcpath, const char *tmppath,
 	if (fchown(fd_out, (uid_t)-1, st.st_gid) < 0 && errno != EPERM)
 		i_error("fchown(%s) failed: %m", tmppath);
 
-	input = i_stream_create_fd(fd_in, 0, FALSE);
+	input = i_stream_create_fd(fd_in, IO_BLOCK_SIZE, FALSE);
 	output = o_stream_create_fd_file(fd_out, 0, FALSE);
 
 	while ((ret = o_stream_send_istream(output, input)) > 0) ;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "array.h"
@@ -7,13 +7,14 @@
 
 #include <stdlib.h>
 
+struct command_hook {
+	command_hook_callback_t *pre;
+	command_hook_callback_t *post;
+};
+
 static const struct command imap4rev1_commands[] = {
-	{ "CAPABILITY",		cmd_capability,  0
-					/* APPLE - urlauth */
-					| COMMAND_FLAG_OK_FOR_SUBMIT_USER },
-	{ "LOGOUT",		cmd_logout,      COMMAND_FLAG_BREAKS_MAILBOX
-					/* APPLE - urlauth */
-					| COMMAND_FLAG_OK_FOR_SUBMIT_USER },
+	{ "CAPABILITY",		cmd_capability,  0 },
+	{ "LOGOUT",		cmd_logout,      COMMAND_FLAG_BREAKS_MAILBOX },
 	{ "NOOP",		cmd_noop,        COMMAND_FLAG_BREAKS_SEQS },
 
 	{ "APPEND",		cmd_append,      COMMAND_FLAG_BREAKS_SEQS },
@@ -37,7 +38,6 @@ static const struct command imap4rev1_commands[] = {
 	{ "FETCH",		cmd_fetch,       COMMAND_FLAG_USES_SEQS },
 	{ "SEARCH",		cmd_search,      COMMAND_FLAG_USES_SEQS },
 	{ "STORE",		cmd_store,       COMMAND_FLAG_USES_SEQS },
-	{ "UID",		cmd_uid,         0 },
 	{ "UID COPY",		cmd_copy,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID FETCH",		cmd_fetch,       COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID SEARCH",		cmd_search,      COMMAND_FLAG_BREAKS_SEQS },
@@ -46,29 +46,38 @@ static const struct command imap4rev1_commands[] = {
 #define IMAP4REV1_COMMANDS_COUNT N_ELEMENTS(imap4rev1_commands)
 
 static const struct command imap_ext_commands[] = {
+	/* IMAP extensions: */
 	{ "CANCELUPDATE",	cmd_cancelupdate,0 },
 	{ "ENABLE",		cmd_enable,      0 },
-	{ "ID",			cmd_id,          0
-					/* APPLE - urlauth */
-					| COMMAND_FLAG_OK_FOR_SUBMIT_USER },
+	{ "ID",			cmd_id,          0 },
 	{ "IDLE",		cmd_idle,        COMMAND_FLAG_BREAKS_SEQS |
 						 COMMAND_FLAG_REQUIRES_SYNC },
 	{ "NAMESPACE",		cmd_namespace,   0 },
+	{ "NOTIFY",		cmd_notify,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "SORT",		cmd_sort,        COMMAND_FLAG_USES_SEQS },
 	{ "THREAD",		cmd_thread,      COMMAND_FLAG_USES_SEQS },
 	{ "UID EXPUNGE",	cmd_uid_expunge, COMMAND_FLAG_BREAKS_SEQS },
+	{ "MOVE",		cmd_move,        COMMAND_FLAG_USES_SEQS |
+						 COMMAND_FLAG_BREAKS_SEQS },
+	{ "UID MOVE",		cmd_move,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID SORT",		cmd_sort,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID THREAD",		cmd_thread,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "UNSELECT",		cmd_unselect,    COMMAND_FLAG_BREAKS_MAILBOX },
 #ifdef APPLE_OS_X_SERVER
 	{ "XAPPLEPUSHSERVICE",	cmd_x_apple_push_service,    0 },
 #endif
-	{ "X-CANCEL",		cmd_x_cancel,    0 }
+	{ "X-CANCEL",		cmd_x_cancel,    0 },
+	{ "XLIST",		cmd_list,        0 },
+	/* IMAP URLAUTH (RFC4467): */
+	{ "GENURLAUTH",		cmd_genurlauth,  0 },
+	{ "RESETKEY",		cmd_resetkey,    0 },
+	{ "URLFETCH",		cmd_urlfetch,    0 }
 };
 #define IMAP_EXT_COMMANDS_COUNT N_ELEMENTS(imap_ext_commands)
 
 ARRAY_TYPE(command) imap_commands;
 static bool commands_unsorted;
+static ARRAY(struct command_hook) command_hooks;
 
 void command_register(const char *name, command_func_t *func,
 		      enum command_flags flags)
@@ -114,6 +123,45 @@ void command_unregister_array(const struct command *cmdarr, unsigned int count)
 	}
 }
 
+void command_hook_register(command_hook_callback_t *pre,
+			   command_hook_callback_t *post)
+{
+	struct command_hook hook;
+
+	hook.pre = pre;
+	hook.post = post;
+	array_append(&command_hooks, &hook, 1);
+}
+
+void command_hook_unregister(command_hook_callback_t *pre,
+			     command_hook_callback_t *post)
+{
+	const struct command_hook *hooks;
+	unsigned int i, count;
+
+	hooks = array_get(&command_hooks, &count);
+	for (i = 0; i < count; i++) {
+		if (hooks[i].pre == pre && hooks[i].post == post) {
+			array_delete(&command_hooks, i, 1);
+			return;
+		}
+	}
+	i_panic("command_hook_unregister(): hook not registered");
+}
+
+bool command_exec(struct client_command_context *cmd)
+{
+	const struct command_hook *hook;
+	bool ret;
+
+	array_foreach(&command_hooks, hook)
+		hook->pre(cmd);
+	ret = cmd->func(cmd);
+	array_foreach(&command_hooks, hook)
+		hook->post(cmd);
+	return ret;
+}
+
 static int command_cmp(const struct command *c1, const struct command *c2)
 {
 	return strcasecmp(c1->name, c2->name);
@@ -137,6 +185,7 @@ struct command *command_find(const char *name)
 void commands_init(void)
 {
 	i_array_init(&imap_commands, 64);
+	i_array_init(&command_hooks, 4);
 	commands_unsorted = FALSE;
 
         command_register_array(imap4rev1_commands, IMAP4REV1_COMMANDS_COUNT);
@@ -148,4 +197,5 @@ void commands_deinit(void)
         command_unregister_array(imap4rev1_commands, IMAP4REV1_COMMANDS_COUNT);
         command_unregister_array(imap_ext_commands, IMAP_EXT_COMMANDS_COUNT);
 	array_free(&imap_commands);
+	array_free(&command_hooks);
 }

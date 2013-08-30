@@ -14,9 +14,13 @@ Contents
 
          1. ArchLinux
 
-         2. Debian
+         2. RHEL 6 + clones (CentOS, Scientific Linux, ...)
 
-         3. OpenBSD
+         3. Debian
+
+         4. openSUSE
+
+         5. OpenBSD
 
 Getting the sources
 -------------------
@@ -82,6 +86,16 @@ running:
 pacman -S  pigeonhole
 ---%<-------------------------------------------------------------------------
 
+RHEL 6 + clones (CentOS, Scientific Linux, ...)
+-----------------------------------------------
+
+Pidgeonhole is available in the main repository, and can be installed by
+running:
+
+---%<-------------------------------------------------------------------------
+yum install dovecot-pigeonhole
+---%<-------------------------------------------------------------------------
+
 Debian
 ------
 
@@ -98,6 +112,12 @@ Older Debian releases have Sieve and ManageSieve support included in the main
 'dovecot-common' package, meaning that this is always available for those
 releases once Dovecot is installed.
 
+openSUSE
+--------
+
+It is part of the dovecot (dovecot21) rpm.  There is no need to install
+additional packages.
+
 OpenBSD
 -------
 
@@ -107,4 +127,4 @@ Pidgeonhole can be installed from packages by running:
 pkg_add dovecot-pigeonhole
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

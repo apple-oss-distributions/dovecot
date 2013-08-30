@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -6,7 +6,8 @@
 #include "dict-sql.h"
 #include "dict-private.h"
 
-static ARRAY_DEFINE(dict_drivers, struct dict *);
+static ARRAY(struct dict *) dict_drivers;
+static struct dict_iterate_context dict_iter_unsupported;
 
 static struct dict *dict_driver_lookup(const char *name)
 {
@@ -36,7 +37,7 @@ void dict_driver_register(struct dict *driver)
 void dict_driver_unregister(struct dict *driver)
 {
 	struct dict *const *dicts;
-	unsigned int idx = -1U;
+	unsigned int idx = UINT_MAX;
 
 	array_foreach(&dict_drivers, dicts) {
 		if (*dicts == driver) {
@@ -44,7 +45,7 @@ void dict_driver_unregister(struct dict *driver)
 			break;
 		}
 	}
-	i_assert(idx != -1U);
+	i_assert(idx != UINT_MAX);
 	array_delete(&dict_drivers, idx, 1);
 
 	if (array_count(&dict_drivers) == 0)
@@ -55,37 +56,48 @@ void dict_drivers_register_builtin(void)
 {
 	dict_driver_register(&dict_driver_client);
 	dict_driver_register(&dict_driver_file);
+	dict_driver_register(&dict_driver_memcached);
+	dict_driver_register(&dict_driver_memcached_ascii);
+	dict_driver_register(&dict_driver_redis);
 }
 
 void dict_drivers_unregister_builtin(void)
 {
 	dict_driver_unregister(&dict_driver_client);
 	dict_driver_unregister(&dict_driver_file);
+	dict_driver_unregister(&dict_driver_memcached);
+	dict_driver_unregister(&dict_driver_memcached_ascii);
+	dict_driver_unregister(&dict_driver_redis);
 }
 
-struct dict *dict_init(const char *uri, enum dict_data_type value_type,
-		       const char *username, const char *base_dir)
+int dict_init(const char *uri, enum dict_data_type value_type,
+	      const char *username, const char *base_dir, struct dict **dict_r,
+	      const char **error_r)
 {
 	struct dict *dict;
-	const char *p, *name;
+	const char *p, *name, *error;
 
 	i_assert(username != NULL);
 
 	p = strchr(uri, ':');
 	if (p == NULL) {
-		i_error("Dictionary URI is missing ':': %s", uri);
-		return NULL;
+		*error_r = t_strdup_printf("Dictionary URI is missing ':': %s",
+					   uri);
+		return -1;
 	}
 
-	T_BEGIN {
-		name = t_strdup_until(uri, p);
-		dict = dict_driver_lookup(name);
-		if (dict == NULL)
-			i_error("Unknown dict module: %s", name);
-	} T_END;
-
-	return dict == NULL ? NULL :
-		dict->v.init(dict, p+1, value_type, username, base_dir);
+	name = t_strdup_until(uri, p);
+	dict = dict_driver_lookup(name);
+	if (dict == NULL) {
+		*error_r = t_strdup_printf("Unknown dict module: %s", name);
+		return -1;
+	}
+	if (dict->v.init(dict, p+1, value_type, username, base_dir,
+			 dict_r, &error) < 0) {
+		*error_r = t_strdup_printf("dict %s: %s", name, error);
+		return -1;
+	}
+	return 0;
 }
 
 void dict_deinit(struct dict **_dict)
@@ -134,13 +146,19 @@ dict_iterate_init_multiple(struct dict *dict, const char *const *paths,
 	i_assert(paths[0] != NULL);
 	for (i = 0; paths[i] != NULL; i++)
 		i_assert(dict_key_prefix_is_valid(paths[i]));
+	if (dict->v.iterate_init == NULL) {
+		/* not supported by backend */
+		i_error("%s: dict iteration not supported", dict->name);
+		return &dict_iter_unsupported;
+	}
 	return dict->v.iterate_init(dict, paths, flags);
 }
 
 bool dict_iterate(struct dict_iterate_context *ctx,
 		  const char **key_r, const char **value_r)
 {
-	return ctx->dict->v.iterate(ctx, key_r, value_r);
+	return ctx == &dict_iter_unsupported ? FALSE :
+		ctx->dict->v.iterate(ctx, key_r, value_r);
 }
 
 int dict_iterate_deinit(struct dict_iterate_context **_ctx)
@@ -148,7 +166,8 @@ int dict_iterate_deinit(struct dict_iterate_context **_ctx)
 	struct dict_iterate_context *ctx = *_ctx;
 
 	*_ctx = NULL;
-	return ctx->dict->v.iterate_deinit(ctx);
+	return ctx == &dict_iter_unsupported ? -1 :
+		ctx->dict->v.iterate_deinit(ctx);
 }
 
 struct dict_transaction_context *dict_transaction_begin(struct dict *dict)
@@ -197,6 +216,15 @@ void dict_unset(struct dict_transaction_context *ctx,
 	i_assert(dict_key_prefix_is_valid(key));
 
 	ctx->dict->v.unset(ctx, key);
+	ctx->changed = TRUE;
+}
+
+void dict_append(struct dict_transaction_context *ctx,
+		 const char *key, const char *value)
+{
+	i_assert(dict_key_prefix_is_valid(key));
+
+	ctx->dict->v.append(ctx, key, value);
 	ctx->changed = TRUE;
 }
 

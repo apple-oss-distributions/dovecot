@@ -1,11 +1,11 @@
-.\" Copyright (c) 2010 Dovecot authors, see the included COPYING file
-.TH DOVECONF 1 "2011-05-11" "Dovecot v2.0" "Dovecot"
+.\" Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file
+.TH DOVECONF 1 "2012-01-29" "Dovecot v2.2" "Dovecot"
 .SH NAME
 doveconf \- Dovecot\(aqs configuration dumping utility
 .\"------------------------------------------------------------------------
 .SH SYNOPSIS
 .B doveconf
-.RB [ \-anNx ]
+.RB [ \-adnNSx ]
 [\fB\-c\fP \fIconfig\-file\fP]
 [\fB\-f\fP \fIfilter\fP]
 [\fB\-m\fP \fImodule\fP]
@@ -50,6 +50,11 @@ read configuration from the given
 By default
 .I @pkgsysconfdir@/dovecot.conf
 will be used.
+.\"---------------------------------
+.TP
+.B \-d
+Show the setting\(aqs default value instead of the one currently
+configured.
 .\"---------------------------------
 .TP
 .BI \-f \ filter
@@ -115,6 +120,10 @@ Show only settings with non\-default values.
 Show settings with non\-default values and explicitly set default values.
 .\"---------------------------------
 .TP
+.B \-S
+Dump settings in simplified machine parsable/readable format.
+.\"---------------------------------
+.TP
 .B \-x
 Expand configuration variables (e.g. \(Domail_plugins \(rA quota) and show
 file contents (from e.g. ssl_cert = </etc/ssl/certs/dovecot.pem).
@@ -141,7 +150,7 @@ for a specific connection.
 .fi
 .PP
 .B doveconf
-can be also used to convert v1.x configuration files into v2.0 format.
+can be also used to convert v1.x configuration files into v2.x format.
 .sp
 .nf
 .B doveconf \-n \-c /oldpath/dovecot.conf > \

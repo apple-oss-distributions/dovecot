@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2012 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  * 
  * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
  * computers and is subject to the terms and conditions of the Apple Software
@@ -136,7 +136,7 @@ struct db_od {
 	int					pos_cache_ttl;
 	int					neg_cache_ttl;
 	bool				use_getpwnam_ext;
-	struct hash_table  *users_table;
+	HASH_TABLE(char *, struct od_user *) users_table;
 };
 
 void			send_server_event	( struct auth_request *in_request, const od_auth_event_t in_event_code, const char *in_user, const char *in_addr );

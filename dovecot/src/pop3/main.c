@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "pop3-common.h"
 #include "ioloop.h"
@@ -29,7 +29,16 @@ static bool verbose_proctitle = FALSE;
 static struct mail_storage_service_ctx *storage_service;
 static struct master_login *master_login = NULL;
 
-void (*hook_client_created)(struct client **client) = NULL;
+pop3_client_created_func_t *hook_client_created = NULL;
+
+pop3_client_created_func_t *
+pop3_client_created_hook_set(pop3_client_created_func_t *new_hook)
+{
+	pop3_client_created_func_t *old_hook = hook_client_created;
+
+	hook_client_created = new_hook;
+	return old_hook;
+}
 
 void pop3_refresh_proctitle(void)
 {
@@ -90,7 +99,7 @@ client_create_from_input(const struct mail_storage_service_input *input,
 			 const char **error_r)
 {
 	const char *lookup_error_str =
-		"-ERR [IN-USE] "MAIL_ERRSTR_CRITICAL_MSG"\r\n";
+		"-ERR [SYS/TEMP] "MAIL_ERRSTR_CRITICAL_MSG"\r\n";
 	struct mail_storage_service_user *user;
 	struct mail_user *mail_user;
 	struct client *client;
@@ -107,10 +116,9 @@ client_create_from_input(const struct mail_storage_service_input *input,
 	if (set->verbose_proctitle)
 		verbose_proctitle = TRUE;
 
-	client = client_create(fd_in, fd_out, mail_user, user, set);
-	if (client != NULL) T_BEGIN {
+	if (client_create(fd_in, fd_out, input->session_id,
+			  mail_user, user, set, &client) == 0)
 		client_add_input(client, input_buf);
-	} T_END;
 	return 0;
 }
 
@@ -128,9 +136,9 @@ static void main_stdio_run(const char *username)
 	if (input.username == NULL)
 		i_fatal("USER environment missing");
 	if ((value = getenv("IP")) != NULL)
-		net_addr2ip(value, &input.remote_ip);
+		(void)net_addr2ip(value, &input.remote_ip);
 	if ((value = getenv("LOCAL_IP")) != NULL)
-		net_addr2ip(value, &input.local_ip);
+		(void)net_addr2ip(value, &input.local_ip);
 
 	input_base64 = getenv("CLIENT_INPUT");
 	input_buf = input_base64 == NULL ? NULL :
@@ -155,13 +163,16 @@ login_client_connected(const struct master_login_client *client,
 	input.remote_ip = client->auth_req.remote_ip;
 	input.username = username;
 	input.userdb_fields = extra_fields;
+	input.session_id = client->session_id;
 
-	buffer_create_const_data(&input_buf, client->data,
-				 client->auth_req.data_size);
+	buffer_create_from_const_data(&input_buf, client->data,
+				      client->auth_req.data_size);
 	if (client_create_from_input(&input, client->fd, client->fd,
 				     &input_buf, &error) < 0) {
+		int fd = client->fd;
+
 		i_error("%s", error);
-		(void)close(client->fd);
+		i_close_fd(&fd);
 		master_service_client_connection_destroyed(master_service);
 	}
 }
@@ -171,7 +182,7 @@ static void login_client_failed(const struct master_login_client *client,
 {
 	const char *msg;
 
-	msg = t_strdup_printf("-ERR [IN-USE] %s\r\n", errormsg);
+	msg = t_strdup_printf("-ERR [SYS/TEMP] %s\r\n", errormsg);
 	if (write(client->fd, msg, strlen(msg)) < 0) {
 		/* ignored */
 	}
@@ -192,14 +203,18 @@ int main(int argc, char *argv[])
 		&pop3_setting_parser_info,
 		NULL
 	};
+	struct master_login_settings login_set;
 	enum master_service_flags service_flags = 0;
 	enum mail_storage_service_flags storage_service_flags = 0;
-	const char *postlogin_socket_path, *username = NULL;
+	const char *username = NULL;
 	int c;
+
+	memset(&login_set, 0, sizeof(login_set));
+	login_set.postlogin_timeout_secs = MASTER_POSTLOGIN_TIMEOUT_DEFAULT;
 
 	if (IS_STANDALONE() && getuid() == 0 &&
 	    net_getpeername(1, NULL, NULL) == 0) {
-		printf("-ERR pop3 binary must not be started from "
+		printf("-ERR [SYS/PERM] pop3 binary must not be started from "
 		       "inetd, use pop3-login instead.\n");
 		return 1;
 	}
@@ -214,9 +229,14 @@ int main(int argc, char *argv[])
 	}
 
 	master_service = master_service_init("pop3", service_flags,
-					     &argc, &argv, "u:");
+					     &argc, &argv, "t:u:");
 	while ((c = master_getopt(master_service)) > 0) {
 		switch (c) {
+		case 't':
+			if (str_to_uint(optarg, &login_set.postlogin_timeout_secs) < 0 ||
+			    login_set.postlogin_timeout_secs == 0)
+				i_fatal("Invalid -t parameter: %s", optarg);
+			break;
 		case 'u':
 			storage_service_flags |=
 				MAIL_STORAGE_SERVICE_FLAG_USERDB_LOOKUP;
@@ -226,15 +246,19 @@ int main(int argc, char *argv[])
 			return FATAL_DEFAULT;
 		}
 	}
-	postlogin_socket_path = argv[optind] == NULL ? NULL :
-		t_abspath(argv[optind]);
 
-	master_service_init_finish(master_service);
+	login_set.auth_socket_path = t_abspath("auth-master");
+	if (argv[optind] != NULL)
+		login_set.postlogin_socket_path = t_abspath(argv[optind]);
+	login_set.callback = login_client_connected;
+	login_set.failure_callback = login_client_failed;
+
 	master_service_set_die_callback(master_service, pop3_die);
 
 	storage_service =
 		mail_storage_service_init(master_service,
 					  set_roots, storage_service_flags);
+	master_service_init_finish(master_service);
 
 	/* fake that we're running, so we know if client was destroyed
 	   while handling its initial input */
@@ -245,11 +269,7 @@ int main(int argc, char *argv[])
 			main_stdio_run(username);
 		} T_END;
 	} else {
-		master_login = master_login_init(master_service,
-						 t_abspath("auth-master"),
-						 postlogin_socket_path,
-						 login_client_connected,
-						 login_client_failed);
+		master_login = master_login_init(master_service, &login_set);
 		io_loop_set_running(current_ioloop);
 	}
 

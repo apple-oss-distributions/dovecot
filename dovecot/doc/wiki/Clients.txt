@@ -164,4 +164,4 @@ Uses the namespace returned via Dovecot, full support via IMAP/POP3 using @Mail
 [http://atmail.com/]. Can also read mailbox quota via the getquotaroot IMAP
 command.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

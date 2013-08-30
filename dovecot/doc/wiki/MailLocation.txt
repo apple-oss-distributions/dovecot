@@ -141,6 +141,13 @@ before the user logs in.
 If you really want to, you can also disable the index files completely by
 appending ':INDEX=MEMORY'.
 
+Private index files (v2.2+)
+---------------------------
+
+Since v2.2 the recommended way to enable private flags for shared mailboxes is
+to create private indexes with :INDEXPVT=<path>. See
+<SharedMailboxes.Public.txt> for more information.
+
 INBOX path
 ----------
 
@@ -263,4 +270,4 @@ export USERDB_KEYS="$USERDB_KEYS namespace/user/location"
 exec env "NAMESPACE/USER/LOCATION=$location" "$@"
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

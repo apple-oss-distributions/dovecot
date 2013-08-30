@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -20,20 +20,12 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#define VIRTUAL_LIST_CONTEXT(obj) \
-	MODULE_CONTEXT(obj, virtual_mailbox_list_module)
-
-struct virtual_mailbox_list {
-	union mailbox_list_module_context module_ctx;
-};
-
 extern struct mail_storage virtual_storage;
 extern struct mailbox virtual_mailbox;
+extern struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs;
 
 struct virtual_storage_module virtual_storage_module =
 	MODULE_CONTEXT_INIT(&mail_storage_module_register);
-static MODULE_CONTEXT_DEFINE_INIT(virtual_mailbox_list_module,
-				  &mailbox_list_module_register);
 
 static bool ns_is_visible(struct mail_namespace *ns)
 {
@@ -48,7 +40,8 @@ static const char *get_user_visible_mailbox_name(struct mailbox *box)
 		return box->vname;
 	else {
 		return t_strdup_printf("<hidden>%c%s",
-				       box->list->hierarchy_sep, box->name);
+				       mail_namespace_get_sep(box->list->ns),
+				       box->vname);
 	}
 }
 
@@ -58,7 +51,7 @@ void virtual_box_copy_error(struct mailbox *dest, struct mailbox *src)
 	enum mail_error error;
 
 	name = get_user_visible_mailbox_name(src);
-	str = mail_storage_get_last_error(src->storage, &error);
+	str = mailbox_get_last_error(src, &error);
 
 	str = t_strdup_printf("%s (for backend mailbox %s)", str, name);
 	mail_storage_set_error(dest->storage, error, str);
@@ -138,8 +131,7 @@ static int virtual_backend_box_open_failed(struct virtual_mailbox *mbox,
 	enum mail_error error;
 	const char *str, *name;
 
-	str = mail_storage_get_last_error(mailbox_get_storage(bbox->box),
-					  &error);
+	str = mailbox_get_last_error(bbox->box, &error);
 	name = t_strdup(get_user_visible_mailbox_name(bbox->box));
 	mailbox_free(&bbox->box);
 	if (error == MAIL_ERROR_NOTFOUND) {
@@ -169,15 +161,16 @@ static int virtual_backend_box_open(struct virtual_mailbox *mbox,
 {
 	struct mail_user *user = mbox->storage->storage.user;
 	struct mail_namespace *ns;
+	struct mailbox_status status;
 	const char *mailbox;
 
 	i_assert(bbox->box == NULL);
 
-	if (!bbox->clear_recent)
-		flags |= MAILBOX_FLAG_KEEP_RECENT;
+	if (bbox->clear_recent)
+		flags |= MAILBOX_FLAG_DROP_RECENT;
 
 	mailbox = bbox->name;
-	ns = mail_namespace_find(user->namespaces, &mailbox);
+	ns = mail_namespace_find(user->namespaces, mailbox);
 	bbox->box = mailbox_alloc(ns->list, mailbox, flags);
 
 	if (mailbox_open(bbox->box) < 0)
@@ -185,6 +178,12 @@ static int virtual_backend_box_open(struct virtual_mailbox *mbox,
 	i_array_init(&bbox->uids, 64);
 	i_array_init(&bbox->sync_pending_removes, 64);
 	mail_search_args_init(bbox->search_args, bbox->box, FALSE, NULL);
+
+	mailbox_get_open_status(bbox->box, 0, &status);
+	if (!status.have_guids)
+		mbox->have_guids = FALSE;
+	if (!status.have_save_guids)
+		mbox->have_save_guids = FALSE;
 	return 1;
 }
 
@@ -194,6 +193,9 @@ static int virtual_mailboxes_open(struct virtual_mailbox *mbox,
 	struct virtual_backend_box *const *bboxes;
 	unsigned int i, count;
 	int ret;
+
+	mbox->have_guids = TRUE;
+	mbox->have_save_guids = TRUE;
 
 	bboxes = array_get(&mbox->backend_boxes, &count);
 	for (i = 0; i < count; ) {
@@ -222,30 +224,25 @@ static int virtual_mailboxes_open(struct virtual_mailbox *mbox,
 
 static struct mailbox *
 virtual_mailbox_alloc(struct mail_storage *_storage, struct mailbox_list *list,
-		      const char *name, enum mailbox_flags flags)
+		      const char *vname, enum mailbox_flags flags)
 {
 	struct virtual_storage *storage = (struct virtual_storage *)_storage;
 	struct virtual_mailbox *mbox;
 	pool_t pool;
 
-	pool = pool_alloconly_create("virtual mailbox", 1024+512);
+	pool = pool_alloconly_create("virtual mailbox", 2048);
 	mbox = p_new(pool, struct virtual_mailbox, 1);
 	mbox->box = virtual_mailbox;
 	mbox->box.pool = pool;
 	mbox->box.storage = _storage;
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &virtual_mail_vfuncs;
+	mbox->vfuncs = virtual_mailbox_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags,
-				    VIRTUAL_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	mbox->storage = storage;
-	mbox->vseq_lookup_prev_mailbox = i_strdup("");
-
-	mbox->virtual_ext_id =
-		mail_index_ext_register(mbox->box.index, "virtual", 0,
-			sizeof(struct virtual_mail_index_record),
-			sizeof(uint32_t));
+	mbox->virtual_ext_id = (uint32_t)-1;
 	return &mbox->box;
 }
 
@@ -269,7 +266,14 @@ static void virtual_mailbox_close_internal(struct virtual_mailbox *mbox)
 		array_free(&bboxes[i]->sync_pending_removes);
 		array_free(&bboxes[i]->uids);
 	}
-	i_free_and_null(mbox->vseq_lookup_prev_mailbox);
+}
+
+static int
+virtual_mailbox_exists(struct mailbox *box, bool auto_boxes ATTR_UNUSED,
+		       enum mailbox_existence *existence_r)
+{
+	return index_storage_mailbox_exists_full(box, VIRTUAL_CONFIG_FNAME,
+						 existence_r);
 }
 
 static int virtual_mailbox_open(struct mailbox *box)
@@ -295,7 +299,14 @@ static int virtual_mailbox_open(struct mailbox *box)
 		virtual_mailbox_close_internal(mbox);
 		return -1;
 	}
-	return index_storage_mailbox_open(box, FALSE);
+	if (index_storage_mailbox_open(box, FALSE) < 0)
+		return -1;
+
+	mbox->virtual_ext_id =
+		mail_index_ext_register(mbox->box.index, "virtual", 0,
+			sizeof(struct virtual_mail_index_record),
+			sizeof(uint32_t));
+	return 0;
 }
 
 static void virtual_mailbox_close(struct mailbox *box)
@@ -334,12 +345,47 @@ virtual_mailbox_update(struct mailbox *box,
 }
 
 static int
-virtual_mailbox_get_guid(struct mailbox *box,
-			 uint8_t guid[MAIL_GUID_128_SIZE] ATTR_UNUSED)
+virtual_storage_get_status(struct mailbox *box,
+			   enum mailbox_status_items items,
+			   struct mailbox_status *status_r)
 {
-	mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
-			       "Virtual mailboxes have no GUIDs");
-	return -1;
+	struct virtual_mailbox *mbox = (struct virtual_mailbox *)box;
+
+	if ((items & STATUS_LAST_CACHED_SEQ) != 0)
+		items |= STATUS_MESSAGES;
+
+	if (index_storage_get_status(box, items, status_r) < 0)
+		return -1;
+
+	if ((items & STATUS_LAST_CACHED_SEQ) != 0) {
+		/* Virtual mailboxes have no cached data of their own, so the
+		   current value is always 0. The most important use for this
+		   functionality is for "doveadm index" to do FTS indexing and
+		   it doesn't really matter there if we set this value
+		   correctly or not. So for now just assume that everything is
+		   indexed. */
+		status_r->last_cached_seq = status_r->messages;
+	}
+	if (mbox->have_guids)
+		status_r->have_guids = TRUE;
+	if (mbox->have_save_guids)
+		status_r->have_save_guids = TRUE;
+	return 0;
+}
+
+static int
+virtual_mailbox_get_metadata(struct mailbox *box,
+			     enum mailbox_metadata_items items,
+			     struct mailbox_metadata *metadata_r)
+{
+	if (index_mailbox_get_metadata(box, items, metadata_r) < 0)
+		return -1;
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+				       "Virtual mailboxes have no GUIDs");
+		return -1;
+	}
+	return 0;
 }
 
 static void
@@ -360,93 +406,82 @@ static void virtual_notify_changes(struct mailbox *box)
 
 		if (box->notify_callback == NULL)
 			mailbox_notify_changes_stop(bbox);
-		else {
-			mailbox_notify_changes(bbox, box->notify_min_interval,
-					       virtual_notify_callback, box);
+		else
+			mailbox_notify_changes(bbox, virtual_notify_callback, box);
+	}
+}
+
+static void
+virtual_get_virtual_uids(struct mailbox *box,
+			 struct mailbox *backend_mailbox,
+			 const ARRAY_TYPE(seq_range) *backend_uids,
+			 ARRAY_TYPE(seq_range) *virtual_uids_r)
+{
+	struct virtual_mailbox *mbox = (struct virtual_mailbox *)box;
+	struct virtual_backend_box *bbox;
+	const struct virtual_backend_uidmap *uids;
+	struct seq_range_iter iter;
+	unsigned int n, i, count;
+	uint32_t uid;
+
+	if (mbox->lookup_prev_bbox != NULL &&
+	    strcmp(mbox->lookup_prev_bbox->box->vname, backend_mailbox->vname) == 0)
+		bbox = mbox->lookup_prev_bbox;
+	else {
+		bbox = virtual_backend_box_lookup_name(mbox, backend_mailbox->vname);
+		mbox->lookup_prev_bbox = bbox;
+	}
+	if (bbox == NULL)
+		return;
+
+	uids = array_get(&bbox->uids, &count); i = 0;
+	seq_range_array_iter_init(&iter, backend_uids); n = 0;
+	while (seq_range_array_iter_nth(&iter, n++, &uid)) {
+		while (i < count && uids[i].real_uid < uid) i++;
+		if (i < count && uids[i].real_uid == uid) {
+			seq_range_array_add(virtual_uids_r, 
+					    uids[i].virtual_uid);
+			i++;
 		}
 	}
 }
 
-static int
-virtual_list_get_mailbox_flags(struct mailbox_list *list,
-			       const char *dir, const char *fname,
-			       enum mailbox_list_file_type type,
-			       struct stat *st_r,
-			       enum mailbox_info_flags *flags)
-{
-	struct virtual_mailbox_list *mlist = VIRTUAL_LIST_CONTEXT(list);
-	struct stat st2;
-	const char *virtual_path;
-	int ret;
-
-	ret = mlist->module_ctx.super.
-		get_mailbox_flags(list, dir, fname, type, st_r, flags);
-	if (ret <= 0 || MAILBOX_INFO_FLAGS_FINISHED(*flags))
-		return ret;
-
-	/* see if it's a selectable mailbox */
-	virtual_path = t_strconcat(dir, "/", fname, "/"VIRTUAL_CONFIG_FNAME,
-				   NULL);
-	if (stat(virtual_path, &st2) < 0)
-		*flags |= MAILBOX_NOSELECT;
-	return ret;
-}
-
-static void virtual_storage_add_list(struct mail_storage *storage ATTR_UNUSED,
-				     struct mailbox_list *list)
-{
-	struct mailbox_list_vfuncs *v = list->vlast;
-	struct virtual_mailbox_list *mlist;
-
-	mlist = p_new(list->pool, struct virtual_mailbox_list, 1);
-	mlist->module_ctx.super = *v;
-	list->vlast = &mlist->module_ctx.super;
-
-	v->get_mailbox_flags = virtual_list_get_mailbox_flags;
-
-	MODULE_CONTEXT_SET(list, virtual_mailbox_list_module, mlist);
-}
-
-static int virtual_backend_uidmap_cmp(const uint32_t *uid,
-				      const struct virtual_backend_uidmap *map)
-{
-	return *uid < map->real_uid ? -1 :
-		*uid > map->real_uid ? 1 : 0;
-}
-
-static bool
-virtual_get_virtual_uid(struct mailbox *box, const char *backend_mailbox,
-			uint32_t backend_uidvalidity,
-			uint32_t backend_uid, uint32_t *uid_r)
+static void
+virtual_get_virtual_uid_map(struct mailbox *box,
+			    struct mailbox *backend_mailbox,
+			    const ARRAY_TYPE(seq_range) *backend_uids,
+			    ARRAY_TYPE(uint32_t) *virtual_uids_r)
 {
 	struct virtual_mailbox *mbox = (struct virtual_mailbox *)box;
 	struct virtual_backend_box *bbox;
-	struct mailbox_status status;
 	const struct virtual_backend_uidmap *uids;
+	struct seq_range_iter iter;
+	unsigned int n, i, count;
+	uint32_t uid;
 
-	if (strcmp(mbox->vseq_lookup_prev_mailbox, backend_mailbox) == 0)
-		bbox = mbox->vseq_lookup_prev_bbox;
+	if (mbox->lookup_prev_bbox != NULL &&
+	    strcmp(mbox->lookup_prev_bbox->box->vname, backend_mailbox->vname) == 0)
+		bbox = mbox->lookup_prev_bbox;
 	else {
-		i_free(mbox->vseq_lookup_prev_mailbox);
-		mbox->vseq_lookup_prev_mailbox = i_strdup(backend_mailbox);
-
-		bbox = virtual_backend_box_lookup_name(mbox, backend_mailbox);
-		mbox->vseq_lookup_prev_bbox = bbox;
+		bbox = virtual_backend_box_lookup_name(mbox, backend_mailbox->vname);
+		mbox->lookup_prev_bbox = bbox;
 	}
 	if (bbox == NULL)
-		return FALSE;
+		return;
 
-	mailbox_get_status(bbox->box, STATUS_UIDVALIDITY, &status);
-	if (status.uidvalidity != backend_uidvalidity)
-		return FALSE;
+	uids = array_get(&bbox->uids, &count); i = 0;
+	seq_range_array_iter_init(&iter, backend_uids); n = 0;
+	while (seq_range_array_iter_nth(&iter, n++, &uid)) {
+		while (i < count && uids[i].real_uid < uid) i++;
+		if (i == count || uids[i].real_uid > uid) {
+			uint32_t zero = 0;
 
-	uids = array_bsearch(&bbox->uids, &backend_uid,
-			     virtual_backend_uidmap_cmp);
-	if (uids == NULL)
-		return FALSE;
-
-	*uid_r = uids->virtual_uid;
-	return TRUE;
+			array_append(virtual_uids_r, &zero, 1);
+		} else {
+			array_append(virtual_uids_r, &uids[i].virtual_uid, 1);
+			i++;
+		}
+	}
 }
 
 static void
@@ -463,17 +498,6 @@ virtual_get_virtual_backend_boxes(struct mailbox *box,
 		if (!only_with_msgs || array_count(&bboxes[i]->uids) > 0)
 			array_append(mailboxes, &bboxes[i]->box, 1);
 	}
-}
-
-static void
-virtual_get_virtual_box_patterns(struct mailbox *box,
-				 ARRAY_TYPE(mailbox_virtual_patterns) *includes,
-				 ARRAY_TYPE(mailbox_virtual_patterns) *excludes)
-{
-	struct virtual_mailbox *mbox = (struct virtual_mailbox *)box;
-
-	array_append_array(includes, &mbox->list_include_patterns);
-	array_append_array(excludes, &mbox->list_exclude_patterns);
 }
 
 static bool virtual_is_inconsistent(struct mailbox *box)
@@ -494,8 +518,8 @@ struct mail_storage virtual_storage = {
 		NULL,
 		virtual_storage_alloc,
 		NULL,
+		index_storage_destroy,
 		NULL,
-		virtual_storage_add_list,
 		virtual_storage_get_list_settings,
 		NULL,
 		virtual_mailbox_alloc,
@@ -506,8 +530,8 @@ struct mail_storage virtual_storage = {
 struct mailbox virtual_mailbox = {
 	.v = {
 		index_storage_is_readonly,
-		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
+		virtual_mailbox_exists,
 		virtual_mailbox_open,
 		virtual_mailbox_close,
 		virtual_mailbox_free,
@@ -515,8 +539,14 @@ struct mailbox virtual_mailbox = {
 		virtual_mailbox_update,
 		index_storage_mailbox_delete,
 		index_storage_mailbox_rename,
-		index_storage_get_status,
-		virtual_mailbox_get_guid,
+		virtual_storage_get_status,
+		virtual_mailbox_get_metadata,
+		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		NULL,
 		NULL,
 		virtual_storage_sync_init,
@@ -527,21 +557,8 @@ struct mailbox virtual_mailbox = {
 		virtual_transaction_begin,
 		virtual_transaction_commit,
 		virtual_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		virtual_get_virtual_uid,
-		virtual_get_virtual_backend_boxes,
-		virtual_get_virtual_box_patterns,
+		NULL,
 		virtual_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		virtual_search_init,
 		virtual_search_deinit,
 		virtual_search_next_nonblock,
@@ -553,6 +570,14 @@ struct mailbox virtual_mailbox = {
 		virtual_save_cancel,
 		mail_storage_copy,
 		NULL,
+		NULL,
+		NULL,
 		virtual_is_inconsistent
 	}
+};
+
+struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs = {
+	virtual_get_virtual_uids,
+	virtual_get_virtual_uid_map,
+	virtual_get_virtual_backend_boxes
 };

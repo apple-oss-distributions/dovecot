@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -6,8 +6,8 @@
 #include "str.h"
 #include "str-sanitize.h"
 #include "imap-util.h"
+#include "mail-user.h"
 #include "mail-storage-private.h"
-#include "mailbox-list-private.h"
 #include "notify-plugin.h"
 #include "mail-log-plugin.h"
 
@@ -203,6 +203,36 @@ mail_log_append_uid(struct mail_log_mail_txn_context *ctx,
 }
 
 static void
+mail_log_update_wanted_fields(struct mail *mail, enum mail_log_field fields)
+{
+	enum mail_fetch_field wanted_fields = 0;
+	struct mailbox_header_lookup_ctx *wanted_headers = NULL;
+	const char *headers[4];
+	unsigned int hdr_idx = 0;
+
+	if ((fields & MAIL_LOG_FIELD_MSGID) != 0)
+		headers[hdr_idx++] = "Message-ID";
+	if ((fields & MAIL_LOG_FIELD_FROM) != 0)
+		headers[hdr_idx++] = "From";
+	if ((fields & MAIL_LOG_FIELD_SUBJECT) != 0)
+		headers[hdr_idx++] = "Subject";
+	if (hdr_idx > 0) {
+		i_assert(hdr_idx < N_ELEMENTS(headers));
+		headers[hdr_idx] = NULL;
+		wanted_headers = mailbox_header_lookup_init(mail->box, headers);
+	}
+
+	if ((fields & MAIL_LOG_FIELD_PSIZE) != 0)
+		wanted_fields |= MAIL_FETCH_PHYSICAL_SIZE;
+	if ((fields & MAIL_LOG_FIELD_VSIZE) != 0)
+		wanted_fields |= MAIL_FETCH_VIRTUAL_SIZE;
+
+	mail_add_temp_wanted_fields(mail, wanted_fields, wanted_headers);
+	if (wanted_headers != NULL)
+		mailbox_header_lookup_unref(&wanted_headers);
+}
+
+static void
 mail_log_append_mail_message_real(struct mail_log_mail_txn_context *ctx,
 				  struct mail *mail, enum mail_log_event event,
 				  const char *desc)
@@ -212,8 +242,11 @@ mail_log_append_mail_message_real(struct mail_log_mail_txn_context *ctx,
 	struct mail_log_message *msg;
 	string_t *text;
 	uoff_t size;
-	
+
 	msg = p_new(ctx->pool, struct mail_log_message, 1);
+
+	/* avoid parsing through the message multiple times */
+	mail_log_update_wanted_fields(mail, muser->fields);
 
 	text = t_str_new(128);
 	str_append(text, desc);
@@ -327,17 +360,20 @@ static void mail_log_mail_copy(void *txn, struct mail *src, struct mail *dst)
 {
 	struct mail_log_mail_txn_context *ctx =
 		(struct mail_log_mail_txn_context *)txn;
+	struct mail_private *src_pmail = (struct mail_private *)src;
+	struct mailbox *src_box = src->box;
 	const char *desc;
 
-	if (strcmp(src->box->storage->name, "raw") == 0) {
-		/* special case: lda/lmtp is saving a mail */
-		desc = "save";
-	} else {
-		desc = t_strdup_printf("copy from %s",
-				       str_sanitize(mailbox_get_name(src->box),
-						    MAILBOX_NAME_LOG_LEN));
+	if (src_pmail->vmail != NULL) {
+		/* copying a mail from virtual storage. src points to the
+		   backend mail, but we want to log the virtual mailbox name. */
+		src_box = src_pmail->vmail->box;
 	}
-	mail_log_append_mail_message(ctx, dst, MAIL_LOG_EVENT_COPY, desc);
+	desc = t_strdup_printf("copy from %s",
+			       str_sanitize(mailbox_get_vname(src_box),
+					    MAILBOX_NAME_LOG_LEN));
+	mail_log_append_mail_message(ctx, dst,
+				     MAIL_LOG_EVENT_COPY, desc);
 }
 
 static void mail_log_mail_expunge(void *txn, struct mail *mail)
@@ -437,7 +473,7 @@ mail_log_mailbox_create(struct mailbox *box)
 		return;
 
 	i_info("Mailbox created: %s",
-	       str_sanitize(box->name, MAILBOX_NAME_LOG_LEN));
+	       str_sanitize(mailbox_get_vname(box), MAILBOX_NAME_LOG_LEN));
 }
 
 static void
@@ -449,12 +485,11 @@ mail_log_mailbox_delete_commit(void *txn ATTR_UNUSED, struct mailbox *box)
 		return;
 
 	i_info("Mailbox deleted: %s",
-	       str_sanitize(box->name, MAILBOX_NAME_LOG_LEN));
+	       str_sanitize(mailbox_get_vname(box), MAILBOX_NAME_LOG_LEN));
 }
 
 static void
-mail_log_mailbox_rename(struct mailbox *src,
-			struct mailbox *dest, bool rename_children ATTR_UNUSED)
+mail_log_mailbox_rename(struct mailbox *src, struct mailbox *dest)
 {
 	struct mail_log_user *muser = MAIL_LOG_USER_CONTEXT(src->storage->user);
 
@@ -462,8 +497,8 @@ mail_log_mailbox_rename(struct mailbox *src,
 		return;
 
 	i_info("Mailbox renamed: %s -> %s",
-	       str_sanitize(src->name, MAILBOX_NAME_LOG_LEN),
-	       str_sanitize(dest->name, MAILBOX_NAME_LOG_LEN));
+	       str_sanitize(mailbox_get_vname(src), MAILBOX_NAME_LOG_LEN),
+	       str_sanitize(mailbox_get_vname(dest), MAILBOX_NAME_LOG_LEN));
 }
 
 static const struct notify_vfuncs mail_log_vfuncs = {

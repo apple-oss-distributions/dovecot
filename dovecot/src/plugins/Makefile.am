@@ -25,18 +25,20 @@ SUBDIRS = \
 	expire \
 	fts \
 	fts-squat \
-	imap-fts \
 	lazy-expunge \
 	listescape \
 	notify \
 	mail-log \
+	mailbox-alias \
 	$(PUSH_NOTIFY) \
 	quota \
 	imap-quota \
+	pop3-migration \
+	replication \
 	snarf \
 	stats \
+	imap-stats \
 	trash \
-	urlauth \
 	virtual \
 	$(ZLIB) \
 	$(FTS_LUCENE) \

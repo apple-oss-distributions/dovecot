@@ -12,7 +12,8 @@ enum search_return_options {
 	SEARCH_RETURN_MODSEQ		= 0x0020,
 	SEARCH_RETURN_SAVE		= 0x0040,
 	SEARCH_RETURN_UPDATE		= 0x0080,
-	SEARCH_RETURN_PARTIAL		= 0x0100
+	SEARCH_RETURN_PARTIAL		= 0x0100,
+	SEARCH_RETURN_RELEVANCY		= 0x0200
 /* Options that don't return any seq/uid results */
 #define SEARCH_RETURN_NORESULTS \
 	(SEARCH_RETURN_ESEARCH | SEARCH_RETURN_MODSEQ | SEARCH_RETURN_SAVE | \
@@ -24,7 +25,9 @@ struct imap_search_context {
 	struct mailbox *box;
 	struct mailbox_transaction_context *trans;
         struct mail_search_context *search_ctx;
-	struct mail *mail;
+
+	pool_t fetch_pool;
+	struct imap_fetch_context *fetch_ctx;
 
 	struct mail_search_args *sargs;
 	enum search_return_options return_options;
@@ -33,6 +36,9 @@ struct imap_search_context {
 	struct timeout *to;
 	ARRAY_TYPE(seq_range) result;
 	unsigned int result_count;
+
+	ARRAY(float) relevancy_scores;
+	float min_relevancy, max_relevancy;
 
 	uint64_t highest_seen_modseq;
 	struct timeval start_time;
@@ -44,12 +50,14 @@ struct imap_search_context {
 
 int cmd_search_parse_return_if_found(struct imap_search_context *ctx,
 				     const struct imap_arg **args);
+void imap_search_context_free(struct imap_search_context *ctx);
 
 bool imap_search_start(struct imap_search_context *ctx,
 		       struct mail_search_args *sargs,
-		       const enum mail_sort_type *sort_program);
+		       const enum mail_sort_type *sort_program) ATTR_NULL(3);
+void imap_search_update_free(struct imap_search_update *update);
 
-/* APPLE */
+/* APPLE - async search */
 bool cmd_search_more(struct client_command_context *cmd);
 void cmd_search_more_callback(struct client_command_context *cmd);
 

@@ -1,15 +1,16 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "array.h"
 #include "password-scheme.h"
 #include "auth-worker-server.h"
+#include "passdb-template.h"
 #include "passdb.h"
 
 #include <stdlib.h>
 
-static ARRAY_DEFINE(passdb_interfaces, struct passdb_module_interface *);
-static ARRAY_DEFINE(passdb_modules, struct passdb_module *);
+static ARRAY(struct passdb_module_interface *) passdb_interfaces;
+static ARRAY(struct passdb_module *) passdb_modules;
 
 static const struct passdb_module_interface passdb_iface_deinit = {
 	.name = "deinit"
@@ -182,34 +183,48 @@ passdb_find(const char *driver, const char *args, unsigned int *idx_r)
 }
 
 struct passdb_module *
-passdb_preinit(pool_t pool, const char *driver, const char *args)
+passdb_preinit(pool_t pool, const struct auth_passdb_settings *set)
 {
 	static unsigned int auth_passdb_id = 0;
 	struct passdb_module_interface *iface;
 	struct passdb_module *passdb;
 	unsigned int idx;
 
-	iface = passdb_interface_find(driver);
+	iface = passdb_interface_find(set->driver);
+	if (iface == NULL || iface->verify_plain == NULL) {
+		/* maybe it's a plugin. try to load it. */
+		auth_module_load(t_strconcat("authdb_", set->driver, NULL));
+		iface = passdb_interface_find(set->driver);
+	}
 	if (iface == NULL)
-		i_fatal("Unknown passdb driver '%s'", driver);
+		i_fatal("Unknown passdb driver '%s'", set->driver);
 	if (iface->verify_plain == NULL) {
 		i_fatal("Support not compiled in for passdb driver '%s'",
-			driver);
+			set->driver);
 	}
-	if (iface->preinit == NULL && iface->init == NULL && *args != '\0')
-		i_fatal("passdb %s: No args are supported: %s", driver, args);
+	if (iface->preinit == NULL && iface->init == NULL &&
+	    *set->args != '\0') {
+		i_fatal("passdb %s: No args are supported: %s",
+			set->driver, set->args);
+	}
 
-	passdb = passdb_find(driver, args, &idx);
+	passdb = passdb_find(set->driver, set->args, &idx);
 	if (passdb != NULL)
 		return passdb;
 
 	if (iface->preinit == NULL)
 		passdb = p_new(pool, struct passdb_module, 1);
 	else
-		passdb = iface->preinit(pool, args);
+		passdb = iface->preinit(pool, set->args);
 	passdb->id = ++auth_passdb_id;
 	passdb->iface = *iface;
-	passdb->args = p_strdup(pool, args);
+	passdb->args = p_strdup(pool, set->args);
+
+	passdb->default_fields_tmpl =
+		passdb_template_build(pool, set->default_fields);
+	passdb->override_fields_tmpl =
+		passdb_template_build(pool, set->override_fields);
+
 	array_append(&passdb_modules, &passdb, 1);
 	return passdb;
 }
@@ -263,6 +278,7 @@ void passdbs_generate_md5(unsigned char md5[MD5_RESULTLEN])
 
 extern struct passdb_module_interface passdb_passwd;
 extern struct passdb_module_interface passdb_bsdauth;
+extern struct passdb_module_interface passdb_dict;
 extern struct passdb_module_interface passdb_shadow;
 extern struct passdb_module_interface passdb_passwd_file;
 extern struct passdb_module_interface passdb_od;
@@ -280,6 +296,7 @@ void passdbs_init(void)
 	i_array_init(&passdb_modules, 16);
 	passdb_register_module(&passdb_passwd);
 	passdb_register_module(&passdb_bsdauth);
+	passdb_register_module(&passdb_dict);
 	passdb_register_module(&passdb_passwd_file);
 	passdb_register_module(&passdb_od);
 	passdb_register_module(&passdb_pam);

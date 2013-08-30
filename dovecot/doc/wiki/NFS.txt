@@ -38,16 +38,6 @@ mail_nfs_storage = yes
 mail_nfs_index = yes
 ---%<-------------------------------------------------------------------------
 
-High performance NFS setup with indexes on local disk (see below for benefits):
-
----%<-------------------------------------------------------------------------
-mmap_disable = no
-dotlock_use_excl = yes # You most likely have NFSv3
-mail_fsync = always
-mail_nfs_storage = yes
-mail_nfs_index = no
----%<-------------------------------------------------------------------------
-
 Common issues
 -------------
 
@@ -78,18 +68,18 @@ server. This can usually be done by giving 'actimeo=0' or 'noac' mount option.
 Index files
 -----------
 
-As described above, it's better to redirect users to the same server whenever
-possible. If you do this, it might also be a good idea to keep index files
-stored locally in that server. If user gets occasionally redirected to another
-server, the indexes will then be created locally there. This isn't a problem.
-However you might want to create a cronjob to delete old index directories.
-
-If you choose to keep the index files stored in NFS, you'll need to set
-'mmap_disable=yes'. Both the 'mmap_disable' and indexing to NFS will result in
-a notable performance hit. If you're not running lockd you'll have to set
-'lock_method=dotlock', but this degrades performance. Note that many NFS
+If you keep the index files stored on NFS, you'll need to set
+'mmap_disable=yes'. If you're not running lockd you'll have to set
+'lock_method=dotlock', but this degrades performance. Note that some NFS
 installations have problems with lockd. If you're beginning to get all kinds of
 locking related errors, try if the problems go away with dotlocking.
+
+With mbox/Maildir format it's also possible to store index files on local disk
+instead of on NFS. If the user gets redirected to different servers, the local
+indexes are automatically created/updated. If the user is (nearly) always
+redirected to the same server this should be fine and you would likely get
+higher performance than indexes stored on NFS, but if the server changes it can
+be slow to recreate the index/cache files.
 
 Single computer setup
 ---------------------
@@ -150,6 +140,8 @@ Here's a list of kernels that have been tried as NFS clients:
 Misc notes
 ==========
 
+ * readdirplus isn't really needed by Dovecot and it can slow down some NFS
+   servers. Use "nordirplus" mount option to disable it.
  * Dovecot doesn't care about root_squash setting, all the root-owned files are
    in /var/run typically which is not in NFS
  * In an environment using Debian (2.6.18) clients with Isilon NFS cluster
@@ -159,6 +151,7 @@ Misc notes
     * As explained above, actimeo=0 will make the performance bad. With v1.1
       use mail_nfs_* settings instead.
  * To learn more about NFS caching and other issues, mostly from a programmer's
-   point of view, see NFS Coding HOWTO [http://www.unixcoding.org/NFSCoding]
+   point of view, see NFS Coding HOWTO
+   [http://iki.fi/tss/nfs-coding-howto.html]
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

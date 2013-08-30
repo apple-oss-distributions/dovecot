@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #define _GNU_SOURCE
 #include "lib.h"
@@ -7,10 +7,10 @@
 
 #include "fd-close-on-exec.h"
 #include "fd-set-nonblock.h"
-#include "ioloop-internal.h"
+#include "ioloop-private.h"
 #include "ioloop-notify-fd.h"
 #include "buffer.h"
-#include "network.h"
+#include "net.h"
 #include "ipwd.h"
 
 #include <stdio.h>
@@ -45,7 +45,7 @@ static bool inotify_input_more(struct ioloop *ioloop)
 	   only full events are returned by the kernel. */
 	ret = read(ctx->inotify_fd, event_buf, sizeof(event_buf));
 	if (ret <= 0) {
-		if (ret == 0) {
+		if (ret == 0 || errno == EAGAIN) {
 			/* nothing more to read */
 			return FALSE;
 		}
@@ -70,7 +70,7 @@ static bool inotify_input_more(struct ioloop *ioloop)
 				   EINVAL */
 				io->fd = -1;
 			}
-			io->io.callback(io->io.context);
+			io_loop_call_io(&io->io);
 		}
 	}
 	if (pos != ret)

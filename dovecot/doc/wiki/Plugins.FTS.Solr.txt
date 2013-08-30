@@ -35,15 +35,20 @@ contain:
  * url=<solr url> : Required base URL for Solr.
  * debug : Enable HTTP debugging. Writes to error log.
  * break-imap-search : Use Solr also for indexing TEXT and BODY searches. This
-   makes your server non-IMAP-compliant.
+   makes your server non-IMAP-compliant. (This is always enabled in v2.1+)
 
-Solr optimization
------------------
+Solr commits & optimization
+---------------------------
 
 Solr indexes should be optimized once in a while to make searches faster and to
 remove space used by deleted mails. Dovecot never asks Solr to optimize, so you
 should do this yourself. Perhaps a cronjob that sends the optimize-command to
 Solr every n hours.
+
+With v2.2.3+ Dovecot only does soft commits to the Solr index to improve
+performance. You must run a hard commit once in a while or Solr will keep
+increasing its transaction log sizes. For example send the commit command to
+Solr every few minutes.
 
 Sorting by relevancy
 --------------------
@@ -104,4 +109,4 @@ External sites with tutorials on using Solr under Dovecot
    - Guide for installing all the dependencies for Solr to work under
    CentOS/Fedora. Step by step tutorial.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

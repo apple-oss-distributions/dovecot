@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -55,6 +55,17 @@ mbase64_encode(string_t *dest, const unsigned char *in, unsigned int len)
 	str_append_c(dest, '-');
 }
 
+static const char *imap_utf8_first_encode_char(const char *str)
+{
+	const char *p;
+
+	for (p = str; *p != '\0'; p++) {
+		if (*p == '&' || (unsigned char)*p >= 0x80)
+			return p;
+	}
+	return NULL;
+}
+
 int imap_utf8_to_utf7(const char *src, string_t *dest)
 {
 	const char *p;
@@ -62,12 +73,9 @@ int imap_utf8_to_utf7(const char *src, string_t *dest)
 	uint8_t *utf16, *u;
 	uint16_t u16;
 
-	for (p = src; *p != '\0'; p++) {
-		if (*p == '&' || (unsigned char)*p >= 0x80)
-			break;
-	}
-	if (*p == '\0') {
-		/* no ASCII characters that need to be encoded */
+	p = imap_utf8_first_encode_char(src);
+	if (p == NULL) {
+		/* no characters that need to be encoded */
 		str_append(dest, src);
 		return 0;
 	}
@@ -108,6 +116,22 @@ int imap_utf8_to_utf7(const char *src, string_t *dest)
 		mbase64_encode(dest, utf16, u-utf16);
 	}
 	return 0;
+}
+
+int t_imap_utf8_to_utf7(const char *src, const char **dest_r)
+{
+	string_t *str;
+	int ret;
+
+	if (imap_utf8_first_encode_char(src) == NULL) {
+		*dest_r = src;
+		return 0;
+	}
+
+	str = t_str_new(64);
+	ret = imap_utf8_to_utf7(src, str);
+	*dest_r = str_c(str);
+	return ret;
 }
 
 static int utf16buf_to_utf8(string_t *dest, const unsigned char output[4],
@@ -155,8 +179,10 @@ static int mbase64_decode_to_utf8(string_t *dest, const char **_src)
 
 	while (*src != '-') {
 		input[0] = imap_b64dec[(uint8_t)src[0]];
+		if (input[0] == 0xff)
+			return -1;
 		input[1] = imap_b64dec[(uint8_t)src[1]];
-		if (input[0] == 0xff || input[1] == 0xff)
+		if (input[1] == 0xff)
 			return -1;
 
 		output[outpos % 4] = (input[0] << 2) | (input[1] >> 4);
@@ -246,4 +272,23 @@ int imap_utf7_to_utf8(const char *src, string_t *dest)
 		}
 	}
 	return 0;
+}
+
+bool imap_utf7_is_valid(const char *src)
+{
+	const char *p;
+	int ret;
+
+	for (p = src; *p != '\0'; p++) {
+		if (*p == '&' || (unsigned char)*p >= 0x80) {
+			/* slow scan */
+			T_BEGIN {
+				string_t *tmp = t_str_new(128);
+				ret = imap_utf7_to_utf8(p, tmp);
+			} T_END;
+			if (ret < 0)
+				return FALSE;
+		}
+	}
+	return TRUE;
 }

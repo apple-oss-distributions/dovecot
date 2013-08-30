@@ -3,8 +3,9 @@ Dovecot LDA
 
 The Dovecot LDA is a <local delivery agent> [MDA.txt], which takes mail from an
 <MTA.txt> and delivers it to a user's mailbox, while keeping Dovecot index
-files up to date. An alternative is to use <LMTP server> [LMTP.txt], but most
-of the configuration between them is identical.
+files up to date. Nowadays you should probably use the <LMTP server> [LMTP.txt]
+instead, because it's somewhat easier to configure (especially related to
+permissions) and gives better performance.
 
 This page describes the common settings required to make LDA work. You should
 read it first, and then the MTA specific pages:
@@ -90,14 +91,17 @@ Parameters accepted by dovecot-lda:
    This allows a single mail to be delivered to multiple users using hard
    links, but currently it also prevents dovecot-lda from updating cache file
    so it shouldn't be used unless really necessary.
+ * '-o name=value': Override a setting from dovecot.conf. You can give this
+   parameter multiple times.
 
 Return values
 -------------
 
 dovecot-lda will exit with one of the following values:
 
- * 0 (EX_OK): Delivery was successful
+ * 0 (EX_OK): Delivery was successful.
  * 64 (EX_USAGE): Invalid parameter given.
+ * 67 (EX_NOUSER): The destination username was not found.
  * 77 (EX_NOPERM): -e parameter was used and mail was rejected. Typically this
    happens when user is over quota and 'quota_full_tempfail=no'.
  * 75 (EX_TEMPFAIL): A temporary failure. This is returned for almost all
@@ -291,4 +295,4 @@ Plugins
  * Sieve language support can be added with the <Pigeonhole Sieve plugin>
    [Pigeonhole.Sieve.txt].
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

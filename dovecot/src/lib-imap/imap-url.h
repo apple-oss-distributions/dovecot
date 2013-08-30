@@ -1,105 +1,72 @@
-/*
- * Copyright (c) 2010-2012 Apple Inc. All rights reserved.
- * 
- * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
- * computers and is subject to the terms and conditions of the Apple Software
- * License Agreement accompanying the package this file is a part of.
- * You may not port this file to another platform without Apple's written consent.
- * 
- * Redistribution and use in source and binary forms, with or without  
- * modification, are permitted provided that the following conditions  
- * are met:
- * 
- * 1.  Redistributions of source code must retain the above copyright  
- * notice, this list of conditions and the following disclaimer.
- * 2.  Redistributions in binary form must reproduce the above  
- * copyright notice, this list of conditions and the following  
- * disclaimer in the documentation and/or other materials provided  
- * with the distribution.
- * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
- * contributors may be used to endorse or promote products derived  
- * from this software without specific prior written permission.
- * 
- * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
- * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
- * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
- * SUCH DAMAGE.
- */
-
-/* APPLE - urlauth, catenate */
-
 #ifndef IMAP_URL_H
 #define IMAP_URL_H
 
-struct imap_url_parts {
-	const char *user;
-	const char *auth_type;
-	const char *hostport;
-	const char *mailbox;
-	const char *uidvalidity;
-	const char *uid;
-	const char *section;
-	const char *expiration;
-	time_t expiration_time;
-	const char *access;
-	const char *mechanism;
-	const char *urlauth;
+struct imap_url {
+	/* server */
+	const char *host_name;
+	struct ip_addr host_ip;
+	in_port_t port;
 
-	const char *rump;
+	/* user */
+	const char *userid;
+	const char *auth_type;
+
+	/* mailbox */
+	const char *mailbox;
+	uint32_t uidvalidity;  /* 0 if not set */
+
+	/* message part */
+	uint32_t uid;
+	const char *section;
+	uoff_t partial_offset;
+	uoff_t partial_size; /* 0 if not set */
+
+	/* message list (uid == 0) */
+	const char *search_program;
+
+	/* urlauth */
+	const char *uauth_rumpurl;
+	const char *uauth_access_application;
+	const char *uauth_access_user;
+	const char *uauth_mechanism;
+	const unsigned char *uauth_token;
+	size_t uauth_token_size;
+	time_t uauth_expire; /* (time_t)-1 if not set */
+
+	unsigned int have_host_ip:1; /* url uses IP address */
+	unsigned int have_port:1;
+	unsigned int have_partial:1;
 };
 
-// URL-decode enc into dec (%XX decoding)
-bool url_decode(const char *enc, string_t *dec);
+/*
+ * IMAP URL parsing
+ */
 
-// parse an RFC 2192+4467 URL into its parts
-void imap_url_parse(const char *url, struct imap_url_parts *parts);
+enum imap_url_parse_flags {
+	/* Scheme part 'imap:' is already parsed externally. This implies that
+	   this is an absolute IMAP URL. */
+	IMAP_URL_PARSE_SCHEME_EXTERNAL	= 0x01,
+	/* Require relative URL (omitting _both_ scheme and authority), e.g.
+	   /MAILBOX/;UID=uid or even ;UID=uid. This flag means that an absolute
+	   URL makes no sense in this context. Relative URLs are allowed once a
+	   base URL is provided to the parser. */
+	IMAP_URL_PARSE_REQUIRE_RELATIVE	= 0x02,
+	/* Allow URLAUTH URL */
+	IMAP_URL_PARSE_ALLOW_URLAUTH	= 0x04
+};
 
-// decode the parts of an IMAP URL
-bool imap_url_decode(const struct imap_url_parts *enc_parts,
-		     struct imap_url_parts *dec_parts,
-		     const char **error);
+/* Parses full IMAP URL. The returned URL is allocated from data stack. */
+int imap_url_parse(const char *url, struct imap_url *base,
+		   enum imap_url_parse_flags flags,
+		   struct imap_url **url_r, const char **error_r);
 
-// validate conformance to RFC 3501 "atom"
-bool imap_url_atom_validate(const char *s);
-// validate conformance to RFC 3501 "ASTRING-CHAR"
-bool imap_url_astring_chars_validate(const char *s);
-// validate conformance to RFC 3501 "quoted"
-bool imap_url_quoted_validate(const char *s);
-// validate conformance to RFC 3501 "literal"
-bool imap_url_literal_validate(const char *s);
-// validate conformance to RFC 3501 "astring"
-bool imap_url_astring_validate(const char *s);
-// validate conformance to RFC 1738 "hostport"
-bool imap_url_hostport_validate(const char *s);
-// validate conformance to RFC 3501 "mailbox"
-bool imap_url_mailbox_validate(const char *s);
-// validate conformance to RFC 3501 "nz_number"
-bool imap_url_nz_number_validate(const char *s);
-// validate conformance to RFC 3501 "section-text"
-bool imap_url_section_text_validate(const char *s);
-// validate conformance to RFC 2192 "section"
-bool imap_url_section_validate(const char *s);
-// validate conformance to RFC 3339 "date-time"
-bool imap_url_datetime_validate(const char *s);
-// validate conformance to RFC 4467 "access"
-bool imap_url_access_validate(const char *s);
-// validate conformance to RFC 4467 "mechanism"
-bool imap_url_mechanism_validate(const char *s);
-// validate conformance to RFC 4467 "urlauth" (really enc-urlauth)
-bool imap_url_urlauth_validate(const char *s);
+/*
+ * IMAP URL construction
+ */
 
-// build a URL from parts
-void imap_url_construct(const struct imap_url_parts *parts, string_t *url);
+const char *imap_url_create(const struct imap_url *url);
 
-// filter a URL according to RFC 4469 url-resp-text
-const char *imap_url_sanitize(const char *url);
+const char *imap_url_add_urlauth(const char *rumpurl, const char *mechanism,
+				 const unsigned char *token, size_t token_len);
 
 #endif

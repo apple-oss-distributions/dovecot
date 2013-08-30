@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_STRINGLIST_H
@@ -39,13 +39,13 @@ static inline void sieve_stringlist_set_trace
 }
 
 static inline int sieve_stringlist_next_item
-(struct sieve_stringlist *strlist, string_t **str_r) 
+(struct sieve_stringlist *strlist, string_t **str_r)
 {
 	return strlist->next_item(strlist, str_r);
 }
 
 static inline void sieve_stringlist_reset
-(struct sieve_stringlist *strlist) 
+(struct sieve_stringlist *strlist)
 {
 	strlist->reset(strlist);
 }

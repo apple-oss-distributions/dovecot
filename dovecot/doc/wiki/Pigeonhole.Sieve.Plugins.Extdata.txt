@@ -10,10 +10,16 @@ Getting the sources
 -------------------
 
 Currently, the sources of the extdata plugin are not released, but you can get
-them from the the Mercurial repository:
+them from the their Mercurial repository. For Pigeonhole v0.2:
 
 ---%<-------------------------------------------------------------------------
 hg clone  http://hg.rename-it.nl/pigeonhole-0.2-sieve-extdata/
+---%<-------------------------------------------------------------------------
+
+And for Pigeonhole v0.3:
+
+---%<-------------------------------------------------------------------------
+hg clone  http://hg.rename-it.nl/pigeonhole-0.3-sieve-extdata/
 ---%<-------------------------------------------------------------------------
 
 Compiling
@@ -94,11 +100,11 @@ vacation :days 30 :subject "${extdata.vacation_subject}"
 keep;
 ---%<-------------------------------------------------------------------------
 
-where "priv/vacation_subject" & "priv/cacation_message" would be looked up in
+where "priv/vacation_subject" & "priv/vacation_message" would be looked up in
 the Dovecot dict.
 
 Read the (preliminary) specification
 [http://hg.rename-it.nl/pigeonhole-0.2-sieve-extdata/raw-file/tip/doc/rfc/spec-bosch-sieve-external-data.txt]
 for more information.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

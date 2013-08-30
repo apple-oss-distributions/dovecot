@@ -3,11 +3,11 @@ Contents
 
  1. Public Mailboxes
 
-     1. Maildir: Per-user \Seen flag
+     1. Per-user \Seen flag (v2.2+)
+
+     2. Maildir: Per-user \Seen flag
 
          1. Maildir: Keyword sharing
-
-     2. Other mailbox formats: Per-user flags
 
      3. Subscriptions
 
@@ -65,14 +65,46 @@ drwxrws--- 1 root mail 0 2007-03-19 03:12 .bugtraq
 
 Note that there are no 'cur/', 'new/' or 'tmp/' directories directly under the
 '/var/mail/public/', because the Public/ namespace isn't a mailbox itself. (If
-you create them manually, it does become a selectable mailbox.)
+you create them manually, it does become a selectable mailbox. )
 
 The 'dovecot-shared' file isn't directly used for either lkml or bugtraq
 mailboxes, but if you create a new public mailbox via Dovecot it's
 automatically copied there.
 
+Note that Dovecot uses Maildir++ layout by default for folders, where the
+folder names must begin with a "." or Dovecot will ignore them. You can also
+optionally use the <"fs" layout> [MailboxFormat.Maildir.txt] if you want the
+directory structure to look like:
+
+ * '/var/mail/public/' (root dir)
+ * '/var/mail/public/info/' (maildir folder)
+ * '/var/mail/public/company/' (maildir folder)
+
+Per-user \Seen flag (v2.2+)
+---------------------------
+
+Since v2.2 the recommended way to enable private flags for shared mailboxes is
+to create private indexes with :INDEXPVT=<path>. This creates
+dovecot.index.pvt[.log] files, which contain only the message UIDs and the
+private flags. Currently the list of private flags is hardcoded only to the
+\Seen flag.
+
+Example:
+
+---%<-------------------------------------------------------------------------
+namespace {
+  type = public
+  separator = /
+  prefix = Public/
+  location = maildir:/var/mail/public:INDEXPVT=~/Maildir/public
+  subscriptions = no
+}
+---%<-------------------------------------------------------------------------
+
 Maildir: Per-user \Seen flag
 ----------------------------
+
+(With v2.2+ you should instead use the INDEXPVT as described above.)
 
 With Maildir a 'dovecot-shared' file controls if the \Seen flags are shared or
 private. The file must be created separately inside each Maildir, although if
@@ -93,7 +125,7 @@ namespace {
 ---%<-------------------------------------------------------------------------
 
 Now when accessing e.g. "Public/lkml" mailbox, Dovecot keeps its index files in
-'~/Maildir/public/lkml/' directory. If it ever gets deleted, the \Seen flags
+'~/Maildir/public/.lkml/' directory. If it ever gets deleted, the \Seen flags
 are lost.
 
 If you want to change what flags are shared when 'dovecot-shared' file exists,
@@ -108,12 +140,6 @@ Maildir: Keyword sharing
 
 Make sure you don't try to use per-user CONTROL directory. Otherwise
 'dovecot-keywords' file doesn't get shared and keyword mapping breaks.
-
-Other mailbox formats: Per-user flags
--------------------------------------
-
-Currently you can't have any per-user flags with other mailbox formats than
-Maildir.
 
 Subscriptions
 -------------
@@ -212,4 +238,4 @@ After this you have to place 'dovecot-acl' files in every mailbox/folder below
 'acl_shared_dict' setting is not relevant for public mailboxes (only for
 shared).
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

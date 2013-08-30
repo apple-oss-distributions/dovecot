@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -57,10 +57,11 @@ index_sort_list_add_date(struct mail_search_sort_program *program,
 {
 	ARRAY_TYPE(mail_sort_node_date) *nodes = program->context;
 	struct mail_sort_node_date *node;
+	int tz;
 
 	node = array_append_space(nodes);
 	node->seq = mail->seq;
-	if (mail_get_date(mail, &node->date, NULL) < 0)
+	if (mail_get_date(mail, &node->date, &tz) < 0)
 		node->date = 0;
 	else if (node->date == 0) {
 		if (mail_get_received_date(mail, &node->date) < 0)
@@ -105,26 +106,26 @@ index_sort_list_add_pop3_order(struct mail_search_sort_program *program,
 	node->size = index_sort_get_pop3_order(mail);
 }
 
-static float index_sort_get_score(struct mail *mail)
+static float index_sort_get_relevancy(struct mail *mail)
 {
 	const char *str;
 
-	if (mail_get_special(mail, MAIL_FETCH_SEARCH_SCORE, &str) < 0)
+	if (mail_get_special(mail, MAIL_FETCH_SEARCH_RELEVANCY, &str) < 0)
 		return 0;
 	else
 		return strtod(str, NULL);
 }
 
 static void
-index_sort_list_add_score(struct mail_search_sort_program *program,
-			  struct mail *mail)
+index_sort_list_add_relevancy(struct mail_search_sort_program *program,
+			      struct mail *mail)
 {
 	ARRAY_TYPE(mail_sort_node_float) *nodes = program->context;
 	struct mail_sort_node_float *node;
 
 	node = array_append_space(nodes);
 	node->seq = mail->seq;
-	node->num = index_sort_get_score(mail);
+	node->num = index_sort_get_relevancy(mail);
 }
 
 void index_sort_list_add(struct mail_search_sort_program *program,
@@ -132,7 +133,9 @@ void index_sort_list_add(struct mail_search_sort_program *program,
 {
 	i_assert(mail->transaction == program->t);
 
-	program->sort_list_add(program, mail);
+	T_BEGIN {
+		program->sort_list_add(program, mail);
+	} T_END;
 }
 
 static int sort_node_date_cmp(const struct mail_sort_node_date *n1,
@@ -207,7 +210,12 @@ index_sort_list_finish_float(struct mail_search_sort_program *program)
 {
 	ARRAY_TYPE(mail_sort_node_float) *nodes = program->context;
 
+	/* NOTE: higher relevancy is returned first, unlike with all
+	   other number based sort keys, so temporarily reverse the search */
+	static_node_cmp_context.reverse = !static_node_cmp_context.reverse;
 	array_sort(nodes, sort_node_float_cmp);
+	static_node_cmp_context.reverse = !static_node_cmp_context.reverse;
+
 	memcpy(&program->seqs, nodes, sizeof(program->seqs));
 	i_free(nodes);
 	program->context = NULL;
@@ -225,7 +233,7 @@ void index_sort_list_finish(struct mail_search_sort_program *program)
 }
 
 bool index_sort_list_next(struct mail_search_sort_program *program,
-			  struct mail *mail)
+			  uint32_t *seq_r)
 {
 	const uint32_t *seqp;
 
@@ -233,7 +241,7 @@ bool index_sort_list_next(struct mail_search_sort_program *program,
 		return FALSE;
 
 	seqp = array_idx(&program->seqs, program->iter_idx++);
-	mail_set_seq(mail, *seqp);
+	*seq_r = *seqp;
 	return TRUE;
 }
 
@@ -297,12 +305,12 @@ index_sort_program_init(struct mailbox_transaction_context *t,
 		program->sort_list_finish = index_sort_list_finish_string;
 		index_sort_list_init_string(program);
 		break;
-	case MAIL_SORT_SEARCH_SCORE: {
+	case MAIL_SORT_RELEVANCY: {
 		ARRAY_TYPE(mail_sort_node_float) *nodes;
 
 		nodes = i_malloc(sizeof(*nodes));
 		i_array_init(nodes, 128);
-		program->sort_list_add = index_sort_list_add_score;
+		program->sort_list_add = index_sort_list_add_relevancy;
 		program->sort_list_finish = index_sort_list_finish_float;
 		program->context = nodes;
 		break;
@@ -403,6 +411,7 @@ int index_sort_header_get(struct mail *mail, uint32_t seq,
 {
 	const char *str;
 	int ret;
+	bool reply_or_fw;
 
 	mail_set_seq(mail, seq);
 	str_truncate(dest, 0);
@@ -412,7 +421,7 @@ int index_sort_header_get(struct mail *mail, uint32_t seq,
 		if ((ret = mail_get_first_header(mail, "Subject", &str)) <= 0)
 			return ret;
 		str = imap_get_base_subject_cased(pool_datastack_create(),
-						  str, NULL);
+						  str, &reply_or_fw);
 		str_append(dest, str);
 		return 0;
 	case MAIL_SORT_CC:
@@ -434,7 +443,7 @@ int index_sort_header_get(struct mail *mail, uint32_t seq,
 		i_unreached();
 	}
 
-	(void)uni_utf8_to_decomposed_titlecase(str, (size_t)-1, dest);
+	(void)uni_utf8_to_decomposed_titlecase(str, strlen(str), dest);
 	return ret;
 }
 
@@ -446,7 +455,7 @@ int index_sort_node_cmp_type(struct mail *mail,
 	time_t time1, time2;
 	uoff_t size1, size2;
 	float float1, float2;
-	int ret = 0;
+	int tz, ret = 0;
 
 	sort_type = *sort_program & MAIL_SORT_MASK;
 	switch (sort_type) {
@@ -461,8 +470,8 @@ int index_sort_node_cmp_type(struct mail *mail,
 
 			str1 = t_str_new(256);
 			str2 = t_str_new(256);
-			index_sort_header_get(mail, seq1, sort_type, str1);
-			index_sort_header_get(mail, seq2, sort_type, str2);
+			(void)index_sort_header_get(mail, seq1, sort_type, str1);
+			(void)index_sort_header_get(mail, seq2, sort_type, str2);
 
 			ret = strcmp(str_c(str1), str_c(str2));
 		} T_END;
@@ -481,7 +490,7 @@ int index_sort_node_cmp_type(struct mail *mail,
 		break;
 	case MAIL_SORT_DATE:
 		mail_set_seq(mail, seq1);
-		if (mail_get_date(mail, &time1, NULL) < 0)
+		if (mail_get_date(mail, &time1, &tz) < 0)
 			time1 = 0;
 		else if (time1 == 0) {
 			if (mail_get_received_date(mail, &time1) < 0)
@@ -489,7 +498,7 @@ int index_sort_node_cmp_type(struct mail *mail,
 		}
 
 		mail_set_seq(mail, seq2);
-		if (mail_get_date(mail, &time2, NULL) < 0)
+		if (mail_get_date(mail, &time2, &tz) < 0)
 			time2 = 0;
 		else if (time2 == 0) {
 			if (mail_get_received_date(mail, &time2) < 0)
@@ -511,14 +520,16 @@ int index_sort_node_cmp_type(struct mail *mail,
 		ret = size1 < size2 ? -1 :
 			(size1 > size2 ? 1 : 0);
 		break;
-	case MAIL_SORT_SEARCH_SCORE:
+	case MAIL_SORT_RELEVANCY:
 		mail_set_seq(mail, seq1);
-		float1 = index_sort_get_score(mail);
+		float1 = index_sort_get_relevancy(mail);
 		mail_set_seq(mail, seq2);
-		float2 = index_sort_get_score(mail);
+		float2 = index_sort_get_relevancy(mail);
 
-		ret = float1 < float2 ? -1 :
-			(float1 > float2 ? 1 : 0);
+		/* NOTE: higher relevancy is returned first, unlike with all
+		   other number based sort keys */
+		ret = float1 < float2 ? 1 :
+			(float1 > float2 ? -1 : 0);
 		break;
 	case MAIL_SORT_POP3_ORDER:
 		/* 32bit numbers would be enough, but since there is already

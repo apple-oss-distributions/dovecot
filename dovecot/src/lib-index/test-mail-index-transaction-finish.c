@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -60,8 +60,8 @@ uint64_t mail_index_modseq_get_highest(struct mail_index_view *view ATTR_UNUSED)
 static void test_mail_index_transaction_finish_flag_updates(void)
 {
 	struct mail_index_transaction *t;
-	const struct mail_transaction_flag_update *updates;
-	struct mail_transaction_flag_update u;
+	const struct mail_index_flag_update *updates;
+	struct mail_index_flag_update u;
 	unsigned int count;
 
 	t = t_new(struct mail_index_transaction, 1);
@@ -202,9 +202,7 @@ static void test_mail_index_transaction_finish_modseq_updates(void)
 static void test_mail_index_transaction_finish_expunges(void)
 {
 	struct mail_index_transaction *t;
-	uint8_t guid1[MAIL_GUID_128_SIZE];
-	uint8_t guid2[MAIL_GUID_128_SIZE];
-	uint8_t guid3[MAIL_GUID_128_SIZE];
+	guid_128_t guid1, guid2, guid3;
 	const struct mail_transaction_expunge_guid *expunges;
 	struct mail_transaction_expunge_guid expunge;
 	unsigned int i, count;

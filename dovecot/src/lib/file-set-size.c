@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
@@ -101,7 +101,7 @@ int file_preallocate(int fd ATTR_UNUSED, off_t size ATTR_UNUSED)
 	fs.fst_bytesalloc = 0;
 	if (fcntl(fd, F_PREALLOCATE, &fs) < 0)
 		return -1;
-	return 0;
+	return fs.fst_bytesalloc > 0 ? 1 : 0;
 #else
 	return 0;
 #endif

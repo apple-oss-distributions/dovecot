@@ -4,6 +4,8 @@ Why doesn't Dovecot work?
  * *Dovecot always logs an error message* if anything goes wrong, so make sure
    you're looking at the correct log files. Debug messages may be written to a
    different log file than error messages. See <Logging.txt>.
+ * Are you upgrading? Make sure you read the <upgrading documents>
+   [Upgrading.txt].
  * Make sure you're modifying the correct config file! Ubuntu creates two of
    them. Other distributions may also have older config files lying around. For
    example add "garbage=blah" to the config file and verify that Dovecot now
@@ -14,11 +16,10 @@ Why doesn't Dovecot work?
    errors simply by showing you the login password dialog, even if the problem
    has nothing to do with authentication. See <TestInstallation.txt> (or
    <TestPop3Installation.txt>).
- * Are you using an older version than v1.0? RHEL 5.0 and Debian Etch
-   distribute v1.0.rc15, and there have been a LOT of fixes since then. If you
-   have a problem, see if NEWS [http://dovecot.org/doc/NEWS] file mentions
-   anything related to it. There are also <binary packages>
-   [PrebuiltBinaries.txt] available for newer versions.
+ * Are you using an old version? If you have a problem, see if NEWS
+   [http://dovecot.org/doc/NEWS] file mentions anything related to it. There
+   are also <binary packages> [PrebuiltBinaries.txt] available for newer
+   versions.
 
 It says "Authentication failed"
 -------------------------------
@@ -34,8 +35,8 @@ client isn't configured to use SSL/TLS (or you've also set 'ssl=no').
 
 If you're using <PAM> [PasswordDatabase.PAM.txt]:
 
- * Make sure that dovecot-auth is running as root (assuming it's using
-   '/etc/shadow').
+ * Make sure that Dovecot's auth process is running as root (assuming it's
+   using '/etc/shadow').
  * PAM errors aren't written to Dovecot's own logs. Usually they go to
    '/var/log/auth.log' or something similar.
     * Unfortunately PAM's error messages aren't always all that helpful in
@@ -53,4 +54,4 @@ It's not finding my emails
 'auth_debug=yes' may be helpful in debugging. See <MailLocation.txt> for how to
 configure where the mails are looked up from.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

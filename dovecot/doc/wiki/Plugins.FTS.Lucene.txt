@@ -16,7 +16,8 @@ mail_plugins = $mail_plugins fts fts_lucene
 
 plugin {
   fts = lucene
-  #fts_lucene = <fts-lucene settings>
+  # Lucene-specific settings, good ones are:
+  fts_lucene = whitespace_chars=@.
 }
 ---%<-------------------------------------------------------------------------
 
@@ -43,4 +44,4 @@ Libraries
    which you can rename to libstemmer.a
  * textcat [http://textcat.sourceforge.net/]
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

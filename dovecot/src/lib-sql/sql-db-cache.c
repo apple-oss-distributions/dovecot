@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -20,7 +20,7 @@ struct sql_db_cache_context {
 };
 
 struct sql_db_cache {
-	struct hash_table *dbs;
+	HASH_TABLE(char *, struct sql_db *) dbs;
 	unsigned int unused_count, max_unused_connections;
 	struct sql_db *unused_tail, *unused_head;
 };
@@ -75,6 +75,7 @@ static void sql_db_cache_free_tail(struct sql_db_cache *cache)
 	db = cache->unused_tail;
 	ctx = SQL_DB_CACHE_CONTEXT(db);
 	sql_db_cache_unlink(ctx);
+	hash_table_remove(cache->dbs, ctx->key);
 
 	i_free(ctx->key);
 	ctx->orig_deinit(db);
@@ -127,8 +128,7 @@ struct sql_db_cache *sql_db_cache_init(unsigned int max_unused_connections)
 	struct sql_db_cache *cache;
 
 	cache = i_new(struct sql_db_cache, 1);
-	cache->dbs = hash_table_create(default_pool, default_pool, 0, str_hash,
-				       (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&cache->dbs, default_pool, 0, str_hash, strcmp);
 	cache->max_unused_connections = max_unused_connections;
 	return cache;
 }

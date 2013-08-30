@@ -8,7 +8,8 @@ There are two ways to do LDAP authentication:
 
 Both of these have their own advantages and disadvantages.
 
- * <LDAP as userdb> [AuthDatabase.LDAP.Userdb.txt]
+ * <LDAP as userdb> [AuthDatabase.LDAP.Userdb.txt] and other common LDAP query
+   settings.
 
 Configuration common to LDAP passdb and userdb
 ----------------------------------------------
@@ -55,6 +56,7 @@ Active Directory
 ----------------
 
 When connecting to AD, you may need to use port 3268. Then again, not all LDAP
-fields are available in port 3268. Use whatever works.
+fields are available in port 3268. Use whatever
+works.http://technet.microsoft.com/en-us/library/cc978012.aspx
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

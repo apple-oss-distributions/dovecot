@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -45,7 +45,7 @@ struct pgsql_result {
 	const char **fields;
 	const char **values;
 
-	ARRAY_DEFINE(binary_values, struct pgsql_binary_value);
+	ARRAY(struct pgsql_binary_value) binary_values;
 
 	sql_query_callback_t *callback;
 	void *context;
@@ -168,8 +168,6 @@ static void connect_callback(struct pgsql_db *db)
 	}
 
 	if (io_dir == 0) {
-		i_info("%s: Connected to database %s",
-		       pgsql_prefix(db), PQdb(db->pg));
 		if (db->to_connect != NULL)
 			timeout_remove(&db->to_connect);
 		driver_pgsql_set_state(db, SQL_DB_STATE_IDLE);
@@ -485,8 +483,10 @@ driver_pgsql_escape_string(struct sql_db *_db, const char *string)
 		(void)sql_connect(&db->api);
 	}
 	if (db->api.state != SQL_DB_STATE_DISCONNECTED) {
+		int error;
+
 		to = t_buffer_get(len * 2 + 1);
-		len = PQescapeStringConn(db->pg, to, string, len, NULL);
+		len = PQescapeStringConn(db->pg, to, string, len, &error);
 	} else
 #endif
 	{
@@ -603,6 +603,9 @@ driver_pgsql_sync_query(struct pgsql_db *db, const char *query)
 		/* we don't end up in pgsql's free function, so sync_result
 		   won't be set to NULL if we don't do it here. */
 		db->sync_result = NULL;
+	} else if (result == NULL) {
+		result = &sql_not_connected_result;
+		result->refcount++;
 	}
 
 	i_assert(db->io == NULL);
@@ -956,22 +959,16 @@ driver_pgsql_transaction_commit_multi(struct pgsql_transaction_context *ctx)
 				       "ROLLBACK" : "COMMIT");
 }
 
-static int
-driver_pgsql_transaction_commit_s(struct sql_transaction_context *_ctx,
-				  const char **error_r)
+static void
+driver_pgsql_try_commit_s(struct pgsql_transaction_context *ctx,
+			  const char **error_r)
 {
-	struct pgsql_transaction_context *ctx =
-		(struct pgsql_transaction_context *)_ctx;
+	struct sql_transaction_context *_ctx = &ctx->ctx;
 	struct pgsql_db *db = (struct pgsql_db *)_ctx->db;
 	struct sql_transaction_query *single_query = NULL;
 	struct sql_result *result;
 
-	*error_r = NULL;
-
-	if (ctx->failed || _ctx->head == NULL) {
-		/* nothing to be done */
-		result = NULL;
-	} else if (_ctx->head->next == NULL) {
+	if (_ctx->head->next == NULL) {
 		/* just a single query, send it */
 		single_query = _ctx->head;
 		result = sql_query_s(_ctx->db, single_query->query);
@@ -999,6 +996,31 @@ driver_pgsql_transaction_commit_s(struct sql_transaction_context *_ctx,
 	}
 	if (result != NULL)
 		sql_result_unref(result);
+}
+
+static int
+driver_pgsql_transaction_commit_s(struct sql_transaction_context *_ctx,
+				  const char **error_r)
+{
+	struct pgsql_transaction_context *ctx =
+		(struct pgsql_transaction_context *)_ctx;
+	struct pgsql_db *db = (struct pgsql_db *)_ctx->db;
+
+	*error_r = NULL;
+
+	if (_ctx->head != NULL) {
+		driver_pgsql_try_commit_s(ctx, error_r);
+		if (_ctx->db->state == SQL_DB_STATE_DISCONNECTED) {
+			*error_r = t_strdup(*error_r);
+			i_info("%s: Disconnected from database, "
+			       "retrying commit", pgsql_prefix(db));
+			if (sql_connect(_ctx->db) >= 0) {
+				ctx->failed = FALSE;
+				*error_r = NULL;
+				driver_pgsql_try_commit_s(ctx, error_r);
+			}
+		}
+	}
 
 	i_assert(ctx->refcount == 1);
 	driver_pgsql_transaction_unref(ctx);
@@ -1063,7 +1085,7 @@ const struct sql_result driver_pgsql_result = {
 	}
 };
 
-const char *driver_pgsql_version = DOVECOT_VERSION;
+const char *driver_pgsql_version = DOVECOT_ABI_VERSION;
 
 void driver_pgsql_init(void);
 void driver_pgsql_deinit(void);

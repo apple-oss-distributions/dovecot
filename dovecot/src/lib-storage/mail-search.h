@@ -35,8 +35,6 @@ enum mail_search_arg_type {
 	/* body */
 	SEARCH_BODY,
 	SEARCH_TEXT,
-	SEARCH_BODY_FAST,
-	SEARCH_TEXT_FAST,
 
 	/* extensions */
 	SEARCH_MODSEQ,
@@ -93,9 +91,10 @@ struct mail_search_arg {
 
         void *context;
 	const char *hdr_field_name; /* for SEARCH_HEADER* */
-	unsigned int not:1;
+	unsigned int match_not:1; /* result = !result */
 	unsigned int match_always:1; /* result = 1 always */
 	unsigned int nonmatch_always:1; /* result = 0 always */
+	unsigned int fuzzy:1; /* use fuzzy matching for this arg */
 
 	int result; /* -1 = unknown, 0 = unmatched, 1 = matched */
 };
@@ -106,7 +105,6 @@ struct mail_search_args {
 	pool_t pool;
 	struct mailbox *box;
 	struct mail_search_arg *args;
-	const char *charset;
 
 	unsigned int simplified:1;
 	unsigned int have_inthreads:1;
@@ -114,7 +112,7 @@ struct mail_search_args {
 
 #define ARG_SET_RESULT(arg, res) \
 	STMT_START { \
-		(arg)->result = !(arg)->not ? (res) : \
+		(arg)->result = !(arg)->match_not ? (res) : \
 			(res) == -1 ? -1 : !(res); \
 	} STMT_END
 
@@ -125,7 +123,8 @@ typedef void mail_search_foreach_callback_t(struct mail_search_arg *arg,
    change uidsets to seqsets. */
 void mail_search_args_init(struct mail_search_args *args,
 			   struct mailbox *box, bool change_uidsets,
-			   const ARRAY_TYPE(seq_range) *search_saved_uidset);
+			   const ARRAY_TYPE(seq_range) *search_saved_uidset)
+	ATTR_NULL(4);
 /* Free keywords. The args can initialized afterwards again if needed.
    The args can be reused for other queries after calling this. */
 void mail_search_args_deinit(struct mail_search_args *args);
@@ -151,17 +150,12 @@ void mail_search_args_reset(struct mail_search_arg *args, bool full_reset);
    Returns 1 = search matched, 0 = search unmatched, -1 = don't know yet */
 int mail_search_args_foreach(struct mail_search_arg *args,
 			     mail_search_foreach_callback_t *callback,
-			     void *context);
-#ifdef CONTEXT_TYPE_SAFETY
-#  define mail_search_args_foreach(args, callback, context) \
-	({(void)(1 ? 0 : callback((struct mail_search_arg *)NULL, context)); \
-	  mail_search_args_foreach(args, \
-		(mail_search_foreach_callback_t *)callback, context); })
-#else
-#  define mail_search_args_foreach(args, callback, context) \
-	  mail_search_args_foreach(args, \
+			     void *context) ATTR_NULL(3);
+#define mail_search_args_foreach(args, callback, context) \
+	  mail_search_args_foreach(args + \
+		CALLBACK_TYPECHECK(callback, void (*)( \
+			struct mail_search_arg *, typeof(context))), \
 		(mail_search_foreach_callback_t *)callback, context)
-#endif
 
 /* Fills have_headers and have_body based on if such search argument exists
    that needs to be checked. Returns the headers that we're searching for, or
@@ -176,7 +170,14 @@ bool mail_search_args_match_mailbox(struct mail_search_args *args,
 				    const char *vname, char sep);
 
 /* Simplify/optimize search arguments. Afterwards all OR/SUB args are
-   guaranteed to have not=FALSE. */
+   guaranteed to have match_not=FALSE. */
 void mail_search_args_simplify(struct mail_search_args *args);
+
+/* Serialization for search args' results. */
+void mail_search_args_result_serialize(const struct mail_search_args *args,
+				       buffer_t *dest);
+void mail_search_args_result_deserialize(struct mail_search_args *args,
+					 const unsigned char *data,
+					 size_t size);
 
 #endif

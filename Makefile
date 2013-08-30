@@ -6,24 +6,26 @@
 
 Project			= dovecot
 DELIVERABLE		= dovecot
-PROJECT_VERSION		= $(Project)-2.0.19apple1
-PigeonholeProject		= $(Project)-pigeonhole
-PIGEONHOLE_VERSION		= $(Project)-2.0-pigeonhole-0.2.6
+PROJECT_VERSION		= $(Project)-2.2.5
+PigeonholeProject	= $(Project)-pigeonhole
+PIGEONHOLE_VERSION	= $(Project)-2.2-pigeonhole-0.4.1
 
 # Configuration values we customize
 #
+PROJECT_CONF_DIR	= $(Project).Config
+PROJECT_SETUP_DIR	= $(Project).SetupExtras
+
 DOVECOT_PUSH_NOTIFY	= $(Project).push-notify
-TOOL_DIR		= $(Project).Tools
-MIGRATION_TOOL		= cyrus_to_$(Project)
-SKVIEW_TOOL		= skview
+TOOL_DIR			= $(Project).Tools
+TOOLS				= cyrus_to_$(Project) skview skquery
 
-DATA_DIR=/Library/Server/Mail/Data
-CONFIG_DIR=/Library/Server/Mail/Config/
+DATA_DIR	= /Library/Server/Mail/Data
+CONFIG_DIR	= /Library/Server/Mail/Config/
+PROMO_DIR	= $(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/ServerSetup/PromotionExtras
+LIBEXEC_DIR	= $(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)
 
-COMMON_EXTRAS_DIR=$(NSLIBRARYDIR)/ServerSetup/CommonExtras
-PROMO_EXTRAS_DIR=$(NSLIBRARYDIR)/ServerSetup/PromotionExtras
-SETUP_DOVECOT=$(COMMON_EXTRAS_DIR)/65-setup_dovecot.sh
-PROMO_DOVECOT=$(PROMO_EXTRAS_DIR)/65-setup_dovecot.sh
+SRC_PROMO_SCRIPT	= service_promotion.pl
+DST_PROMO_SCRIPT	= 65-mail_services_access.pl
 
 # Include common server build variables
 -include /AppleInternal/ServerTools/ServerBuildVariables.xcconfig
@@ -146,26 +148,20 @@ build_daemon : $(ProjectConfig)
 	@echo "***** Building $(DOVECOT_PUSH_NOTIFY) complete."
 
 build_tools :
-	@echo "***** Building $(MIGRATION_TOOL)"
-	$(_v) cd "$(SRCROOT)/$(TOOL_DIR)/$(MIGRATION_TOOL)" \
-		&& $(XCODEBUILD) $(Install_Target)	\
-			SRCROOT="$(SRCROOT)/$(TOOL_DIR)/$(MIGRATION_TOOL)"	\
-			OBJROOT=$(OBJROOT)		\
-			SYMROOT=$(SYMROOT)		\
-			DSTROOT="$(DSTROOT)"		\
-			RC_CFLAGS="$(RC_CFLAGS)"	\
-			RC_ARCHS="$(RC_ARCHS)"
-	@echo "***** Building $(MIGRATION_TOOL) complete."
-	@echo "***** Building $(SKVIEW_TOOL)"
-	$(_v) cd "$(SRCROOT)/$(TOOL_DIR)/$(SKVIEW_TOOL)" \
-		&& $(XCODEBUILD) $(Install_Target)	\
-			SRCROOT="$(SRCROOT)/$(TOOL_DIR)/$(SKVIEW_TOOL)"	\
-			OBJROOT=$(OBJROOT)		\
-			SYMROOT=$(SYMROOT)		\
-			DSTROOT="$(DSTROOT)"		\
-			RC_CFLAGS="$(RC_CFLAGS)"	\
-			RC_ARCHS="$(RC_ARCHS)"
-	@echo "***** Building $(SKVIEW_TOOL) complete."
+	for tool in $(TOOLS); \
+	do \
+		echo "***** Building $$tool"; \
+		$(_v) cd "$(SRCROOT)/$(TOOL_DIR)/$$tool" \
+			&& $(XCODEBUILD) $(Install_Target)	\
+				SRCROOT="$(SRCROOT)/$(TOOL_DIR)/$$tool"	\
+				OBJROOT=$(OBJROOT)		\
+				SYMROOT=$(SYMROOT)		\
+				DSTROOT="$(DSTROOT)"		\
+				RC_CFLAGS="$(RC_CFLAGS)"	\
+				RC_ARCHS="$(RC_ARCHS)" \
+			|| exit $$?; \
+		echo "***** Building $$tool complete."; \
+	done
 
 # Custom configuration:
 #
@@ -258,42 +254,24 @@ install-extras : install-open-source-files lib_cleanup
 			"$(DSTROOT)$(CONFIG_DIR)/$(DELIVERABLE)/example-config"
 	$(_v) $(INSTALL_FILE) $(BuildDirectory)/$(Project)/doc/example-config/conf.d/*.conf* \
 			"$(DSTROOT)$(CONFIG_DIR)/$(DELIVERABLE)/example-config/conf.d"
-	$(_v) $(INSTALL_FILE) $(SRCROOT)/dovecot.Config/*.conf* \
+	$(_v) $(INSTALL_FILE) $(SRCROOT)/$(PROJECT_CONF_DIR)/*.conf* \
 			"$(DSTROOT)$(CONFIG_DIR)/$(DELIVERABLE)/default"
-	$(_v) $(INSTALL_FILE) $(SRCROOT)/dovecot.Config/conf.d/*.conf* \
+	$(_v) $(INSTALL_FILE) $(SRCROOT)/$(PROJECT_CONF_DIR)/conf.d/*.conf* \
 			"$(DSTROOT)$(CONFIG_DIR)/$(DELIVERABLE)/default/conf.d"
-	$(_v) $(INSTALL_DIRECTORY) "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/ServerSetup/CommonExtras"
-	$(_v) $(INSTALL_DIRECTORY) "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/ServerSetup/MigrationExtras"
-	$(_v) $(INSTALL_DIRECTORY) "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/ServerSetup/PromotionExtras"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/65_mail_migrator.pl" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/ServerSetup/MigrationExtras/65_mail_migrator.pl"
-	$(_v) (/bin/echo "#!/bin/sh" > "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)") 
-	$(_v) (/bin/echo "#" >> "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)")
-	$(_v) (/bin/echo "" >> "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)")
-	$(_v) (/bin/echo "_server_root=$(SERVER_INSTALL_PATH_PREFIX)" >> "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)")
-	$(_v) (/bin/cat "$(SRCROOT)/dovecot.Config/SetupDovecot.sh" >> "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)")
-	$(_v) (/bin/chmod 755 "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)")
-	install -m 0755	"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(SETUP_DOVECOT)" "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(PROMO_DOVECOT)"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/migrate_partition_mail_data" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/migrate_partition_mail_data.sh"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/migrate_mail_data.pl" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/migrate_mail_data.pl"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/mail_data_migrator.pl" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/mail_data_migrator.pl"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/migrate_single_user_mail_data" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/migrate_single_user_mail_data.sh"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/quota-warning.sh" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/quota-warning.sh"
-	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/dovecot.Config/quota-exceeded.sh" \
-			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/quota-exceeded.sh"
-	$(_v) $(CHMOD) u+w $(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/quota-*.sh
+	# promotion script
+	$(_v) $(INSTALL_DIRECTORY) "$(DSTROOT)$(PROMO_DIR)"
+	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/$(PROJECT_SETUP_DIR)/$(SRC_PROMO_SCRIPT)" "$(DSTROOT)$(PROMO_DIR)/$(DST_PROMO_SCRIPT)"
+	$(_v) $(CHMOD) 0755 "$(DSTROOT)$(PROMO_DIR)/$(DST_PROMO_SCRIPT)"
+	# quota error/warning scripts
+	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/$(PROJECT_SETUP_DIR)/quota-warning.sh" "$(DSTROOT)$(LIBEXEC_DIR)/quota-warning.sh"
+	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/$(PROJECT_SETUP_DIR)/quota-exceeded.sh" "$(DSTROOT)$(LIBEXEC_DIR)/quota-exceeded.sh"
+	#$(_v) $(CHMOD) u+w $(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/quota-*.sh
 	$(_v) $(CHOWN) root:mail "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/deliver"
 	$(_v) $(CHMOD) 0750 "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/deliver"
 	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/$(TOOL_DIR)/update-fts-index.pl" \
 			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/update-fts-index.pl"
 	$(_v) $(INSTALL_SCRIPT) "$(SRCROOT)/$(TOOL_DIR)/mail_preflight" \
 			"$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(LIBEXECDIR)/$(DELIVERABLE)/mail_preflight"
-	$(_v) (cd "$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(USRBINDIR)" && $(LN) -s cvt_mail_data set_user_mail_opts)
 	@echo "***** Installing extras complete."
 
 install-man :
@@ -307,7 +285,6 @@ install-startup-files :
 	$(_v) $(INSTALL_DIRECTORY) $(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/LaunchDaemons
 	$(_v) $(INSTALL_FILE) \
 		$(SRCROOT)/dovecot.LaunchDaemons/org.dovecot.$(DELIVERABLE)d.plist \
-		$(SRCROOT)/dovecot.LaunchDaemons/com.apple.mail_migration.plist \
 		$(SRCROOT)/dovecot.LaunchDaemons/org.dovecot.fts.update.plist \
 		$(DSTROOT)$(SERVER_INSTALL_PATH_PREFIX)$(NSLIBRARYDIR)/LaunchDaemons
 

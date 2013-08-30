@@ -1,10 +1,12 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
+#include "istream.h"
 #include "hash.h"
 #include "str.h"
-#include "istream.h"
+#include "strescape.h"
+#include "time-util.h"
 #include "master-service-private.h"
 #include "master-service-settings.h"
 #include "doveadm.h"
@@ -18,8 +20,13 @@
 
 #define LAST_LOG_TYPE LOG_TYPE_PANIC
 #define TEST_LOG_MSG_PREFIX "This is Dovecot's "
+#define LOG_ERRORS_FNAME "log-errors"
+#define LOG_TIMESTAMP_FORMAT "%b %d %H:%M:%S"
 
-static void cmd_log_test(int argc ATTR_UNUSED, char *argv[] ATTR_UNUSED)
+extern struct doveadm_cmd doveadm_cmd_log[];
+
+static void ATTR_NULL(2)
+cmd_log_test(int argc ATTR_UNUSED, char *argv[] ATTR_UNUSED)
 {
 	struct failure_context ctx;
 	unsigned int i;
@@ -55,7 +62,7 @@ struct log_find_file {
 
 struct log_find_context {
 	pool_t pool;
-	struct hash_table *files;
+	HASH_TABLE(char *, struct log_find_file *) files;
 };
 
 static void cmd_log_find_add(struct log_find_context *ctx,
@@ -167,12 +174,11 @@ static void cmd_log_find_syslog_messages(struct log_find_context *ctx)
 {
 	struct hash_iterate_context *iter;
 	struct stat st;
-	void *key, *value;
+	char *key;
+	struct log_find_file *file;
 
 	iter = hash_table_iterate_init(ctx->files);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct log_find_file *file = value;
-
+	while (hash_table_iterate(iter, ctx->files, &key, &file)) {
 		if (stat(file->path, &st) < 0 ||
 		    (uoff_t)st.st_size <= file->size)
 			continue;
@@ -215,8 +221,7 @@ static void cmd_log_find(int argc, char *argv[])
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.pool = pool_alloconly_create("log file", 1024*32);
-	ctx.files = hash_table_create(default_pool, ctx.pool, 0,
-				      str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&ctx.files, ctx.pool, 0, str_hash, strcmp);
 
 	/* first get the paths that we know are used */
 	set = master_service_settings_get(master_service);
@@ -254,13 +259,12 @@ static void cmd_log_find(int argc, char *argv[])
 	/* print them */
 	for (i = 0; i < LAST_LOG_TYPE; i++) {
 		struct hash_iterate_context *iter;
-		void *key, *value;
+		char *key;
+		struct log_find_file *file;
 		bool found = FALSE;
 
 		iter = hash_table_iterate_init(ctx.files);
-		while (hash_table_iterate(iter, &key, &value)) {
-			struct log_find_file *file = value;
-
+		while (hash_table_iterate(iter, ctx.files, &key, &file)) {
 			if ((file->mask & (1 << i)) != 0) {
 				printf("%s%s\n", failure_log_type_prefixes[i],
 				       file->path);
@@ -274,10 +278,77 @@ static void cmd_log_find(int argc, char *argv[])
 	}
 }
 
+static void cmd_log_error_write(const char *const *args, time_t min_timestamp)
+{
+	/* <type> <timestamp> <prefix> <text> */
+	const char *type_prefix = "?";
+	unsigned int type;
+	time_t t;
+
+	/* find type's prefix */
+	for (type = 0; type < LOG_TYPE_COUNT; type++) {
+		if (strcmp(args[0], failure_log_type_names[type]) == 0) {
+			type_prefix = failure_log_type_prefixes[type];
+			break;
+		}
+	}
+
+	if (str_to_time(args[1], &t) < 0) {
+		i_error("Invalid timestamp: %s", args[1]);
+		t = 0;
+	}
+	if (t >= min_timestamp) {
+		printf("%s %s%s%s\n", t_strflocaltime(LOG_TIMESTAMP_FORMAT, t),
+		       args[2], type_prefix, args[3]);
+	}
+}
+
+static void cmd_log_errors(int argc, char *argv[])
+{
+	struct istream *input;
+	const char *path, *line, *const *args;
+	time_t min_timestamp = 0;
+	int c, fd;
+
+	while ((c = getopt(argc, argv, "s:")) > 0) {
+		switch (c) {
+		case 's':
+			if (str_to_time(optarg, &min_timestamp) < 0)
+				i_fatal("Invalid timestamp: %s", optarg);
+			break;
+		default:
+			help(&doveadm_cmd_log[3]);
+		}
+	}
+	argv += optind - 1;
+	if (argv[1] != NULL)
+		help(&doveadm_cmd_log[3]);
+
+	path = t_strconcat(doveadm_settings->base_dir,
+			   "/"LOG_ERRORS_FNAME, NULL);
+	fd = net_connect_unix(path);
+	if (fd == -1)
+		i_fatal("net_connect_unix(%s) failed: %m", path);
+	net_set_nonblock(fd, FALSE);
+
+	input = i_stream_create_fd(fd, (size_t)-1, TRUE);
+	while ((line = i_stream_read_next_line(input)) != NULL) T_BEGIN {
+		args = t_strsplit_tabescaped(line);
+		if (str_array_length(args) == 4)
+			cmd_log_error_write(args, min_timestamp);
+		else {
+			i_error("Invalid input from log: %s", line);
+			doveadm_exit_code = EX_PROTOCOL;
+		}
+	} T_END;
+	i_stream_destroy(&input);
+}
+
 struct doveadm_cmd doveadm_cmd_log[] = {
 	{ cmd_log_test, "log test", "" },
 	{ cmd_log_reopen, "log reopen", "" },
-	{ cmd_log_find, "log find", "[<dir>]" }
+	{ cmd_log_find, "log find", "[<dir>]" },
+	{ cmd_log_errors, "log errors", "[-s <min_timestamp>]" }
 };
 
 void doveadm_register_log_commands(void)

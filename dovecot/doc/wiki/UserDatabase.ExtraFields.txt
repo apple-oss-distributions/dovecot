@@ -48,7 +48,7 @@ namespace default {
 }
 ---%<-------------------------------------------------------------------------
 
-The inbox setting can be overridden by returning 'namespace/default/inbox=no'
+The inbox setting can be overridden by returning 'namespace/default/inbox=yes'
 extra field.
 
 Examples
@@ -90,4 +90,4 @@ user2:{plain}pass2:1001:1001::/home/user2::userdb_mail=maildir:~/Maildir
 userdb_quota_rule=*:storage=200M
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

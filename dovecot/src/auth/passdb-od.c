@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -312,8 +312,8 @@ static void od_verify_plain ( struct auth_request *in_request, const char *in_pa
 	}
 
 	if (in_request->skip_password_check) {
-		/* master/submit login */
-		i_assert(in_request->master_user != NULL || in_request->submit_user != NULL);
+		/* master login */
+		i_assert(in_request->master_user != NULL);
 		db_od_user_unref ( &db_user_info );
 		send_server_event( in_request, OD_AUTH_SUCCESS, in_request->user, net_ip2addr(&in_request->remote_ip) );
 		callback( PASSDB_RESULT_OK, in_request );

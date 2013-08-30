@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #define _GNU_SOURCE /* setresgid() */
 #include <stdio.h> /* for AIX */
@@ -126,7 +126,7 @@ gid_t *restrict_get_groups_list(unsigned int *gid_count_r)
 		i_fatal("getgroups() failed: %m");
 
 	/* @UNSAFE */
-	gid_list = t_new(gid_t, gid_count);
+	gid_list = t_new(gid_t, gid_count+1); /* +1 in case gid_count=0 */
 	if ((ret = getgroups(gid_count, gid_list)) < 0)
 		i_fatal("getgroups() failed: %m");
 
@@ -236,6 +236,26 @@ static void fix_groups_list(const struct restrict_access_settings *set,
 	}
 }
 
+static const char *
+get_setuid_error_str(const struct restrict_access_settings *set)
+{
+	string_t *str = t_str_new(128);
+
+	str_printfa(str, "setuid(%s", get_uid_str(set->uid));
+	if (set->uid_source != NULL)
+		str_printfa(str, " from %s", set->uid_source);
+	str_printfa(str, ") failed with euid=%s: %m ",
+		    get_uid_str(geteuid()));
+	if (errno == EAGAIN) {
+		str_append(str, "(ulimit -u reached)");
+	} else {
+		str_printfa(str, "(This binary should probably be called with "
+			    "process user set to %s instead of %s)",
+			    get_uid_str(set->uid), get_uid_str(geteuid()));
+	}
+	return str_c(str);
+}
+
 void restrict_access(const struct restrict_access_settings *set,
 		     const char *home, bool disallow_root)
 {
@@ -247,6 +267,10 @@ void restrict_access(const struct restrict_access_settings *set,
 	/* set the primary/privileged group */
 	process_primary_gid = set->gid;
 	process_privileged_gid = set->privileged_gid;
+	if (process_privileged_gid == process_primary_gid) {
+		/* a pointless configuration, ignore it */
+		process_privileged_gid = (gid_t)-1;
+	}
 
 	have_root_group = process_primary_gid == 0;
 	if (process_primary_gid != (gid_t)-1 ||
@@ -303,19 +327,8 @@ void restrict_access(const struct restrict_access_settings *set,
 
 	/* uid last */
 	if (set->uid != (uid_t)-1) {
-		if (setuid(set->uid) != 0) {
-			string_t *str = t_str_new(128);
-
-			str_printfa(str, "setuid(%s", get_uid_str(set->uid));
-			if (set->uid_source != NULL)
-				str_printfa(str, " from %s", set->uid_source);
-			str_printfa(str, ") failed with euid=%s: %m "
-				"(This binary should probably be called with "
-				"process user set to %s instead of %s)",
-				get_uid_str(geteuid()),
-				get_uid_str(set->uid), get_uid_str(geteuid()));
-			i_fatal("%s", str_c(str));
-		}
+		if (setuid(set->uid) != 0)
+			i_fatal("%s", get_setuid_error_str(set));
 	}
 
 	/* verify that we actually dropped the privileges */

@@ -42,10 +42,6 @@ Then run 'postfix reload'.
  * If you have trouble seeing anything in Dovecot's logs, see <LDA#Logging>
    [LDA.txt].
 
-Some detailed config files and examples at
-http://heinous.org/wiki/Virtual_Domains%2C_Postfix%2C_Dovecot_LDA%2C_and_LDAP
-[http://heinous.org/wiki/Virtual_Domains,_Postfix,_Dovecot_LDA,_and_LDAP]
-
 Virtual users
 -------------
 
@@ -227,4 +223,4 @@ If the recipient address exists (status=deliverable) Postfix accepts the mail.
 *Info:* you can not use "reject_unverified_recipient" with "pipe" so this
 doesn't work with the Dovecot LDA "deliver".
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

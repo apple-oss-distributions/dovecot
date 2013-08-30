@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -63,6 +63,7 @@ test_transaction_log_file_add(uint32_t file_seq)
 	file->hdr.file_seq = file_seq;
 	file->hdr.hdr_size = file->sync_offset = sizeof(file->hdr);
 	file->hdr.prev_file_seq = file_seq - 1;
+	file->hdr.prev_file_offset = (uint32_t)-1;
 	file->log = log;
 	file->fd = -1;
 	file->buffer = buffer_create_dynamic(default_pool, 256);

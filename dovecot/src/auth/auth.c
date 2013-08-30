@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "array.h"
@@ -11,10 +11,40 @@
 
 struct auth_userdb_settings userdb_dummy_set = {
 	.driver = "static",
-	.args = ""
+	.args = "",
+	.default_fields = "",
+	.override_fields = ""
 };
 
-static ARRAY_DEFINE(auths, struct auth *);
+static ARRAY(struct auth *) auths;
+
+static enum auth_passdb_skip auth_passdb_skip_parse(const char *str)
+{
+	if (strcmp(str, "never") == 0)
+		return AUTH_PASSDB_SKIP_NEVER;
+	if (strcmp(str, "authenticated") == 0)
+		return AUTH_PASSDB_SKIP_AUTHENTICATED;
+	if (strcmp(str, "unauthenticated") == 0)
+		return AUTH_PASSDB_SKIP_UNAUTHENTICATED;
+	i_unreached();
+}
+
+static enum auth_passdb_rule auth_passdb_rule_parse(const char *str)
+{
+	if (strcmp(str, "return") == 0)
+		return AUTH_PASSDB_RULE_RETURN;
+	if (strcmp(str, "return-ok") == 0)
+		return AUTH_PASSDB_RULE_RETURN_OK;
+	if (strcmp(str, "return-fail") == 0)
+		return AUTH_PASSDB_RULE_RETURN_FAIL;
+	if (strcmp(str, "continue") == 0)
+		return AUTH_PASSDB_RULE_CONTINUE;
+	if (strcmp(str, "continue-ok") == 0)
+		return AUTH_PASSDB_RULE_CONTINUE_OK;
+	if (strcmp(str, "continue-fail") == 0)
+		return AUTH_PASSDB_RULE_CONTINUE_FAIL;
+	i_unreached();
+}
 
 static void
 auth_passdb_preinit(struct auth *auth, const struct auth_passdb_settings *set,
@@ -24,12 +54,22 @@ auth_passdb_preinit(struct auth *auth, const struct auth_passdb_settings *set,
 
 	auth_passdb = p_new(auth->pool, struct auth_passdb, 1);
 	auth_passdb->set = set;
+	auth_passdb->skip = auth_passdb_skip_parse(set->skip);
+	auth_passdb->result_success =
+		auth_passdb_rule_parse(set->result_success);
+	auth_passdb->result_failure =
+		auth_passdb_rule_parse(set->result_failure);
+	auth_passdb->result_internalfail =
+		auth_passdb_rule_parse(set->result_internalfail);
+
+	/* for backwards compatibility: */
+	if (set->pass)
+		auth_passdb->result_success = AUTH_PASSDB_RULE_CONTINUE;
 
 	for (dest = passdbs; *dest != NULL; dest = &(*dest)->next) ;
 	*dest = auth_passdb;
 
-	auth_passdb->passdb =
-		passdb_preinit(auth->pool, set->driver, set->args);
+	auth_passdb->passdb = passdb_preinit(auth->pool, set);
 }
 
 static void
@@ -43,80 +83,7 @@ auth_userdb_preinit(struct auth *auth, const struct auth_userdb_settings *set)
 	for (dest = &auth->userdbs; *dest != NULL; dest = &(*dest)->next) ;
 	*dest = auth_userdb;
 
-	auth_userdb->userdb =
-		userdb_preinit(auth->pool, set->driver, set->args);
-}
-
-static struct auth *
-auth_preinit(const struct auth_settings *set, const char *service, pool_t pool,
-	     const struct mechanisms_register *reg)
-{
-	struct auth_passdb_settings *const *passdbs;
-	struct auth_userdb_settings *const *userdbs;
-	struct auth *auth;
-	unsigned int i, count, db_count, passdb_count, last_passdb = 0;
-
-	auth = p_new(pool, struct auth, 1);
-	auth->pool = pool;
-	auth->service = p_strdup(pool, service);
-	auth->set = set;
-	auth->reg = reg;
-
-	if (array_is_created(&set->passdbs))
-		passdbs = array_get(&set->passdbs, &db_count);
-	else {
-		passdbs = NULL;
-		db_count = 0;
-	}
-
-	/* initialize passdbs first and count them */
-	for (passdb_count = 0, i = 0; i < db_count; i++) {
-		if (passdbs[i]->master ||
-		    passdbs[i]->submit)			/* APPLE - urlauth */
-			continue;
-
-		auth_passdb_preinit(auth, passdbs[i], &auth->passdbs);
-		passdb_count++;
-		last_passdb = i;
-	}
-	if (passdb_count != 0 && passdbs[last_passdb]->pass)
-		i_fatal("Last passdb can't have pass=yes");
-
-	for (i = 0; i < db_count; i++) {
-		if (!passdbs[i]->master &&
-		    !passdbs[i]->submit)		/* APPLE - urlauth */
-			continue;
-
-		if (passdbs[i]->deny)
-					/* APPLE - urlauth */
-			i_fatal("Master/submit passdb can't have deny=yes");
-
-		/* APPLE - urlauth - Submit user has much less power than
-		   master user.  Forbid both master and submit in one passdb
-		   so that unaware services (pop3, managesieve) don't
-		   compromise security. */
-		if (passdbs[i]->master && passdbs[i]->submit)
-			i_fatal("Passdb can't have master=yes and submit=yes");
-
-		if (passdbs[i]->pass && passdb_count == 0) {
-					/* APPLE - urlauth */
-			i_fatal("Master/submit passdb can't have pass=yes "
-				"if there are no passdbs");
-		}
-		auth_passdb_preinit(auth, passdbs[i], &auth->masterdbs);
-	}
-
-	if (array_is_created(&set->userdbs)) {
-		userdbs = array_get(&set->userdbs, &count);
-		for (i = 0; i < count; i++)
-			auth_userdb_preinit(auth, userdbs[i]);
-	}
-
-	if (auth->userdbs == NULL) {
-		/* use a dummy userdb static. */
-		auth_userdb_preinit(auth, &userdb_dummy_set);
-	}
-	return auth;
+	auth_userdb->userdb = userdb_preinit(auth->pool, set);
 }
 
 static bool auth_passdb_list_have_verify_plain(struct auth *auth)
@@ -209,6 +176,66 @@ static void auth_mech_list_verify_passdb(struct auth *auth)
 	}
 }
 
+static struct auth * ATTR_NULL(2)
+auth_preinit(const struct auth_settings *set, const char *service, pool_t pool,
+	     const struct mechanisms_register *reg)
+{
+	struct auth_passdb_settings *const *passdbs;
+	struct auth_userdb_settings *const *userdbs;
+	struct auth *auth;
+	unsigned int i, count, db_count, passdb_count, last_passdb = 0;
+
+	auth = p_new(pool, struct auth, 1);
+	auth->pool = pool;
+	auth->service = p_strdup(pool, service);
+	auth->set = set;
+	auth->reg = reg;
+
+	if (array_is_created(&set->passdbs))
+		passdbs = array_get(&set->passdbs, &db_count);
+	else {
+		passdbs = NULL;
+		db_count = 0;
+	}
+
+	/* initialize passdbs first and count them */
+	for (passdb_count = 0, i = 0; i < db_count; i++) {
+		if (passdbs[i]->master)
+			continue;
+
+		auth_passdb_preinit(auth, passdbs[i], &auth->passdbs);
+		passdb_count++;
+		last_passdb = i;
+	}
+	if (passdb_count != 0 && passdbs[last_passdb]->pass)
+		i_fatal("Last passdb can't have pass=yes");
+
+	for (i = 0; i < db_count; i++) {
+		if (!passdbs[i]->master)
+			continue;
+
+		if (passdbs[i]->deny)
+			i_fatal("Master passdb can't have deny=yes");
+		if (passdbs[i]->pass && passdb_count == 0) {
+			i_fatal("Master passdb can't have pass=yes "
+				"if there are no passdbs");
+		}
+		auth_passdb_preinit(auth, passdbs[i], &auth->masterdbs);
+	}
+
+	if (array_is_created(&set->userdbs)) {
+		userdbs = array_get(&set->userdbs, &count);
+		for (i = 0; i < count; i++)
+			auth_userdb_preinit(auth, userdbs[i]);
+	}
+
+	if (auth->userdbs == NULL) {
+		/* use a dummy userdb static. */
+		auth_userdb_preinit(auth, &userdb_dummy_set);
+	}
+	return auth;
+}
+
 static void auth_init(struct auth *auth)
 {
 	struct auth_passdb *passdb;
@@ -220,8 +247,6 @@ static void auth_init(struct auth *auth)
 		passdb_init(passdb->passdb);
 	for (userdb = auth->userdbs; userdb != NULL; userdb = userdb->next)
 		userdb_init(userdb->userdb);
-
-	auth_mech_list_verify_passdb(auth);
 }
 
 static void auth_deinit(struct auth *auth)
@@ -258,15 +283,25 @@ struct auth *auth_find_service(const char *name)
 	return a[0];
 }
 
+struct auth *auth_default_service(void)
+{
+	struct auth *const *a;
+	unsigned int count;
+
+	a = array_get(&auths, &count);
+	return a[0];
+}
+
 void auths_preinit(const struct auth_settings *set, pool_t pool,
 		   const struct mechanisms_register *reg,
 		   const char *const *services)
 {
 	struct master_service_settings_output set_output;
 	const struct auth_settings *service_set;
-	struct auth *auth;
+	struct auth *auth, *const *authp;
 	unsigned int i;
 	const char *not_service = NULL;
+	bool check_default = TRUE;
 
 	i_array_init(&auths, 8);
 
@@ -287,11 +322,28 @@ void auths_preinit(const struct auth_settings *set, pool_t pool,
 		auth = auth_preinit(service_set, services[i], pool, reg);
 		array_append(&auths, &auth, 1);
 	}
+
+	if (not_service != NULL && str_array_find(services, not_service+1))
+		check_default = FALSE;
+
+	array_foreach(&auths, authp) {
+		if ((*authp)->service != NULL || check_default)
+			auth_mech_list_verify_passdb(*authp);
+	}
 }
 
 void auths_init(void)
 {
 	struct auth *const *auth;
+
+	/* sanity checks */
+	i_assert(auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_USER_IDX].key == 'u');
+	i_assert(auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_USERNAME_IDX].key == 'n');
+	i_assert(auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_DOMAIN_IDX].key == 'd');
+	i_assert(auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_COUNT].key == '\0' &&
+		 auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_COUNT].long_key == NULL);
+	i_assert(auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_COUNT-1].key != '\0' ||
+		 auth_request_var_expand_static_tab[AUTH_REQUEST_VAR_TAB_COUNT-1].long_key != NULL);
 
 	array_foreach(&auths, auth)
 		auth_init(*auth);

@@ -1,8 +1,8 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "array.h"
 #include "ioloop.h"
-#include "buffer.h"
 #include "file-dotlock.h"
 #include "nfs-workarounds.h"
 #include "read-full.h"
@@ -19,12 +19,12 @@
 static int
 mail_transaction_log_file_sync(struct mail_transaction_log_file *file);
 
-static int
+static void
 log_file_set_syscall_error(struct mail_transaction_log_file *file,
 			   const char *function)
 {
-	return mail_index_file_set_syscall_error(file->log->index,
-						 file->filepath, function);
+	mail_index_file_set_syscall_error(file->log->index,
+					  file->filepath, function);
 }
 
 static void
@@ -32,12 +32,26 @@ mail_transaction_log_mark_corrupted(struct mail_transaction_log_file *file)
 {
 	unsigned int offset =
 		offsetof(struct mail_transaction_log_header, indexid);
+	int flags;
 
 	if (MAIL_TRANSACTION_LOG_FILE_IN_MEMORY(file) ||
 	    file->log->index->readonly)
 		return;
 
-	/* indexid=0 marks the log file as corrupted */
+	/* indexid=0 marks the log file as corrupted. we opened the file with
+	   O_APPEND, and now we need to drop it for pwrite() to work (at least
+	   in Linux) */
+	flags = fcntl(file->fd, F_GETFL, 0);
+	if (flags < 0) {
+		mail_index_file_set_syscall_error(file->log->index,
+			file->filepath, "fcntl(F_GETFL)");
+		return;
+	}
+	if (fcntl(file->fd, F_SETFL, flags & ~O_APPEND) < 0) {
+		mail_index_file_set_syscall_error(file->log->index,
+			file->filepath, "fcntl(F_SETFL)");
+		return;
+	}
 	if (pwrite_full(file->fd, &file->hdr.indexid,
 			sizeof(file->hdr.indexid), offset) < 0) {
 		mail_index_file_set_syscall_error(file->log->index,
@@ -348,8 +362,15 @@ int mail_transaction_log_file_lock(struct mail_transaction_log_file *file)
 	if (file->log->index->lock_method == FILE_LOCK_METHOD_DOTLOCK)
 		return mail_transaction_log_file_dotlock(file);
 
+	if (file->log->index->readonly) {
+		mail_index_set_error(file->log->index,
+			"Index is read-only, can't write-lock %s",
+			file->filepath);
+		return -1;
+	}
+
 	i_assert(file->file_lock == NULL);
-	lock_timeout_secs = I_MIN(MAIL_TRANSCATION_LOG_LOCK_TIMEOUT,
+	lock_timeout_secs = I_MIN(MAIL_TRANSACTION_LOG_LOCK_TIMEOUT,
 				  file->log->index->max_lock_timeout_secs);
 	ret = mail_index_lock_fd(file->log->index, file->filepath, file->fd,
 				 F_WRLCK, lock_timeout_secs,
@@ -386,13 +407,13 @@ void mail_transaction_log_file_unlock(struct mail_transaction_log_file *file)
 		return;
 
 	lock_time = time(NULL) - file->lock_created;
-	if (lock_time >= MAIL_TRANSCATION_LOG_LOCK_TIMEOUT) {
+	if (lock_time >= MAIL_TRANSACTION_LOG_LOCK_TIMEOUT) {
 		i_warning("Transaction log file %s was locked for %u seconds",
 			  file->filepath, lock_time);
 	}
 
 	if (file->log->index->lock_method == FILE_LOCK_METHOD_DOTLOCK) {
-		mail_transaction_log_file_undotlock(file);
+		(void)mail_transaction_log_file_undotlock(file);
 		return;
 	}
 
@@ -440,6 +461,32 @@ mail_transaction_log_file_read_header(struct mail_transaction_log_file *file)
 	}
 
 	return ret < 0 ? -1 : (ssize_t)pos;
+}
+
+static int
+mail_transaction_log_file_fail_dupe(struct mail_transaction_log_file *file)
+{
+	int ret;
+
+	/* mark the old file corrupted. we can't safely remove
+	   it from the list however, so return failure. */
+	file->hdr.indexid = 0;
+	if (strcmp(file->filepath, file->log->head->filepath) != 0) {
+		/* only mark .2 corrupted, just to make sure we don't lose any
+		   changes from .log in case we're somehow wrong */
+		mail_transaction_log_mark_corrupted(file);
+		ret = 0;
+	} else {
+		ret = -1;
+	}
+	if (!file->corrupted) {
+		file->corrupted = TRUE;
+		mail_index_set_error(file->log->index,
+				     "Transaction log %s: "
+				     "duplicate transaction log sequence (%u)",
+				     file->filepath, file->hdr.file_seq);
+	}
+	return ret;
 }
 
 static int
@@ -527,25 +574,14 @@ mail_transaction_log_file_read_hdr(struct mail_transaction_log_file *file,
 	   opened. it shouldn't happen unless the old log file was
 	   corrupted. */
 	for (f = file->log->files; f != NULL; f = f->next) {
-		if (f->hdr.file_seq == file->hdr.file_seq && !f->corrupted) {
-			/* mark the old file corrupted. we can't safely remove
-			   it from the list however, so return failure. */
-			f->corrupted = TRUE;
-			f->hdr.indexid = 0;
+		if (f->hdr.file_seq == file->hdr.file_seq) {
 			if (strcmp(f->filepath, f->log->head->filepath) != 0) {
-				/* only mark .2 corrupted, just to make sure
-				   we don't lose any changes from .log in case
-				   we're somehow wrong */
-				mail_transaction_log_mark_corrupted(f);
-				ret = 0;
+				/* old "f" is the .log.2 */
+				return mail_transaction_log_file_fail_dupe(f);
 			} else {
-				ret = -1;
+				/* new "file" is probably the .log.2 */
+				return mail_transaction_log_file_fail_dupe(file);
 			}
-			mail_index_set_error(f->log->index,
-				"Transaction log %s: "
-				"duplicate transaction log sequence (%u)",
-				f->filepath, f->hdr.file_seq);
-			return ret;
 		}
 	}
 
@@ -585,6 +621,47 @@ mail_transaction_log_file_is_dupe(struct mail_transaction_log_file *file)
 	return FALSE;
 }
 
+static void log_write_ext_hdr_init_data(struct mail_index *index, buffer_t *buf)
+{
+	const struct mail_index_registered_ext *rext;
+	struct mail_transaction_header *hdr;
+	struct mail_transaction_ext_intro *intro;
+	struct mail_transaction_ext_hdr_update *ext_hdr;
+	unsigned int hdr_offset;
+
+	rext = array_idx(&index->extensions, index->ext_hdr_init_id);
+
+	/* introduce the extension */
+	hdr_offset = buf->used;
+	hdr = buffer_append_space_unsafe(buf, sizeof(*hdr));
+	hdr->type = MAIL_TRANSACTION_EXT_INTRO;
+
+	intro = buffer_append_space_unsafe(buf, sizeof(*intro));
+	intro->ext_id = (uint32_t)-1;
+	intro->hdr_size = rext->hdr_size;
+	intro->record_size = rext->record_size;
+	intro->record_align = rext->record_align;
+	intro->name_size = strlen(rext->name);
+	buffer_append(buf, rext->name, intro->name_size);
+	if (buf->used % 4 != 0)
+		buffer_append_zero(buf, 4 - buf->used % 4);
+
+	hdr = buffer_get_space_unsafe(buf, hdr_offset, sizeof(*hdr));
+	hdr->size = mail_index_uint32_to_offset(buf->used - hdr_offset);
+
+	/* add the extension header data */
+	hdr_offset = buf->used;
+	hdr = buffer_append_space_unsafe(buf, sizeof(*hdr));
+	hdr->type = MAIL_TRANSACTION_EXT_HDR_UPDATE;
+
+	ext_hdr = buffer_append_space_unsafe(buf, sizeof(*ext_hdr));
+	ext_hdr->size = rext->hdr_size;
+	buffer_append(buf, index->ext_hdr_init_data, rext->hdr_size);
+
+	hdr = buffer_get_space_unsafe(buf, hdr_offset, sizeof(*hdr));
+	hdr->size = mail_index_uint32_to_offset(buf->used - hdr_offset);
+}
+
 static int
 mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 				  int new_fd, bool reset,
@@ -593,8 +670,14 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 	struct mail_index *index = file->log->index;
 	struct stat st;
 	const char *path2;
+	buffer_t *writebuf;
 	int fd, ret;
 	bool rename_existing;
+
+	if (fcntl(new_fd, F_SETFL, O_APPEND) < 0) {
+		log_file_set_syscall_error(file, "fcntl(O_APPEND)");
+		return -1;
+	}
 
 	if (file->log->nfs_flush) {
 		/* although we check also mtime and file size below, it's done
@@ -612,8 +695,10 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 	if (reset)
 		rename_existing = FALSE;
 	else if (nfs_safe_stat(file->filepath, &st) < 0) {
-		if (errno != ENOENT)
-			return log_file_set_syscall_error(file, "stat()");
+		if (errno != ENOENT) {
+			log_file_set_syscall_error(file, "stat()");
+			return -1;
+		}
 		rename_existing = FALSE;
 	} else if (st.st_ino == file->st_ino &&
 		   CMP_DEV_T(st.st_dev, file->st_dev) &&
@@ -625,7 +710,7 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 		rename_existing = TRUE;
 	} else {
 		/* recreated. use the file if its header is ok */
-		fd = nfs_safe_open(file->filepath, O_RDWR);
+		fd = nfs_safe_open(file->filepath, O_RDWR | O_APPEND);
 		if (fd == -1) {
 			if (errno != ENOENT) {
 				log_file_set_syscall_error(file, "open()");
@@ -638,7 +723,7 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 							       FALSE) > 0 &&
 			    mail_transaction_log_file_stat(file, FALSE) == 0) {
 				/* yes, it was ok */
-				(void)file_dotlock_delete(dotlock);
+				file_dotlock_delete(dotlock);
 				mail_transaction_log_file_add_to_list(file);
 				return 0;
 			}
@@ -647,6 +732,11 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 				log_file_set_syscall_error(file, "close()");
 		}
 		rename_existing = FALSE;
+	}
+
+	if (index->fd == -1 && !rename_existing) {
+		/* creating the initial index */
+		reset = TRUE;
 	}
 
 	if (mail_transaction_log_init_hdr(file->log, &file->hdr) < 0)
@@ -660,14 +750,23 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 		file->hdr.prev_file_offset = 0;
 	}
 
-	if (write_full(new_fd, &file->hdr, sizeof(file->hdr)) < 0)
-		return log_file_set_syscall_error(file, "write_full()");
+	writebuf = buffer_create_dynamic(pool_datastack_create(), 128);
+	buffer_append(writebuf, &file->hdr, sizeof(file->hdr));
+
+	if (index->ext_hdr_init_data != NULL && reset)
+		log_write_ext_hdr_init_data(index, writebuf);
+	if (write_full(new_fd, writebuf->data, writebuf->used) < 0) {
+		log_file_set_syscall_error(file, "write_full()");
+		return -1;
+	}
 
 	if (file->log->index->fsync_mode == FSYNC_MODE_ALWAYS) {
 		/* the header isn't important, so don't bother calling
 		   fdatasync() unless it's required */
-		if (fdatasync(new_fd) < 0)
-			return log_file_set_syscall_error(file, "fdatasync()");
+		if (fdatasync(new_fd) < 0) {
+			log_file_set_syscall_error(file, "fdatasync()");
+			return -1;
+		}
 	}
 
 	file->fd = new_fd;
@@ -704,6 +803,9 @@ mail_transaction_log_file_create2(struct mail_transaction_log_file *file,
 			   second log file and we're going to overwrite this
 			   first one. */
 		}
+		/* NOTE: here's a race condition where both .log and .log.2
+		   point to the same file. our reading code should ignore that
+		   though by comparing the inodes. */
 	}
 
 	if (file_dotlock_replace(dotlock,
@@ -743,22 +845,23 @@ int mail_transaction_log_file_create(struct mail_transaction_log_file *file,
 	fd = file_dotlock_open(&new_dotlock_set, file->filepath, 0, &dotlock);
 	umask(old_mask);
 
-	if (fd == -1)
-		return log_file_set_syscall_error(file, "file_dotlock_open()");
+	if (fd == -1) {
+		log_file_set_syscall_error(file, "file_dotlock_open()");
+		return -1;
+	}
 	mail_index_fchown(index, fd, file_dotlock_get_lock_path(dotlock));
 
         /* either fd gets used or the dotlock gets deleted and returned fd
            is for the existing file */
         if (mail_transaction_log_file_create2(file, fd, reset, &dotlock) < 0) {
 		if (dotlock != NULL)
-			(void)file_dotlock_delete(&dotlock);
+			file_dotlock_delete(&dotlock);
 		return -1;
 	}
 	return 0;
 }
 
-int mail_transaction_log_file_open(struct mail_transaction_log_file *file,
-				   bool check_existing)
+int mail_transaction_log_file_open(struct mail_transaction_log_file *file)
 {
 	struct mail_index *index = file->log->index;
         unsigned int i;
@@ -766,8 +869,12 @@ int mail_transaction_log_file_open(struct mail_transaction_log_file *file,
 	int ret;
 
         for (i = 0;; i++) {
-		file->fd = nfs_safe_open(file->filepath,
-					 !index->readonly ? O_RDWR : O_RDONLY);
+		if (!index->readonly) {
+			file->fd = nfs_safe_open(file->filepath,
+						 O_RDWR | O_APPEND);
+		} else {
+			file->fd = nfs_safe_open(file->filepath, O_RDONLY);
+		}
 		if (file->fd == -1 && errno == EACCES) {
 			file->fd = nfs_safe_open(file->filepath, O_RDONLY);
 			index->readonly = TRUE;
@@ -776,16 +883,20 @@ int mail_transaction_log_file_open(struct mail_transaction_log_file *file,
 			if (errno == ENOENT)
 				return 0;
 
-			return log_file_set_syscall_error(file, "open()");
+			log_file_set_syscall_error(file, "open()");
+			return -1;
                 }
 
 		ignore_estale = i < MAIL_INDEX_ESTALE_RETRY_COUNT;
 		if (mail_transaction_log_file_stat(file, ignore_estale) < 0)
 			ret = -1;
-		else if (check_existing &&
-			 mail_transaction_log_file_is_dupe(file))
+		else if (mail_transaction_log_file_is_dupe(file)) {
+			/* probably our already opened .log file has been
+			   renamed to .log.2 and we're trying to reopen it.
+			   also possible that hit a race condition where .log
+			   and .log.2 are linked. */
 			return 0;
-		else {
+		} else {
 			ret = mail_transaction_log_file_read_hdr(file,
 								 ignore_estale);
 		}
@@ -813,6 +924,7 @@ int mail_transaction_log_file_open(struct mail_transaction_log_file *file,
 		}
 
 		/* ESTALE - try again */
+		buffer_free(&file->buffer);
         }
 
 	mail_transaction_log_file_add_to_list(file);
@@ -892,8 +1004,8 @@ void mail_transaction_update_modseq(const struct mail_transaction_header *hdr,
 			   modseq_ext_len) == 0) {
 			/* modseq tracking started */
 			*cur_modseq += 1;
-			return;
 		}
+		return;
 	} else {
 		/* not tracking modseqs */
 		return;
@@ -910,6 +1022,7 @@ void mail_transaction_update_modseq(const struct mail_transaction_header *hdr,
 	case MAIL_TRANSACTION_FLAG_UPDATE:
 	case MAIL_TRANSACTION_KEYWORD_UPDATE:
 	case MAIL_TRANSACTION_KEYWORD_RESET:
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE:
 		/* these changes increase modseq */
 		*cur_modseq += 1;
 		break;
@@ -945,7 +1058,7 @@ modseq_cache_hit(struct mail_transaction_log_file *file, unsigned int idx)
 static struct modseq_cache *
 modseq_cache_get_offset(struct mail_transaction_log_file *file, uoff_t offset)
 {
-	unsigned int i, best = -1U;
+	unsigned int i, best = UINT_MAX;
 
 	for (i = 0; i < N_ELEMENTS(file->modseq_cache); i++) {
 		if (offset < file->modseq_cache[i].offset)
@@ -959,12 +1072,12 @@ modseq_cache_get_offset(struct mail_transaction_log_file *file, uoff_t offset)
 			return modseq_cache_hit(file, i);
 		}
 
-		if (best == -1U ||
+		if (best == UINT_MAX ||
 		    file->modseq_cache[i].offset <
 		    file->modseq_cache[best].offset)
 			best = i;
 	}
-	if (best == -1U)
+	if (best == UINT_MAX)
 		return NULL;
 	return &file->modseq_cache[best];
 }
@@ -972,7 +1085,7 @@ modseq_cache_get_offset(struct mail_transaction_log_file *file, uoff_t offset)
 static struct modseq_cache *
 modseq_cache_get_modseq(struct mail_transaction_log_file *file, uint64_t modseq)
 {
-	unsigned int i, best = -1U;
+	unsigned int i, best = UINT_MAX;
 
 	for (i = 0; i < N_ELEMENTS(file->modseq_cache); i++) {
 		if (modseq < file->modseq_cache[i].highest_modseq)
@@ -986,12 +1099,12 @@ modseq_cache_get_modseq(struct mail_transaction_log_file *file, uint64_t modseq)
 			return modseq_cache_hit(file, i);
 		}
 
-		if (best == -1U ||
+		if (best == UINT_MAX ||
 		    file->modseq_cache[i].highest_modseq <
 		    file->modseq_cache[best].highest_modseq)
 			best = i;
 	}
-	if (best == -1U)
+	if (best == UINT_MAX)
 		return NULL;
 	return &file->modseq_cache[best];
 }
@@ -1260,7 +1373,6 @@ mail_transaction_log_file_sync(struct mail_transaction_log_file *file)
 		}
 
 		file->sync_offset += trans_size;
-		trans_size = 0;
 	}
 
 	if (file->mmap_base != NULL && !file->locked) {
@@ -1273,8 +1385,10 @@ mail_transaction_log_file_sync(struct mail_transaction_log_file *file)
 		   Without this check we might see partial transactions,
 		   sometimes causing "Extension record updated without intro
 		   prefix" errors. */
-		if (fstat(file->fd, &st) < 0)
-			return log_file_set_syscall_error(file, "fstat()");
+		if (fstat(file->fd, &st) < 0) {
+			log_file_set_syscall_error(file, "fstat()");
+			return -1;
+		}
 		if ((uoff_t)st.st_size != file->last_size) {
 			file->last_size = st.st_size;
 			return 0;
@@ -1286,18 +1400,11 @@ mail_transaction_log_file_sync(struct mail_transaction_log_file *file)
 		/* There's more data than we could sync at the moment. If the
 		   last record's size wasn't valid, we can't know if it will
 		   be updated unless we've locked the log. */
-		if (trans_size != 0) {
-			/* pread()s or the above fstat() check for mmaps should
-			   have guaranteed that this doesn't happen */
-			mail_transaction_log_file_set_corrupted(file,
-				"hdr.size too large (%u)", trans_size);
-			return -1;
-		} else if (file->locked) {
+		if (file->locked) {
 			mail_transaction_log_file_set_corrupted(file,
 				"Unexpected garbage at EOF");
 			return -1;
 		}
-
 		/* The size field will be updated soon */
 		mail_index_flush_read_cache(file->log->index, file->filepath,
 					    file->fd, file->locked);
@@ -1346,7 +1453,8 @@ mail_transaction_log_file_insert_read(struct mail_transaction_log_file *file,
 		/* log file was deleted in NFS server, fail silently */
 		return 0;
 	} else {
-		return log_file_set_syscall_error(file, "pread()");
+		log_file_set_syscall_error(file, "pread()");
+		return -1;
 	}
 }
 
@@ -1377,7 +1485,8 @@ mail_transaction_log_file_read_more(struct mail_transaction_log_file *file)
 			/* log file was deleted in NFS server, fail silently */
 			return 0;
 		}
-		return log_file_set_syscall_error(file, "pread()");
+		log_file_set_syscall_error(file, "pread()");
+		return -1;
 	}
 	return 1;
 }
@@ -1419,10 +1528,8 @@ mail_transaction_log_file_read(struct mail_transaction_log_file *file,
 	if (file->log->nfs_flush && nfs_flush) {
 		if (!file->locked)
 			nfs_flush_attr_cache_unlocked(file->filepath);
-		else {
-			nfs_flush_attr_cache_fd_locked(file->filepath,
-						       file->fd);
-		}
+		else
+			nfs_flush_attr_cache_fd_locked(file->filepath, file->fd);
 	}
 
 	if (file->buffer != NULL && file->buffer_offset > start_offset) {
@@ -1490,7 +1597,8 @@ mail_transaction_log_file_mmap(struct mail_transaction_log_file *file)
 	if (file->mmap_base == MAP_FAILED) {
 		file->mmap_base = NULL;
 		file->mmap_size = 0;
-		return log_file_set_syscall_error(file, "mmap()");
+		log_file_set_syscall_error(file, "mmap()");
+		return -1;
 	}
 
 	if (file->mmap_size > mmap_get_page_size()) {
@@ -1499,8 +1607,8 @@ mail_transaction_log_file_mmap(struct mail_transaction_log_file *file)
 			log_file_set_syscall_error(file, "madvise()");
 	}
 
-	buffer_create_const_data(&file->mmap_buffer,
-				 file->mmap_base, file->mmap_size);
+	buffer_create_from_const_data(&file->mmap_buffer,
+				      file->mmap_base, file->mmap_size);
 	file->buffer = &file->mmap_buffer;
 	file->buffer_offset = 0;
 	return 0;
@@ -1531,8 +1639,10 @@ mail_transaction_log_file_map_mmap(struct mail_transaction_log_file *file,
 	i_assert(file->buffer_offset == 0 || file->mmap_base == NULL);
 	i_assert(file->mmap_size == 0 || file->mmap_base != NULL);
 
-	if (fstat(file->fd, &st) < 0)
-		return log_file_set_syscall_error(file, "fstat()");
+	if (fstat(file->fd, &st) < 0) {
+		log_file_set_syscall_error(file, "fstat()");
+		return -1;
+	}
 	file->last_size = st.st_size;
 
 	if ((uoff_t)st.st_size < file->sync_offset) {
@@ -1612,7 +1722,7 @@ int mail_transaction_log_file_map(struct mail_transaction_log_file *file,
 	}
 
 	if (MAIL_TRANSACTION_LOG_FILE_IN_MEMORY(file)) {
-		if (start_offset < file->buffer_offset) {
+		if (start_offset < file->buffer_offset || file->buffer == NULL) {
 			/* we had moved the log to memory but failed to read
 			   the beginning of the log file */
 			mail_index_set_error(index,
@@ -1642,9 +1752,11 @@ int mail_transaction_log_file_map(struct mail_transaction_log_file *file,
 
 	i_assert(file->buffer == NULL || file->mmap_base != NULL ||
 		 file->sync_offset >= file->buffer_offset + file->buffer->used);
+	if (ret <= 0)
+		return ret;
 
-	return ret <= 0 ? ret :
-		log_file_map_check_offsets(file, start_offset, end_offset);
+	i_assert(file->buffer != NULL);
+	return log_file_map_check_offsets(file, start_offset, end_offset);
 }
 
 void mail_transaction_log_file_move_to_memory(struct mail_transaction_log_file

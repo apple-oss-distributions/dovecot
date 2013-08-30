@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "file-lock.h"
@@ -32,6 +32,19 @@ bool file_lock_method_parse(const char *name, enum file_lock_method *method_r)
 	else
 		return FALSE;
 	return TRUE;
+}
+
+const char *file_lock_method_to_str(enum file_lock_method method)
+{
+	switch (method) {
+	case FILE_LOCK_METHOD_FCNTL:
+		return "fcntl";
+	case FILE_LOCK_METHOD_FLOCK:
+		return "flock";
+	case FILE_LOCK_METHOD_DOTLOCK:
+		return "dotlock";
+	}
+	i_unreached();
 }
 
 int file_try_lock(int fd, const char *path, int lock_type,
@@ -250,16 +263,16 @@ struct multiclient_key {
 struct multiclient_lock {
 	int fd;
 	char *path;
-	ARRAY_DEFINE(read_locks, uintmax_t);
+	ARRAY(uintmax_t) read_locks;
 	uintmax_t write_lock;
 #if MULTICLIENT_DEBUG
-	ARRAY_DEFINE(read_backtraces, string_t *);
+	ARRAY(string_t *) read_backtraces;
 	string_t *write_backtrace;
 #endif
 };
 
-/* multiclient_key => multiclient_lock */
-static struct hash_table *multiclient_locks = NULL;
+static HASH_TABLE(struct multiclient_key *,
+		  struct multiclient_lock *) multiclient_locks;
 
 #define	READ_LOCK_COUNT(lock)	(array_is_created(&(lock)->read_locks) ? \
 				 array_count(&(lock)->read_locks) : 0)
@@ -294,20 +307,16 @@ static void multiclient_key_destroy(struct multiclient_key **_key)
 	i_free(key);
 }
 	
-static unsigned int multiclient_key_hash(const void *p)
+static unsigned int multiclient_key_hash(const struct multiclient_key *key)
 {
-	const struct multiclient_key *key = p;
-
 	/* no idea if this "algorithm" is any good, but the hash table
 	   is usually empty anyway so it doesn't really matter */
 	return key->dev | key->ino;
 }
 
-static int multiclient_key_cmp(const void *p1, const void *p2)
+static int multiclient_key_cmp(const struct multiclient_key *key1,
+			       const struct multiclient_key *key2)
 {
-	const struct multiclient_key *key1 = p1;
-	const struct multiclient_key *key2 = p2;
-
 	if (key1->dev < key2->dev)
 		return -1;
 	else if (key1->dev > key2->dev)
@@ -388,15 +397,12 @@ static bool multiclient_lock(int fd, const char *path, int lock_type,
 		return TRUE;
 	}
 
-	if (multiclient_locks == NULL)
-		multiclient_locks =
-			hash_table_create(default_pool, default_pool,
-					  8, multiclient_key_hash,
-					  multiclient_key_cmp);
+	if (!hash_table_is_created(multiclient_locks))
+		hash_table_create(&multiclient_locks, default_pool, 8,
+				  multiclient_key_hash, multiclient_key_cmp);
 
 	multiclient_key_init(&skey, fd, path);
-	found = hash_table_lookup_full(multiclient_locks, &skey,
-				       (void **) &key, (void **) &lock);
+	found = hash_table_lookup_full(multiclient_locks, &skey, &key, &lock);
 
 	/* these panic messages are intended to be more helpful than assertion
 	   failed messages */

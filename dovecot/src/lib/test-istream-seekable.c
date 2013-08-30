@@ -1,7 +1,7 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
-#include "istream-internal.h"
+#include "istream-private.h"
 #include "istream-seekable.h"
 
 #include <stdlib.h>
@@ -71,10 +71,11 @@ static void test_istream_seekable_random(void)
 	size_t size;
 	unsigned int i, j, offset, stream_count, data_len, buffer_size;
 
-	stream_count = (rand() % 10) + 2;
+	/* APPLE - s?rand() -> s?random() */
+	stream_count = (random() % 10) + 2;
 	streams = t_new(struct istream *, stream_count + 1);
 	for (i = 0, offset = 0; i < stream_count; i++) {
-		data_len = rand() % 100 + 1;
+		data_len = random() % 100 + 1;
 		w_data = t_malloc(data_len);
 		for (j = 0; j < data_len; j++)
 			w_data[j] = offset++;
@@ -85,19 +86,19 @@ static void test_istream_seekable_random(void)
 	streams[i] = NULL;
 	i_assert(offset > 0);
 
-	buffer_size = (rand() % 100) + 1; size = 0;
+	buffer_size = (random() % 100) + 1; size = 0;
 	input = i_stream_create_seekable(streams, buffer_size, fd_callback, NULL);
 
 	/* first read it through */
 	while (i_stream_read(input) > 0) {
-		(void)i_stream_get_data(input, &size);
+		size = i_stream_get_data_size(input);
 		i_stream_skip(input, size);
 	}
 
 	i_stream_seek(input, 0);
 	for (i = 0; i < 100; i++) {
-		if (rand() % 3 == 0) {
-			i_stream_seek(input, rand() % offset);
+		if (random() % 3 == 0) {
+			i_stream_seek(input, random() % offset);
 		} else {
 			ssize_t ret = i_stream_read(input);
 			if (input->v_offset + size == offset)
@@ -107,7 +108,7 @@ static void test_istream_seekable_random(void)
 			} else {
 				test_assert(ret > 0);
 				test_assert(input->v_offset + ret <= offset);
-				i_stream_skip(input, rand() % (ret+1));
+				i_stream_skip(input, random() % (ret+1));
 
 				data = i_stream_get_data(input, &size);
 				for (j = 0; j < size; j++) {
@@ -115,7 +116,7 @@ static void test_istream_seekable_random(void)
 				}
 			}
 		}
-		(void)i_stream_get_data(input, &size);
+		size = i_stream_get_data_size(input);
 	}
 	for (i = 0; i < stream_count; i++)
 		i_stream_unref(&streams[i]);

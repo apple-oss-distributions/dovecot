@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __EXT_IHAVE_BINARY_H
@@ -7,13 +7,13 @@
 /*
  * Binary context management
  */
- 
+
 struct ext_ihave_binary_context;
 
 struct ext_ihave_binary_context *ext_ihave_binary_get_context
 	(const struct sieve_extension *this_ext, struct sieve_binary *sbin);
 struct ext_ihave_binary_context *ext_ihave_binary_init
-	(const struct sieve_extension *this_ext, struct sieve_binary *sbin, 
+	(const struct sieve_extension *this_ext, struct sieve_binary *sbin,
 		struct sieve_ast *ast);
 
 /*

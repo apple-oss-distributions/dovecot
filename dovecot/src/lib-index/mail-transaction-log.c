@@ -1,11 +1,10 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "buffer.h"
 #include "file-dotlock.h"
 #include "nfs-workarounds.h"
-#include "close-keep-errno.h"
 #include "mmap-util.h"
 #include "mail-index-private.h"
 #include "mail-transaction-log-private.h"
@@ -84,7 +83,7 @@ int mail_transaction_log_open(struct mail_transaction_log *log)
 		return 0;
 
 	file = mail_transaction_log_file_alloc(log, log->filepath);
-	if ((ret = mail_transaction_log_file_open(file, FALSE)) <= 0) {
+	if ((ret = mail_transaction_log_file_open(file)) <= 0) {
 		/* leave the file for _create() */
 		log->open_file = file;
 		return ret;
@@ -125,7 +124,7 @@ int mail_transaction_log_create(struct mail_transaction_log *log, bool reset)
 
 void mail_transaction_log_close(struct mail_transaction_log *log)
 {
-	mail_transaction_log_views_close(log);
+	i_assert(log->views == NULL);
 
 	if (log->open_file != NULL)
 		mail_transaction_log_file_free(&log->open_file);
@@ -322,7 +321,7 @@ mail_transaction_log_refresh(struct mail_transaction_log *log, bool nfs_flush)
 	}
 
 	file = mail_transaction_log_file_alloc(log, log->filepath);
-	if (mail_transaction_log_file_open(file, FALSE) <= 0) {
+	if (mail_transaction_log_file_open(file) <= 0) {
 		mail_transaction_log_file_free(&file);
 		return -1;
 	}
@@ -400,7 +399,7 @@ int mail_transaction_log_find_file(struct mail_transaction_log *log,
 
 	/* see if we have it in log.2 file */
 	file = mail_transaction_log_file_alloc(log, log->filepath2);
-	if ((ret = mail_transaction_log_file_open(file, TRUE)) <= 0) {
+	if ((ret = mail_transaction_log_file_open(file)) <= 0) {
 		mail_transaction_log_file_free(&file);
 		return ret;
 	}
@@ -416,6 +415,7 @@ int mail_transaction_log_find_file(struct mail_transaction_log *log,
 int mail_transaction_log_lock_head(struct mail_transaction_log *log)
 {
 	struct mail_transaction_log_file *file;
+	time_t lock_wait_started, lock_secs = 0;
 	int ret = 0;
 
 	if (!log->log_2_unlink_checked) {
@@ -437,6 +437,7 @@ int mail_transaction_log_lock_head(struct mail_transaction_log *log)
 	   can lock it and don't see another file, we can be sure no-one is
 	   creating a new log at the moment */
 
+	lock_wait_started = time(NULL);
 	for (;;) {
 		file = log->head;
 		if (mail_transaction_log_file_lock(file) < 0)
@@ -451,6 +452,8 @@ int mail_transaction_log_lock_head(struct mail_transaction_log *log)
 
 		if (ret == 0 && log->head == file) {
 			/* success */
+			i_assert(file != NULL);
+			lock_secs = file->lock_created - lock_wait_started;
 			break;
 		}
 
@@ -462,7 +465,12 @@ int mail_transaction_log_lock_head(struct mail_transaction_log *log)
 
 		/* try again */
 	}
+	if (lock_secs > MAIL_TRANSACTION_LOG_LOCK_WARN_SECS) {
+		i_warning("Locking transaction log file %s took %ld seconds",
+			  log->head->filepath, (long)lock_secs);
+	}
 
+	i_assert(ret < 0 || log->head != NULL);
 	return ret;
 }
 
@@ -539,15 +547,26 @@ int mail_transaction_log_get_mtime(struct mail_transaction_log *log,
 	return 0;
 }
 
+int mail_transaction_log_unlink(struct mail_transaction_log *log)
+{
+	if (unlink(log->filepath) < 0 &&
+	    errno != ENOENT && errno != ESTALE) {
+		mail_index_file_set_syscall_error(log->index, log->filepath,
+						  "unlink()");
+		return -1;
+	}
+	return 0;
+}
+
 void mail_transaction_log_get_dotlock_set(struct mail_transaction_log *log,
 					  struct dotlock_settings *set_r)
 {
 	struct mail_index *index = log->index;
 
 	memset(set_r, 0, sizeof(*set_r));
-	set_r->timeout = I_MIN(MAIL_TRANSCATION_LOG_LOCK_TIMEOUT,
+	set_r->timeout = I_MIN(MAIL_TRANSACTION_LOG_LOCK_TIMEOUT,
 			       index->max_lock_timeout_secs);
-	set_r->stale_timeout = MAIL_TRANSCATION_LOG_LOCK_CHANGE_TIMEOUT;
+	set_r->stale_timeout = MAIL_TRANSACTION_LOG_LOCK_CHANGE_TIMEOUT;
 	set_r->nfs_flush = (index->flags & MAIL_INDEX_OPEN_FLAG_NFS_FLUSH) != 0;
 	set_r->use_excl_lock =
 		(index->flags & MAIL_INDEX_OPEN_FLAG_DOTLOCK_USE_EXCL) != 0;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -139,11 +139,11 @@ client_create_from_input(const struct mail_storage_service_input *input,
 	if (set->verbose_proctitle)
 		verbose_proctitle = TRUE;
 
-	client = client_create(fd_in, fd_out, mail_user, user, set);
+	client = client_create
+		(fd_in, fd_out, input->session_id, mail_user, user, set);
 	T_BEGIN {
 		client_add_input(client, input_buf);
 	} T_END;
-
 	return 0;
 }
 
@@ -178,6 +178,7 @@ static void
 login_client_connected(const struct master_login_client *client,
 		       const char *username, const char *const *extra_fields)
 {
+#define MSG_BYE_INTERNAL_ERROR "BYE \""CRITICAL_MSG"\"\r\n"
 	struct mail_storage_service_input input;
 	const char *error;
 	buffer_t input_buf;
@@ -188,11 +189,17 @@ login_client_connected(const struct master_login_client *client,
 	input.remote_ip = client->auth_req.remote_ip;
 	input.username = username;
 	input.userdb_fields = extra_fields;
+	input.session_id = client->session_id;
 
-	buffer_create_const_data(&input_buf, client->data,
+	buffer_create_from_const_data(&input_buf, client->data,
 				 client->auth_req.data_size);
 	if (client_create_from_input(&input, client->fd, client->fd,
 				     &input_buf, &error) < 0) {
+		if (write(client->fd, MSG_BYE_INTERNAL_ERROR,
+			  strlen(MSG_BYE_INTERNAL_ERROR)) < 0) {
+			if (errno != EAGAIN && errno != EPIPE)
+				i_error("write(client) failed: %m");
+		}
 		i_error("%s", error);
 		(void)close(client->fd);
 		master_service_client_connection_destroyed(master_service);
@@ -225,10 +232,14 @@ int main(int argc, char *argv[])
 		&managesieve_setting_parser_info,
 		NULL
 	};
+	struct master_login_settings login_set;
 	enum master_service_flags service_flags = 0;
 	enum mail_storage_service_flags storage_service_flags = 0;
-	const char *postlogin_socket_path, *username = NULL;
+	const char *username = NULL;
 	int c;
+
+	memset(&login_set, 0, sizeof(login_set));
+	login_set.postlogin_timeout_secs = MASTER_POSTLOGIN_TIMEOUT_DEFAULT;
 
 	if (IS_STANDALONE() && getuid() == 0 &&
 	    net_getpeername(1, NULL, NULL) == 0) {
@@ -247,9 +258,14 @@ int main(int argc, char *argv[])
 	}
 
 	master_service = master_service_init("managesieve", service_flags,
-					     &argc, &argv, "u:");
+					     &argc, &argv, "t:u:");
 	while ((c = master_getopt(master_service)) > 0) {
 		switch (c) {
+		case 't':
+			if (str_to_uint(optarg, &login_set.postlogin_timeout_secs) < 0 ||
+			    login_set.postlogin_timeout_secs == 0)
+				i_fatal("Invalid -t parameter: %s", optarg);
+			break;
 		case 'u':
 			storage_service_flags |=
 				MAIL_STORAGE_SERVICE_FLAG_USERDB_LOOKUP;
@@ -259,8 +275,12 @@ int main(int argc, char *argv[])
 			return FATAL_DEFAULT;
 		}
 	}
-	postlogin_socket_path = argv[optind] == NULL ? NULL :
-		t_abspath(argv[optind]);
+
+	login_set.auth_socket_path = t_abspath("auth-master");
+	if (argv[optind] != NULL)
+		login_set.postlogin_socket_path = t_abspath(argv[optind]);
+	login_set.callback = login_client_connected;
+	login_set.failure_callback = login_client_failed;
 
 	master_service_init_finish(master_service);
 	master_service_set_die_callback(master_service, managesieve_die);
@@ -287,11 +307,7 @@ int main(int argc, char *argv[])
 			main_stdio_run(username);
 		} T_END;
 	} else {
-		master_login = master_login_init(master_service,
-						 t_abspath("auth-master"),
-						 postlogin_socket_path,
-						 login_client_connected,
-						 login_client_failed);
+		master_login = master_login_init(master_service, &login_set);
 		io_loop_set_running(current_ioloop);
 	}
 

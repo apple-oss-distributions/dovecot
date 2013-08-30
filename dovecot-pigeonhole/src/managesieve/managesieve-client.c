@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -6,7 +6,7 @@
 #include "llist.h"
 #include "str.h"
 #include "hostpid.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "var-expand.h"
@@ -24,44 +24,25 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#define CRITICAL_MSG \
-  "Internal error occured. Refer to server log for more information."
-#define CRITICAL_MSG_STAMP CRITICAL_MSG " [%Y-%m-%d %H:%M:%S]"
-
 extern struct mail_storage_callbacks mail_storage_callbacks;
 struct managesieve_module_register managesieve_module_register = { 0 };
 
 struct client *managesieve_clients = NULL;
 unsigned int managesieve_client_count = 0;
 
-static const char *managesieve_sieve_get_homedir
-(void *context)
-{
-    struct mail_user *mail_user = (struct mail_user *) context;
-    const char *home = NULL;
-
-    if ( mail_user == NULL )
-        return NULL;
-
-    if ( mail_user_get_home(mail_user, &home) <= 0 )
-        return NULL;
-
-    return home;
-}
-
 static const char *managesieve_sieve_get_setting
 (void *context, const char *identifier)
 {
-    struct mail_user *mail_user = (struct mail_user *) context;
+	struct mail_user *mail_user = (struct mail_user *) context;
 
-    if ( mail_user == NULL )
-        return NULL;
+	if ( mail_user == NULL )
+		return NULL;
 
-    return mail_user_plugin_getenv(mail_user, identifier);
+	return mail_user_plugin_getenv(mail_user, identifier);
 }
 
-static const struct sieve_environment managesieve_sieve_env = {
-	managesieve_sieve_get_homedir,
+static const struct sieve_callbacks managesieve_sieve_callbacks = {
+	NULL,
 	managesieve_sieve_get_setting
 };
 
@@ -77,17 +58,21 @@ static void client_idle_timeout(struct client *client)
 }
 
 static struct sieve_storage *client_get_storage
-(struct sieve_instance *svinst, struct mail_user *user, 
+(struct sieve_instance *svinst, struct mail_user *user,
 	const struct managesieve_settings *set)
 {
 	struct sieve_storage *storage;
+	enum sieve_storage_flags flags = 0;
 	const char *home;
 
 	if ( mail_user_get_home(user, &home) <= 0 )
 		home = NULL;
 
+	if ( set->mail_debug )
+		flags |= SIEVE_STORAGE_FLAG_DEBUG;
+
 	storage = sieve_storage_create
-		(svinst, user->username, home, set->mail_debug);
+		(svinst, user, home, flags);
 
 	if (storage == NULL) {
 		struct tm *tm;
@@ -106,14 +91,16 @@ static struct sieve_storage *client_get_storage
 }
 
 struct client *client_create
-(int fd_in, int fd_out, struct mail_user *user,
+(int fd_in, int fd_out, const char *session_id, struct mail_user *user,
 	struct mail_storage_service_user *service_user,
 	const struct managesieve_settings *set)
 {
 	struct client *client;
 	const char *ident;
+	struct sieve_environment svenv;
 	struct sieve_instance *svinst;
 	struct sieve_storage *storage;
+	pool_t pool;
 
 	/* Always use nonblocking I/O */
 
@@ -122,19 +109,29 @@ struct client *client_create
 
 	/* Initialize Sieve instance */
 
-	svinst = sieve_init(&managesieve_sieve_env, (void *) user, set->mail_debug);
+	memset((void*)&svenv, 0, sizeof(svenv));
+	svenv.username = user->username;
+	(void)mail_user_get_home(user, &svenv.home_dir);
+	svenv.base_dir = user->set->base_dir;
+	svenv.flags = SIEVE_FLAG_HOME_RELATIVE;
+
+	svinst = sieve_init
+		(&svenv, &managesieve_sieve_callbacks, (void *) user, set->mail_debug);
 
 	/* Get Sieve storage */
 
-	storage = client_get_storage(svinst, user, set);	
+	storage = client_get_storage(svinst, user, set);
 
 	/* always use nonblocking I/O */
 	net_set_nonblock(fd_in, TRUE);
 	net_set_nonblock(fd_out, TRUE);
 
-	client = i_new(struct client, 1);
+	pool = pool_alloconly_create("managesieve client", 1024);
+	client = p_new(pool, struct client, 1);
+	client->pool = pool;
 	client->set = set;
 	client->service_user = service_user;
+	client->session_id = p_strdup(pool, session_id);
 	client->fd_in = fd_in;
 	client->fd_out = fd_out;
 	client->input = i_stream_create_fd
@@ -146,7 +143,7 @@ struct client *client_create
 	client->io = io_add(fd_in, IO_READ, client_input, client);
 	client->last_input = ioloop_time;
 	client->parser = managesieve_parser_create
-		(client->input, client->output, set->managesieve_max_line_length);
+		(client->input, set->managesieve_max_line_length);
 	client->to_idle = timeout_add
 		(CLIENT_IDLE_TIMEOUT_MSECS, client_idle_timeout, client);
 
@@ -156,7 +153,7 @@ struct client *client_create
 	client->user = user;
 
 	client->svinst = svinst;
-	client->storage = storage; 
+	client->storage = storage;
 
 	ident = mail_user_get_anvil_userip_ident(client->user);
 	if (ident != NULL) {
@@ -175,10 +172,11 @@ struct client *client_create
 }
 
 static const char *client_stats(struct client *client)
-{	
+{
 	static struct var_expand_table static_tab[] = {
 		{ 'i', NULL, "input" },
 		{ 'o', NULL, "output" },
+		{ '\0', NULL, "session" },
 		{ '\0', NULL, NULL }
 	};
 	struct var_expand_table *tab;
@@ -189,6 +187,7 @@ static const char *client_stats(struct client *client)
 
 	tab[0].value = dec2str(client->input->v_offset);
 	tab[1].value = dec2str(client->output->offset);
+	tab[2].value = client->session_id;
 
 	str = t_str_new(128);
 	var_expand(str, client->set->managesieve_logout_format, tab);
@@ -216,7 +215,7 @@ void client_destroy(struct client *client, const char *reason)
 		client->disconnected = TRUE;
 		if (reason == NULL)
 			reason = client_get_disconnect_reason(client);
-		i_info("%s %s", reason, client_stats(client));	
+		i_info("%s %s", reason, client_stats(client));
 	}
 
 	managesieve_client_count--;
@@ -264,7 +263,7 @@ void client_destroy(struct client *client, const char *reason)
 	sieve_deinit(&client->svinst);
 
 	pool_unref(&client->cmd.pool);
-	i_free(client);
+	pool_unref(&client->pool);
 
 	master_service_client_connection_destroyed(master_service);
 	managesieve_refresh_proctitle();
@@ -291,7 +290,7 @@ void client_disconnect_with_error(struct client *client, const char *msg)
 	client_disconnect(client, msg);
 }
 
-int client_send_line(struct client *client, const char *data) 
+int client_send_line(struct client *client, const char *data)
 {
 	struct const_iovec iov[2];
 
@@ -319,7 +318,7 @@ void client_send_response
 (struct client *client, const char *oknobye, const char *resp_code, const char *msg)
 {
 	string_t *str;
-	
+
 	str = t_str_new(128);
 	str_append(str, oknobye);
 
@@ -383,7 +382,7 @@ void client_send_storage_error
 	error = sieve_storage_get_last_error(storage, &error_code);
 
 	switch ( error_code ) {
-	case SIEVE_ERROR_TEMP_FAIL:
+	case SIEVE_ERROR_TEMP_FAILURE:
 		client_send_noresp(client, "TRYLATER", error);
 		break;
 
@@ -412,12 +411,12 @@ void client_send_storage_error
 }
 
 bool client_read_args(struct client_command_context *cmd, unsigned int count,
-	unsigned int flags, bool no_more, struct managesieve_arg **args_r)
+	unsigned int flags, bool no_more, const struct managesieve_arg **args_r)
 {
-	struct managesieve_arg *dummy_args_r = NULL;
+	const struct managesieve_arg *dummy_args_r = NULL;
 	int ret;
 
-	if ( args_r == NULL ) args_r = &dummy_args_r; 
+	if ( args_r == NULL ) args_r = &dummy_args_r;
 
 	i_assert(count <= INT_MAX);
 
@@ -433,7 +432,7 @@ bool client_read_args(struct client_command_context *cmd, unsigned int count,
 				return FALSE;
 			}
 		}
-	
+
 		/* all parameters read successfully */
 		return TRUE;
 	} else if (ret == -2) {
@@ -453,27 +452,26 @@ bool client_read_args(struct client_command_context *cmd, unsigned int count,
 bool client_read_string_args(struct client_command_context *cmd,
 			     unsigned int count, bool no_more, ...)
 {
-	struct managesieve_arg *managesieve_args;
+	const struct managesieve_arg *msieve_args;
 	va_list va;
 	const char *str;
 	unsigned int i;
 	bool result = TRUE;
 
-	if (!client_read_args(cmd, count, 0, no_more, &managesieve_args))
+	if ( !client_read_args(cmd, count, 0, no_more, &msieve_args) )
 		return FALSE;
 
 	va_start(va, no_more);
-	for (i = 0; i < count; i++) {
+	for ( i = 0; i < count; i++ ) {
 		const char **ret = va_arg(va, const char **);
 
-		if (managesieve_args[i].type == MANAGESIEVE_ARG_EOL) {
+		if ( MANAGESIEVE_ARG_IS_EOL(&msieve_args[i]) ) {
 			client_send_command_error(cmd, "Missing arguments.");
 			result = FALSE;
 			break;
 		}
 
-		str = managesieve_arg_string(&managesieve_args[i]);
-		if (str == NULL) {
+		if ( !managesieve_arg_get_string(&msieve_args[i], &str) ) {
 			client_send_command_error(cmd, "Invalid arguments.");
 			result = FALSE;
 			break;

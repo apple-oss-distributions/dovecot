@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -12,7 +12,7 @@ struct doveadm_print_pager_header {
 
 struct doveadm_print_pager_context {
 	pool_t pool;
-	ARRAY_DEFINE(headers, struct doveadm_print_pager_header);
+	ARRAY(struct doveadm_print_pager_header) headers;
 	unsigned int header_idx;
 
 	unsigned int streaming:1;
@@ -56,7 +56,7 @@ doveadm_print_pager_print_stream(const unsigned char *value, size_t size)
 		ctx->streaming = TRUE;
 		printf("%s:\n", hdr->title);
 	}
-	printf("%.*s", (int)size, value);
+	fwrite(value, 1, size, stdout);
 	if (size == 0) {
 		pager_next_hdr();
 		ctx->streaming = FALSE;

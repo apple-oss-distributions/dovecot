@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "strnum.h"
@@ -24,7 +24,7 @@ int str_to_uint(const char *str, unsigned int *num_r)
 	if (str_to_uintmax(str, &l) < 0)
 		return -1;
 
-	if (l > (unsigned int)-1)
+	if (l > UINT_MAX)
 		return -1;
 	*num_r = (unsigned int)l;
 	return 0;
@@ -230,6 +230,17 @@ int str_to_uoff(const char *str, uoff_t *num_r)
 	if (l > (uoff_t)-1)
 		return -1;
 	*num_r = (uoff_t)l;
+	return 0;
+}
+
+int str_to_time(const char *str, time_t *num_r)
+{
+	intmax_t l;
+
+	if (str_to_intmax(str, &l) < 0)
+		return -1;
+
+	*num_r = (time_t)l;
 	return 0;
 }
 

@@ -63,6 +63,8 @@ int maildir_uidlist_lock_touch(struct maildir_uidlist *uidlist);
 void maildir_uidlist_unlock(struct maildir_uidlist *uidlist);
 bool maildir_uidlist_is_locked(struct maildir_uidlist *uidlist);
 bool maildir_uidlist_is_read(struct maildir_uidlist *uidlist);
+/* Returns TRUE if uidlist file is currently open */
+bool maildir_uidlist_is_open(struct maildir_uidlist *uidlist);
 
 struct maildir_uidlist *maildir_uidlist_init(struct maildir_mailbox *mbox);
 void maildir_uidlist_deinit(struct maildir_uidlist **uidlist);
@@ -80,9 +82,6 @@ int maildir_uidlist_refresh_fast_init(struct maildir_uidlist *uidlist);
 int maildir_uidlist_lookup(struct maildir_uidlist *uidlist, uint32_t uid,
 			   enum maildir_uidlist_rec_flag *flags_r,
 			   const char **fname_r);
-int maildir_uidlist_lookup_nosync(struct maildir_uidlist *uidlist, uint32_t uid,
-				  enum maildir_uidlist_rec_flag *flags_r,
-				  const char **fname_r);
 /* Returns extension's value or NULL if it doesn't exist. */
 const char *
 maildir_uidlist_lookup_ext(struct maildir_uidlist *uidlist, uint32_t uid,
@@ -91,19 +90,21 @@ maildir_uidlist_lookup_ext(struct maildir_uidlist *uidlist, uint32_t uid,
 uint32_t maildir_uidlist_get_uid_validity(struct maildir_uidlist *uidlist);
 uint32_t maildir_uidlist_get_next_uid(struct maildir_uidlist *uidlist);
 int maildir_uidlist_get_mailbox_guid(struct maildir_uidlist *uidlist,
-				     uint8_t mailbox_guid[MAIL_GUID_128_SIZE]);
+				     guid_128_t mailbox_guid);
 void maildir_uidlist_set_mailbox_guid(struct maildir_uidlist *uidlist,
-				      const uint8_t mailbox_guid[MAIL_GUID_128_SIZE]);
+				      const guid_128_t mailbox_guid);
 
 void maildir_uidlist_set_uid_validity(struct maildir_uidlist *uidlist,
 				      uint32_t uid_validity);
 void maildir_uidlist_set_next_uid(struct maildir_uidlist *uidlist,
 				  uint32_t next_uid, bool force);
 
-/* Update extended record. value=NULL removes the key. */
+/* Update extended record. */
 void maildir_uidlist_set_ext(struct maildir_uidlist *uidlist, uint32_t uid,
 			     enum maildir_uidlist_rec_ext_key key,
 			     const char *value);
+void maildir_uidlist_unset_ext(struct maildir_uidlist *uidlist, uint32_t uid,
+			       enum maildir_uidlist_rec_ext_key key);
 
 /* If uidlist has changed, update it. This is mostly meant to be used with
    maildir_uidlist_set_ext() */
@@ -128,6 +129,8 @@ void maildir_uidlist_sync_set_ext(struct maildir_uidlist_sync_ctx *ctx,
 				  struct maildir_uidlist_rec *rec,
 				  enum maildir_uidlist_rec_ext_key key,
 				  const char *value);
+void maildir_uidlist_update_fname(struct maildir_uidlist *uidlist,
+				  const char *filename);
 const char *
 maildir_uidlist_sync_get_full_filename(struct maildir_uidlist_sync_ctx *ctx,
 				       const char *filename);

@@ -1,8 +1,3 @@
-# APPLE - skindexer is fts-sk's external indexer
-if BUILD_SK
-SKINDEXER = skindexer
-endif
-
 pkglibexecdir = $(libexecdir)/dovecot
 
 pkglibexec_PROGRAMS = \
@@ -11,8 +6,6 @@ pkglibexec_PROGRAMS = \
 	script-login \
 	$(TCPWRAP_BIN) \
 	gdbhelper \
-	listview \
-	$(SKINDEXER) \
 	maildirlock
 
 AM_CPPFLAGS = \
@@ -34,19 +27,23 @@ rawlog_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 rawlog_SOURCES = \
 	rawlog.c
 
-script_login_LDADD = $(LIBDOVECOT_STORAGE) $(LIBDOVECOT) $(MODULE_LIBS)
-script_login_DEPENDENCIES = $(LIBDOVECOT_STORAGE) $(LIBDOVECOT_DEPS)
+script_login_LDADD = \
+	$(LIBDOVECOT_STORAGE) \
+	$(LIBDOVECOT) 
+script_login_DEPENDENCIES = \
+	$(LIBDOVECOT_STORAGE_DEPS) \
+	$(LIBDOVECOT_DEPS)
 script_login_SOURCES = \
 	script-login.c
 
-script_LDADD = $(LIBDOVECOT) $(MODULE_LIBS)
+script_LDADD = $(LIBDOVECOT)
 script_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 script_SOURCES = \
 	script.c
 
 if TCPWRAPPERS
 TCPWRAP_BIN = tcpwrap
-tcpwrap_LDADD = $(LIBDOVECOT) $(MODULE_LIBS) $(LIBWRAP_LIBS)
+tcpwrap_LDADD = $(LIBDOVECOT) $(LIBWRAP_LIBS)
 tcpwrap_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 tcpwrap_SOURCES = \
 	tcpwrap.c \
@@ -58,21 +55,7 @@ gdbhelper_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 gdbhelper_SOURCES = \
 	gdbhelper.c
 
-listview_LDADD = $(LIBDOVECOT)
-listview_DEPENDENCIES = $(LIBDOVECOT_DEPS)
-listview_SOURCES = \
-	listview.c
-
 maildirlock_LDADD = $(LIBDOVECOT)
 maildirlock_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 maildirlock_SOURCES = \
 	maildirlock.c
-
-# APPLE
-skindexer_LDADD = $(LIBDOVECOT)
-skindexer_DEPENDENCIES = $(LIBDOVECOT_DEPS)
-skindexer_LDFLAGS = \
-	-framework CoreFoundation \
-	-framework CoreServices
-skindexer_SOURCES = \
-	skindexer.c

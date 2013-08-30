@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 /*
    Users can be divided to three groups:
@@ -74,6 +74,7 @@ void mail_cache_decision_state_update(struct mail_cache_view *view,
 				      uint32_t seq, unsigned int field)
 {
 	struct mail_cache *cache = view->cache;
+	enum mail_cache_decision_type dec;
 	const struct mail_index_header *hdr;
 	uint32_t uid;
 
@@ -82,22 +83,28 @@ void mail_cache_decision_state_update(struct mail_cache_view *view,
 	if (view->no_decision_updates)
 		return;
 
-	mail_index_lookup_uid(view->view, seq, &uid);
-	hdr = mail_index_get_header(view->view);
+	dec = cache->fields[field].field.decision;
+	if (dec == (MAIL_CACHE_DECISION_NO | MAIL_CACHE_DECISION_FORCED)) {
+		/* don't update last_used */
+		return;
+	}
 
-	if (ioloop_time - cache->fields[field].last_used > 3600*24) {
+	if (ioloop_time - cache->fields[field].field.last_used > 3600*24) {
 		/* update last_used about once a day */
-		cache->fields[field].last_used = (uint32_t)ioloop_time;
+		cache->fields[field].field.last_used = (uint32_t)ioloop_time;
 		if (cache->field_file_map[field] != (uint32_t)-1)
 			cache->field_header_write_pending = TRUE;
 	}
 
-	if (cache->fields[field].field.decision != MAIL_CACHE_DECISION_TEMP) {
+	if (dec != MAIL_CACHE_DECISION_TEMP) {
 		/* a) forced decision
 		   b) not cached, mail_cache_decision_add() will handle this
 		   c) permanently cached already, okay. */
 		return;
 	}
+
+	mail_index_lookup_uid(view->view, seq, &uid);
+	hdr = mail_index_get_header(view->view);
 
 	/* see if we want to change decision from TEMP to YES */
 	if (uid < cache->fields[field].uid_highwater ||

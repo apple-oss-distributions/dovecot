@@ -44,6 +44,7 @@ typedef void failure_callback_t(const struct failure_context *ctx,
 				const char *format, va_list args);
 
 extern const char *failure_log_type_prefixes[];
+extern const char *failure_log_type_names[];
 
 void i_log_type(const struct failure_context *ctx, const char *format, ...)
 	ATTR_FORMAT(2, 3);
@@ -110,13 +111,16 @@ void i_set_info_file(const char *path);
 void i_set_debug_file(const char *path);
 
 /* Set the failure prefix. */
-void i_set_failure_prefix(const char *prefix);
+void i_set_failure_prefix(const char *prefix_fmt, ...) ATTR_FORMAT(1, 2);
+/* Set prefix to "". */
+void i_unset_failure_prefix(void);
 /* Prefix failures with a timestamp. fmt is in strftime() format. */
 void i_set_failure_timestamp_format(const char *fmt);
 /* When logging with internal error protocol, update the process's current
-   IP address. This is mainly used by the master process to log some IP
-   address if the process crash. */
-void i_set_failure_ip(const struct ip_addr *ip);
+   IP address / log prefix by sending it to log process. This is mainly used to
+   improve the error message if the process crashes. */
+void i_set_failure_send_ip(const struct ip_addr *ip);
+void i_set_failure_send_prefix(const char *prefix);
 
 /* Call the callback before exit()ing. The callback may update the status. */
 void i_set_failure_exit_callback(void (*callback)(int *status));

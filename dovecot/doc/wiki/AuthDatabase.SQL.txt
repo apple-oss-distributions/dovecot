@@ -22,7 +22,7 @@ Contents
 
      6. High availability
 
-     7. Example
+     7. Examples
 
 Password database lookups
 -------------------------
@@ -101,7 +101,7 @@ Some commands, such as 'doveadm -A' need to get a list of users. With SQL
 userdb this is done with 'iterate_query' setting. You can either return
 
  * "user" field containing either user or user@domain style usernames, or
- * "user" and "domain" fields
+ * "username" and "domain" fields
 
 Any other fields are ignored.
 
@@ -122,8 +122,8 @@ You can add multiple "host" parameters to the SQL connect string. Dovecot will
 do round robin load balancing between them. If one of them goes down, the
 others will handle the traffic.
 
-Example
--------
+Examples
+--------
 
 Note that "user" can have a special meaning in some SQL databases, so we're
 using "userid" instead.
@@ -147,9 +147,10 @@ MySQL
 Add to your 'dovecot-sql.conf' file:
 
 ---%<-------------------------------------------------------------------------
-# The mysqld.sock socket may be in different locations in different systems
 driver = mysql
-# Use "host= ... pass=foo#bar" if your password has '#' character
+# The mysqld.sock socket may be in different locations in different systems.
+# Use "host= ... pass=foo#bar" with double-quotes if your password has '#'
+character.
 connect = host=/var/run/mysqld/mysqld.sock dbname=mails user=admin
 password=pass
 # Alternatively you can connect to localhost as well:
@@ -203,4 +204,23 @@ user_query = SELECT home, uid, gid FROM users WHERE userid = '%n' AND domain =
 iterate_query = SELECT userid AS username, domain FROM users
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+PostgreSQL/Horde
+----------------
+
+I used the following in devocot-sql.conf file to authenticate directly against
+the Horde user/password database (with static userdb) on PostgreSQL:
+
+---%<-------------------------------------------------------------------------
+driver = pgsql
+connect = host=localhost dbname=horde user=dovecot password=
+default_pass_scheme = MD5-CRYPT
+password_query = SELECT user_uid AS username, user_pass AS password \
+   FROM horde_users WHERE user_uid = '%u'
+iterate_query = SELECT user_uid AS username FROM users
+---%<-------------------------------------------------------------------------
+
+Note that you will have to change the password encryption in Horde to
+MD5-CRYPT. Also, the example above requires a 'dovecot' user in PostgreSQL with
+read (SELECT) privileges on the 'horde_users' table.
+
+(This file was created from the wiki on 2013-08-05 04:42)

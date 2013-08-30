@@ -12,7 +12,7 @@ You can use special variables in several places:
  * log prefix for imap/pop3 process
  * <Plugin> [Plugins.txt] settings
 
-The variables that work everywhere are:
+The variables that work (almost) everywhere are:
 
  *
 +------------+----------+-----------------------------------------------------+
@@ -39,6 +39,9 @@ The variables that work everywhere are:
 +------------+----------+-----------------------------------------------------+
 | %r         | rip      | remote IP address                                   |
 +------------+----------+-----------------------------------------------------+
+|            | session  | session ID for this client connection (unique for 9 |
+|            |          | years) (v2.1.6+)                                    |
++------------+----------+-----------------------------------------------------+
 
 These variables work almost everywhere else except in Dovecot-auth (userdb
 queries/templates):
@@ -53,6 +56,36 @@ queries/templates):
 +------------+----------+-----------------------------------------------------+
 | %i         | uid      | UNIX UID of the user                                |
 +------------+----------+-----------------------------------------------------+
+|            | gid      | UNIX group identifier of the user (v2.0.17+)        |
++------------+----------+-----------------------------------------------------+
+
+These variables work only in Dovecot-auth and 'login_log_format_elements'
+setting:
+
+ *
++----+------------+-----------------------------------------------------------+
+| %m | mech       | <authentication mechanism>                                |
+|    |            | [Authentication.Mechanisms.txt], e.g. PLAIN               |
++----+------------+-----------------------------------------------------------+
+| %a | lport      | Local port                                                |
++----+------------+-----------------------------------------------------------+
+| %b | rport      | Remote port                                               |
++----+------------+-----------------------------------------------------------+
+| %c | secured    | "secured" string with SSL, TLS and localhost connections. |
+|    |            | Otherwise empty.                                          |
++----+------------+-----------------------------------------------------------+
+|    | real_rip   | Same as %{rip}, except in proxy setups contains the remote|
+|    |            | proxy's IP instead of the client's IP (v2.1.10+)          |
++----+------------+-----------------------------------------------------------+
+|    | real_lip   | Same as %{lip}, except in proxy setups contains the local |
+|    |            | proxy's IP instead of the remote proxy's IP (v2.2+)       |
++----+------------+-----------------------------------------------------------+
+|    | real_rport | Similar to %{real_rip} except for port instead of IP      |
+|    |            | (v2.2+)                                                   |
++----+------------+-----------------------------------------------------------+
+|    | real_lport | Similar to %{real_lip} except for port instead of IP      |
+|    |            | (v2.2+)                                                   |
++----+------------+-----------------------------------------------------------+
 
 These variables work only in Dovecot-auth:
 
@@ -62,16 +95,6 @@ These variables work only in Dovecot-auth:
 +------------+----------------+-----------------------------------------------+
 | %w         | password       | plaintext password from plaintext             |
 |            |                | authentication mechanism                      |
-+------------+----------------+-----------------------------------------------+
-| %m         | mech           | <authentication mechanism>                    |
-|            |                | [Authentication.Mechanisms.txt], e.g. PLAIN   |
-+------------+----------------+-----------------------------------------------+
-| %a         | lport          | Local port                                    |
-+------------+----------------+-----------------------------------------------+
-| %b         | rport          | Remote port                                   |
-+------------+----------------+-----------------------------------------------+
-| %c         | secured        | "secured" string with SSL, TLS and localhost  |
-|            |                | connections. Otherwise empty.                 |
 +------------+----------------+-----------------------------------------------+
 | %k         | cert           | "valid" if client had sent a valid client     |
 |            |                | certificate, otherwise empty.                 |
@@ -89,15 +112,6 @@ These variables work only in 'login_log_format_elements' setting:
 +------------+--------------+-------------------------------------------------+
 | *Variable* | *Long name*  | *Description*                                   |
 +------------+--------------+-------------------------------------------------+
-| %m         | mech         | <authentication mechanism>                      |
-|            |              | [Authentication.Mechanisms.txt], e.g. PLAIN     |
-+------------+--------------+-------------------------------------------------+
-| %a         | lport        | Local port                                      |
-+------------+--------------+-------------------------------------------------+
-| %b         | rport        | Remote port                                     |
-+------------+--------------+-------------------------------------------------+
-| %c         | secured      | SSL, TLS or empty                               |
-+------------+--------------+-------------------------------------------------+
 | %k         | ssl_security | SSL protocol and cipher information, e.g. "TLSv1|
 |            |              | with cipher DHE-RSA-AES256-SHA (256/256 bits)"  |
 +------------+--------------+-------------------------------------------------+
@@ -105,10 +119,32 @@ These variables work only in 'login_log_format_elements' setting:
 |            |              | post-login connection                           |
 +------------+--------------+-------------------------------------------------+
 
-Long variable names can be used like '%{long_name} ' or with L modifier:
-'%L{long_name}'. Environment variables can be accessed with
-'%{env:ENVIRONMENT_VARIABLE}'. Additionally, the (self-explanatory) variables
-'%{pid}' and '%{hostname} ' are available.
+These variables work only in 'deliver_log_format' setting:
+
+ *
++------------+---------------+----------------------+
+| *Variable* | *Long name*   | *Description*        |
++------------+---------------+----------------------+
+| %$         |               | Log entry            |
++------------+---------------+----------------------+
+| %m         | msgid         | Message-ID           |
++------------+---------------+----------------------+
+| %s         | subject       | Subject              |
++------------+---------------+----------------------+
+| %f         | from          | From address         |
++------------+---------------+----------------------+
+| %e         | from_envelope | Envelope sender      |
++------------+---------------+----------------------+
+| %p         | size          | Message size         |
++------------+---------------+----------------------+
+| %w         | vsize         | Virtual message size |
++------------+---------------+----------------------+
+
+ * Long variable names can be used like '%{long_name} ' or with L modifier:
+   '%L{long_name}'.
+ * Environment variables can be accessed with '%{env:ENVIRONMENT_VARIABLE} '.
+ * Additionally, the (self-explanatory) variables '%{pid} ' and '%{hostname} '
+   are available.
 
 Modifiers
 ---------
@@ -152,4 +188,4 @@ with '0' character if the string is shorter. For example %04i may return
 The modifiers are applied from left-to-right order, except the substring is
 always taken from the final string.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

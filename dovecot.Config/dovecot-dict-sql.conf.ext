@@ -1,3 +1,9 @@
+# dovecot-dict-sql.conf.ext
+#
+# Version 2.2.x (AR14759611)
+
+# This file is commonly accessed via dict {} section in dovecot.conf
+
 #connect = host=localhost dbname=mails user=testuser password=pass
 
 # CREATE TABLE quota (

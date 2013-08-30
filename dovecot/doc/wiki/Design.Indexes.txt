@@ -67,4 +67,4 @@ Dovecot contains 'mail_index_uint32_to_offset()' and
 and lockless integers. The "unset" value is returned as 0, so it's not possible
 to differentiate between "unset" and "set" 0 values.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

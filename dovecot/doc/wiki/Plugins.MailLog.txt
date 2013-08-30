@@ -21,11 +21,14 @@ imap(user): deleted: uid=908, msgid=<123.foo@bar>
 imap(user): expunged: uid=908, msgid=<123.foo@bar>
 ---%<-------------------------------------------------------------------------
 
-You can enable the plugin by setting:
+You can enable the plugin globally for all services by setting:
 
 ---%<-------------------------------------------------------------------------
 mail_plugins = $mail_plugins mail_log notify
 ---%<-------------------------------------------------------------------------
+
+The notify plugin is required for the mail_log plugin's operation, so be
+certain it's also enabled.
 
 Configuration
 -------------
@@ -42,4 +45,4 @@ plugin {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

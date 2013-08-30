@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "dict-private.h"
@@ -6,6 +6,9 @@
 
 struct dict dict_driver_client;
 struct dict dict_driver_file;
+struct dict dict_driver_memcached;
+struct dict dict_driver_memcached_ascii;
+struct dict dict_driver_redis;
 
 static void test_dict_escape(void)
 {

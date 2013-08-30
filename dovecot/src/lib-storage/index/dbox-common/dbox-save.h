@@ -12,11 +12,12 @@ struct dbox_save_context {
 	struct istream *input;
 	struct mail *mail;
 
-	struct dbox_file *cur_file;
 	struct ostream *dbox_output;
 
 	unsigned int failed:1;
 	unsigned int finished:1;
+	unsigned int have_pop3_uidls:1;
+	unsigned int have_pop3_orders:1;
 };
 
 void dbox_save_begin(struct dbox_save_context *ctx, struct istream *input);
@@ -26,8 +27,13 @@ void dbox_save_end(struct dbox_save_context *ctx);
 void dbox_save_write_metadata(struct mail_save_context *ctx,
 			      struct ostream *output, uoff_t output_msg_size,
 			      const char *orig_mailbox_name,
-			      uint8_t guid_128_r[MAIL_GUID_128_SIZE]);
+			      guid_128_t guid_128_r) ATTR_NULL(4);
 
 void dbox_save_add_to_index(struct dbox_save_context *ctx);
+
+void dbox_save_update_header_flags(struct dbox_save_context *ctx,
+				   struct mail_index_view *sync_view,
+				   uint32_t ext_id,
+				   unsigned int flags_offset);
 
 #endif

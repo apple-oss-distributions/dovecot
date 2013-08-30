@@ -59,6 +59,7 @@ permissions have traditionally been set up:
    not overwrite or delete existing files owned by someone else (ie. same as
    /tmp). You can do this with 'chmod a+rwxt /var/mail'
  * Directory owned by a mail group and the directory set to group-writable
+   (mode=0770, group=mail)
 
 You can give Dovecot access to mail group by setting:
 
@@ -190,4 +191,4 @@ that value, in a directory with a name equivalent to the mailbox name.
 There are, however, some further considerations when doing this; see
 <MboxChildFolders.txt> for an example.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

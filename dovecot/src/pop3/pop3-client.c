@@ -1,14 +1,16 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "pop3-common.h"
 #include "array.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
+#include "crc32.h"
 #include "str.h"
 #include "llist.h"
 #include "hostpid.h"
+#include "file-dotlock.h"
 #include "var-expand.h"
 #include "master-service.h"
 #include "mail-storage.h"
@@ -24,10 +26,6 @@
 /* max. length of input command line (spec says 512) */
 #define MAX_INBUF_SIZE 2048
 
-/* Stop reading input when output buffer has this many bytes. Once the buffer
-   size has dropped to half of it, start reading input again. */
-#define OUTBUF_THROTTLE_SIZE 4096
-
 /* APPLE made CLIENT_MAX_BAD_COMMANDS configurable */
 
 /* Disconnect client after idling this many milliseconds */
@@ -36,12 +34,26 @@
    transaction. This allows the mailbox to become unlocked. */
 #define CLIENT_COMMIT_TIMEOUT_MSECS (10*1000)
 
+#define POP3_LOCK_FNAME "dovecot-pop3-session.lock"
+#define POP3_SESSION_DOTLOCK_STALE_TIMEOUT_SECS (60*5)
+
+extern struct pop3_client_vfuncs pop3_client_vfuncs;
+
+struct pop3_module_register pop3_module_register = { 0 };
+
 struct client *pop3_clients;
 unsigned int pop3_client_count;
 
 static enum mail_sort_type pop3_sort_program[] = {
 	MAIL_SORT_POP3_ORDER,
 	MAIL_SORT_END
+};
+
+static const struct dotlock_settings session_dotlock_set = {
+	.timeout = 10,
+	.stale_timeout = POP3_SESSION_DOTLOCK_STALE_TIMEOUT_SECS,
+	.lock_suffix = "",
+	.use_io_notify = TRUE
 };
 
 static void client_input(struct client *client);
@@ -72,8 +84,6 @@ static void client_idle_timeout(struct client *client)
 static int
 pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 {
-	struct mail_storage *storage;
-	enum mail_error error;
 	int ret;
 
 	if (!client->set->pop3_fast_size_lookups)
@@ -86,9 +96,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	storage = mailbox_get_storage(mail->box);
-	(void)mail_storage_get_last_error(storage, &error);
-	if (error != MAIL_ERROR_NOTPOSSIBLE)
+	if (mailbox_get_last_mail_error(mail->box) != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
 	/* virtual size not available with a fast lookup.
@@ -99,8 +107,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	(void)mail_storage_get_last_error(storage, &error);
-	if (error != MAIL_ERROR_NOTPOSSIBLE)
+	if (mailbox_get_last_mail_error(mail->box) != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
 	/* no way to quickly get the size. fallback to doing a slow virtual
@@ -120,13 +127,12 @@ msgnum_to_seq_map_add(ARRAY_TYPE(uint32_t) *msgnum_to_seq_map,
 
 	if (!array_is_created(msgnum_to_seq_map))
 		i_array_init(msgnum_to_seq_map, client->messages_count);
-	else {
-		/* add any messages between this and the previous one that had
-		   a POP3 order defined */
-		seq = array_count(msgnum_to_seq_map) + 1;
-		for (; seq <= msgnum; seq++)
-			array_append(msgnum_to_seq_map, &seq, 1);
-	}
+
+	/* add any messages between this and the previous one that had
+	   a POP3 order defined */
+	seq = array_count(msgnum_to_seq_map) + 1;
+	for (; seq <= msgnum; seq++)
+		array_append(msgnum_to_seq_map, &seq, 1);
 	array_append(msgnum_to_seq_map, &mail->seq, 1);
 }
 
@@ -135,25 +141,38 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
         struct mailbox_status status;
         struct mailbox_transaction_context *t;
 	struct mail_search_args *search_args;
+	struct mail_search_arg *sarg;
 	struct mail_search_context *ctx;
 	struct mail *mail;
 	uoff_t size;
-	ARRAY_DEFINE(message_sizes, uoff_t);
+	ARRAY(uoff_t) message_sizes;
 	ARRAY_TYPE(uint32_t) msgnum_to_seq_map = ARRAY_INIT;
 	unsigned int msgnum;
 	int ret = 1;
 
 	*failed_uid_r = 0;
 
-	mailbox_get_status(client->mailbox, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(client->mailbox, STATUS_UIDVALIDITY, &status);
 	client->uid_validity = status.uidvalidity;
 	client->messages_count = status.messages;
 
 	t = mailbox_transaction_begin(client->mailbox, 0);
 
 	search_args = mail_search_build_init();
-	mail_search_build_add_all(search_args);
-	ctx = mailbox_search_init(t, search_args, pop3_sort_program);
+	if (client->deleted_kw != NULL) {
+		sarg = mail_search_build_add(search_args, SEARCH_KEYWORDS);
+		sarg->match_not = TRUE;
+		sarg->value.str = p_strdup(search_args->pool,
+					   client->set->pop3_deleted_flag);
+		i_array_init(&client->all_seqs, 32);
+	} else {
+		mail_search_build_add_all(search_args);
+	}
+	mail_search_args_init(search_args, client->mailbox, TRUE, NULL);
+
+	ctx = mailbox_search_init(t, search_args, pop3_sort_program,
+				  client->set->pop3_fast_size_lookups ? 0 :
+				  MAIL_FETCH_VIRTUAL_SIZE, NULL);
 	mail_search_args_unref(&search_args);
 
 	client->last_seen_pop3_msn = 0;
@@ -161,13 +180,14 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 	i_array_init(&message_sizes, client->messages_count);
 
 	msgnum = 0;
-	mail = mail_alloc(t, MAIL_FETCH_VIRTUAL_SIZE, NULL);
-	while (mailbox_search_next(ctx, mail)) {
+	while (mailbox_search_next(ctx, &mail)) {
 		if (pop3_mail_get_size(client, mail, &size) < 0) {
 			ret = mail->expunged ? 0 : -1;
 			*failed_uid_r = mail->uid;
 			break;
 		}
+		if (array_is_created(&client->all_seqs))
+			seq_range_array_add(&client->all_seqs, mail->seq);
 		msgnum_to_seq_map_add(&msgnum_to_seq_map, client, mail, msgnum);
 
 		if ((mail_get_flags(mail) & MAIL_SEEN) != 0)
@@ -177,7 +197,6 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 		array_append(&message_sizes, &size, 1);
 		msgnum++;
 	}
-	mail_free(&mail);
 
 	if (mailbox_search_deinit(&ctx) < 0)
 		ret = -1;
@@ -191,6 +210,13 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 			array_free(&msgnum_to_seq_map);
 		return ret;
 	}
+	i_assert(msgnum <= client->messages_count);
+	client->messages_count = msgnum;
+
+	if (!array_is_created(&client->all_seqs)) {
+		i_array_init(&client->all_seqs, 1);
+		seq_range_array_add_range(&client->all_seqs, 1, msgnum);
+	}
 
 	client->trans = t;
 	client->message_sizes =
@@ -202,6 +228,26 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 			buffer_free_without_data(&msgnum_to_seq_map.arr.buffer);
 	}
 	return 1;
+}
+
+static int init_pop3_deleted_flag(struct client *client, const char **error_r)
+{
+	const char *deleted_keywords[2];
+
+	if (client->set->pop3_deleted_flag[0] == '\0')
+		return 0;
+
+	deleted_keywords[0] = client->set->pop3_deleted_flag;
+	deleted_keywords[1] = NULL;
+	if (mailbox_keywords_create(client->mailbox, deleted_keywords,
+				    &client->deleted_kw) < 0) {
+		*error_r = t_strdup_printf(
+			"pop3_deleted_flags: Invalid keyword '%s': %s",
+			client->set->pop3_deleted_flag,
+			mailbox_get_last_error(client->mailbox, NULL));
+		return -1;
+	}
+	return 0;
 }
 
 static int init_mailbox(struct client *client, const char **error_r)
@@ -228,11 +274,7 @@ static int init_mailbox(struct client *client, const char **error_r)
 	}
 
 	if (ret < 0) {
-		struct mail_storage *storage;
-		enum mail_error error;
-
-		storage = mailbox_get_storage(client->mailbox);
-		*error_r = mail_storage_get_last_error(storage, &error);
+		*error_r = mailbox_get_last_error(client->mailbox, NULL);
 		client_send_storage_error(client);
 	} else {
 		if (failed_uid == last_failed_uid && failed_uid != 0) {
@@ -244,7 +286,7 @@ static int init_mailbox(struct client *client, const char **error_r)
 			*error_r = "Can't sync mailbox: "
 				"Messages keep getting expunged";
 		}
-		client_send_line(client, "-ERR [IN-USE] Couldn't sync mailbox.");
+		client_send_line(client, "-ERR [SYS/TEMP] Couldn't sync mailbox.");
 	}
 	return -1;
 }
@@ -277,86 +319,138 @@ static enum uidl_keys parse_uidl_keymask(const char *format)
 	return mask;
 }
 
-struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
-			     struct mail_storage_service_user *service_user,
-			     const struct pop3_settings *set)
+static void pop3_lock_session_refresh(struct client *client)
 {
-	struct mail_namespace *ns;
+	if (file_dotlock_touch(client->session_dotlock) < 0) {
+		client_send_line(client,
+			"-ERR [SYS/TEMP] Couldn't update POP3 session lock.");
+		client_destroy(client, "Couldn't lock POP3 session");
+	}
+}
+
+static int pop3_lock_session(struct client *client)
+{
+	const struct mail_storage_settings *mail_set =
+		mail_storage_service_user_get_mail_set(client->service_user);
+	struct dotlock_settings dotlock_set;
+	const char *dir, *path;
+	int ret;
+
+	if (!mailbox_list_get_root_path(client->inbox_ns->list,
+					MAILBOX_LIST_PATH_TYPE_DIR, &dir) &&
+	    !mailbox_list_get_root_path(client->inbox_ns->list,
+					MAILBOX_LIST_PATH_TYPE_INDEX, &dir)) {
+		i_error("pop3_lock_session: Storage has no root/index directory, "
+			"can't create a POP3 session lock file");
+		return -1;
+	}
+	path = t_strdup_printf("%s/"POP3_LOCK_FNAME, dir);
+
+	dotlock_set = session_dotlock_set;
+	dotlock_set.use_excl_lock = mail_set->dotlock_use_excl;
+	dotlock_set.nfs_flush = mail_set->mail_nfs_storage;
+
+	ret = file_dotlock_create(&dotlock_set, path, 0,
+				  &client->session_dotlock);
+	if (ret < 0)
+		i_error("file_dotlock_create(%s) failed: %m", path);
+	else if (ret > 0) {
+		client->to_session_dotlock_refresh =
+			timeout_add(POP3_SESSION_DOTLOCK_STALE_TIMEOUT_SECS*1000,
+				    pop3_lock_session_refresh, client);
+	}
+	return ret;
+}
+
+int client_create(int fd_in, int fd_out, const char *session_id,
+		  struct mail_user *user,
+		  struct mail_storage_service_user *service_user,
+		  const struct pop3_settings *set, struct client **client_r)
+{
 	struct mail_storage *storage;
-	const char *inbox, *ident;
+	const char *ident;
 	struct client *client;
         enum mailbox_flags flags;
 	const char *errmsg;
-	enum mail_error error;
+	pool_t pool;
+	int ret;
 
 	/* always use nonblocking I/O */
 	net_set_nonblock(fd_in, TRUE);
 	net_set_nonblock(fd_out, TRUE);
 
-	client = i_new(struct client, 1);
+	pool = pool_alloconly_create("pop3 client", 256);
+	client = p_new(pool, struct client, 1);
+	client->pool = pool;
 	client->service_user = service_user;
+	client->v = pop3_client_vfuncs;
 	client->set = set;
+	client->session_id = p_strdup(pool, session_id);
 	client->fd_in = fd_in;
 	client->fd_out = fd_out;
 	client->input = i_stream_create_fd(fd_in, MAX_INBUF_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	o_stream_set_flush_callback(client->output, client_output, client);
 
+	p_array_init(&client->module_contexts, client->pool, 5);
 	client->io = io_add(fd_in, IO_READ, client_input, client);
         client->last_input = ioloop_time;
 	client->to_idle = timeout_add(CLIENT_IDLE_TIMEOUT_MSECS,
 				      client_idle_timeout, client);
-	if (!set->pop3_lock_session) {
-		client->to_commit = timeout_add(CLIENT_COMMIT_TIMEOUT_MSECS,
-						client_commit_timeout, client);
-	}
+	client->to_commit = timeout_add(CLIENT_COMMIT_TIMEOUT_MSECS,
+					client_commit_timeout, client);
 
 	client->user = user;
 
 	pop3_client_count++;
 	DLLIST_PREPEND(&pop3_clients, client);
 
-	inbox = "INBOX";
-	ns = mail_namespace_find(user->namespaces, &inbox);
-	if (ns == NULL) {
-		client_send_line(client, "-ERR [IN-USE] No INBOX namespace for user.");
-		client_destroy(client, "No INBOX namespace for user.");
-		return NULL;
+	client->inbox_ns = mail_namespace_find_inbox(user->namespaces);
+	i_assert(client->inbox_ns != NULL);
+
+	if (set->pop3_lock_session && (ret = pop3_lock_session(client)) <= 0) {
+		client_send_line(client, ret < 0 ?
+			"-ERR [SYS/TEMP] Failed to create POP3 session lock." :
+			"-ERR [IN-USE] Mailbox is locked by another POP3 session.");
+		client_destroy(client, "Couldn't lock POP3 session");
+		return -1;
 	}
-	client->inbox_ns = ns;
 
 	flags = MAILBOX_FLAG_POP3_SESSION;
-	if (set->pop3_no_flag_updates)
-		flags |= MAILBOX_FLAG_KEEP_RECENT;
-	if (set->pop3_lock_session)
-		flags |= MAILBOX_FLAG_KEEP_LOCKED;
-	client->mailbox = mailbox_alloc(ns->list, "INBOX", flags);
+	if (!set->pop3_no_flag_updates)
+		flags |= MAILBOX_FLAG_DROP_RECENT;
+	client->mailbox = mailbox_alloc(client->inbox_ns->list, "INBOX", flags);
 	storage = mailbox_get_storage(client->mailbox);
 	if (mailbox_open(client->mailbox) < 0) {
-		errmsg = t_strdup_printf("Couldn't open INBOX: %s",
-					 mail_storage_get_last_error(storage,
-								     &error));
-		i_error("%s", errmsg);
-		client_send_line(client, "-ERR [IN-USE] %s", errmsg);
+		i_error("Couldn't open INBOX: %s",
+			mailbox_get_last_error(client->mailbox, NULL));
+		client_send_storage_error(client);
 		client_destroy(client, "Couldn't open INBOX");
-		return NULL;
+		return -1;
 	}
 	client->mail_set = mail_storage_get_settings(storage);
 
-	if (init_mailbox(client, &errmsg) < 0) {
+	if (init_pop3_deleted_flag(client, &errmsg) < 0 ||
+	    init_mailbox(client, &errmsg) < 0) {
 		i_error("Couldn't init INBOX: %s", errmsg);
 		client_destroy(client, "Mailbox init failed");
-		return NULL;
+		return -1;
 	}
-
-	if (var_has_key(set->pop3_logout_format, 'u', "uidl_change") &&
-	    client->messages_count > 0)
-		client->message_uidl_hashes_save = TRUE;
 
 	client->uidl_keymask =
 		parse_uidl_keymask(client->mail_set->pop3_uidl_format);
 	if (client->uidl_keymask == 0)
 		i_fatal("Invalid pop3_uidl_format");
+
+	if (var_has_key(set->pop3_logout_format, 'u', "uidl_change")) {
+		/* logging uidl_change. we need hashes of the UIDLs */
+		client->message_uidls_save = TRUE;
+	} else if (strcmp(set->pop3_uidl_duplicates, "allow") != 0) {
+		/* UIDL duplicates aren't allowed, so we'll need to
+		   keep track of them */
+		client->message_uidls_save = TRUE;
+	}
 
 	if (!set->pop3_no_flag_updates && client->messages_count > 0)
 		client->seen_bitmask = i_malloc(MSGS_BITMASK_SIZE(client));
@@ -372,7 +466,8 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
 		hook_client_created(&client);
 
 	pop3_refresh_proctitle();
-	return client;
+	*client_r = client;
+	return 0;
 }
 
 static const char *client_build_uidl_change_string(struct client *client)
@@ -380,12 +475,8 @@ static const char *client_build_uidl_change_string(struct client *client)
 	uint32_t i, old_hash, new_hash;
 	unsigned int old_msg_count, new_msg_count;
 
-	if (client->message_uidl_hashes == NULL) {
-		/* UIDL command not given or %u not actually used in format */
-		return "";
-	}
-	if (client->message_uidl_hashes_save) {
-		/* UIDL command not finished */
+	if (client->message_uidls == NULL) {
+		/* UIDL command not given */
 		return "";
 	}
 
@@ -393,18 +484,18 @@ static const char *client_build_uidl_change_string(struct client *client)
 	old_msg_count = client->lowest_retr_pop3_msn > 0 ?
 		client->lowest_retr_pop3_msn - 1 : client->messages_count;
 	for (i = 0, old_hash = 0; i < old_msg_count; i++)
-		old_hash ^= client->message_uidl_hashes[i];
+		old_hash ^= crc32_str(client->message_uidls[i]);
 
 	/* assume all except deleted messages were sent to POP3 client */
 	if (!client->deleted) {
 		for (i = 0, new_hash = 0; i < client->messages_count; i++)
-			new_hash ^= client->message_uidl_hashes[i];
+			new_hash ^= crc32_str(client->message_uidls[i]);
 	} else {
 		for (i = 0, new_hash = 0; i < client->messages_count; i++) {
 			if (client->deleted_bitmask[i / CHAR_BIT] &
 			    (1 << (i % CHAR_BIT)))
 				continue;
-			new_hash ^= client->message_uidl_hashes[i];
+			new_hash ^= crc32_str(client->message_uidls[i]);
 		}
 	}
 
@@ -431,6 +522,7 @@ static const char *client_stats(struct client *client)
 		{ 'i', NULL, "input" },
 		{ 'o', NULL, "output" },
 		{ 'u', NULL, "uidl_change" },
+		{ '\0', NULL, "session" },
 		{ '\0', NULL, NULL }
 	};
 	struct var_expand_table *tab;
@@ -448,7 +540,12 @@ static const char *client_stats(struct client *client)
 	tab[6].value = dec2str(client->total_size);
 	tab[7].value = dec2str(client->input->v_offset);
 	tab[8].value = dec2str(client->output->offset);
-	tab[9].value = client_build_uidl_change_string(client);
+	if (var_has_key(client->set->pop3_logout_format,
+			tab[9].key, tab[9].long_key))
+		tab[9].value = client_build_uidl_change_string(client);
+	else
+		tab[9].value = "";
+	tab[10].value = client->session_id;
 
 	str = t_str_new(128);
 	var_expand(str, client->set->pop3_logout_format, tab);
@@ -466,8 +563,13 @@ static const char *client_get_disconnect_reason(struct client *client)
 
 void client_destroy(struct client *client, const char *reason)
 {
+	client->v.destroy(client, reason);
+}
+
+static void client_default_destroy(struct client *client, const char *reason)
+{
 	if (client->seen_change_count > 0)
-		client_update_mails(client);
+		(void)client_update_mails(client);
 
 	if (!client->disconnected) {
 		if (reason == NULL)
@@ -491,6 +593,10 @@ void client_destroy(struct client *client, const char *reason)
 		   message sizes. */
 		(void)mailbox_transaction_commit(&client->trans);
 	}
+	if (array_is_created(&client->all_seqs))
+		array_free(&client->all_seqs);
+	if (client->deleted_kw != NULL)
+		mailbox_keywords_unref(&client->deleted_kw);
 	if (client->mailbox != NULL)
 		mailbox_free(&client->mailbox);
 	if (client->anvil_sent) {
@@ -501,8 +607,14 @@ void client_destroy(struct client *client, const char *reason)
 	}
 	mail_user_unref(&client->user);
 
+	if (client->session_dotlock != NULL)
+		file_dotlock_delete(&client->session_dotlock);
+	if (client->to_session_dotlock_refresh != NULL)
+		timeout_remove(&client->to_session_dotlock_refresh);
+
+	if (client->uidl_pool != NULL)
+		pool_unref(&client->uidl_pool);
 	i_free(client->message_sizes);
-	i_free(client->message_uidl_hashes);
 	i_free(client->deleted_bitmask);
 	i_free(client->seen_bitmask);
 	i_free(client->msgnum_to_seq_map);
@@ -520,7 +632,7 @@ void client_destroy(struct client *client, const char *reason)
 	if (client->fd_in != client->fd_out)
 		net_disconnect(client->fd_out);
 	mail_storage_service_user_free(&client->service_user);
-	i_free(client);
+	pool_unref(&client->pool);
 
 	master_service_client_connection_destroyed(master_service);
 	pop3_refresh_proctitle();
@@ -549,13 +661,13 @@ void client_disconnect(struct client *client, const char *reason)
 	client->to_idle = timeout_add(0, client_destroy_timeout, client);
 }
 
-int client_send_line(struct client *client, const char *fmt, ...)
+void client_send_line(struct client *client, const char *fmt, ...)
 {
 	va_list va;
 	ssize_t ret;
 
 	if (client->output->closed)
-		return -1;
+		return;
 
 	va_start(va, fmt);
 
@@ -571,45 +683,44 @@ int client_send_line(struct client *client, const char *fmt, ...)
 		i_assert(ret < 0 || (size_t)ret == str_len(str));
 	} T_END;
 	if (ret >= 0) {
-		if (o_stream_get_buffer_used_size(client->output) <
-		    OUTBUF_THROTTLE_SIZE) {
-			ret = 1;
+		if (!POP3_CLIENT_OUTPUT_FULL(client))
 			client->last_output = ioloop_time;
-		} else {
-			ret = 0;
-			if (client->io != NULL) {
-				/* no more input until client has read
-				   our output */
-				io_remove(&client->io);
+		else if (client->io != NULL) {
+			/* no more input until client has read
+			   our output */
+			io_remove(&client->io);
 
-				/* If someone happens to flush output,
-				   we want to get our IO handler back in
-				   flush callback */
-				o_stream_set_flush_pending(client->output,
-							   TRUE);
-			}
+			/* If someone happens to flush output, we want to get
+			   our IO handler back in flush callback */
+			o_stream_set_flush_pending(client->output, TRUE);
 		}
 	}
-
 	va_end(va);
-	return (int)ret;
 }
 
 void client_send_storage_error(struct client *client)
 {
-	struct mail_storage *storage;
+	const char *errstr;
 	enum mail_error error;
 
 	if (mailbox_is_inconsistent(client->mailbox)) {
-		client_send_line(client, "-ERR Mailbox is in inconsistent "
+		client_send_line(client, "-ERR [SYS/TEMP] Mailbox is in inconsistent "
 				 "state, please relogin.");
 		client_disconnect(client, "Mailbox is in inconsistent state.");
 		return;
 	}
 
-	storage = mailbox_get_storage(client->mailbox);
-	client_send_line(client, "-ERR %s",
-			 mail_storage_get_last_error(storage, &error));
+	errstr = mailbox_get_last_error(client->mailbox, &error);
+	switch (error) {
+	case MAIL_ERROR_TEMP:
+	case MAIL_ERROR_NOSPACE:
+	case MAIL_ERROR_INUSE:
+		client_send_line(client, "-ERR [SYS/TEMP] %s", errstr);
+		break;
+	default:
+		client_send_line(client, "-ERR [SYS/PERM] %s", errstr);
+		break;
+	}
 }
 
 bool client_handle_input(struct client *client)
@@ -703,7 +814,7 @@ static int client_output(struct client *client)
 
 	if (client->cmd == NULL) {
 		if (o_stream_get_buffer_used_size(client->output) <
-		    OUTBUF_THROTTLE_SIZE/2 && client->io == NULL) {
+		    POP3_OUTBUF_THROTTLE_SIZE/2 && client->io == NULL) {
 			/* enable input again */
 			client->io = io_add(i_stream_get_fd(client->input),
 					    IO_READ, client_input, client);
@@ -733,8 +844,12 @@ void clients_destroy_all(void)
 	while (pop3_clients != NULL) {
 		if (pop3_clients->cmd == NULL) {
 			client_send_line(pop3_clients,
-				"-ERR Server shutting down.");
+				"-ERR [SYS/TEMP] Server shutting down.");
 		}
 		client_destroy(pop3_clients, "Server shutting down.");
 	}
 }
+
+struct pop3_client_vfuncs pop3_client_vfuncs = {
+	client_default_destroy
+};

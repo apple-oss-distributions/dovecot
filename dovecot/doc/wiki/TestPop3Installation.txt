@@ -13,6 +13,8 @@ Contents
 
  6. Check that real mail clients work
 
+ 7. Make a graceful exit
+
 Check that it's running
 -----------------------
 
@@ -134,4 +136,14 @@ If you can't log in,
 
 Many POP3 clients have been tested with Dovecot and they work.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Make a graceful exit
+--------------------
+
+To close the connection to Dovecot issue a logout:
+
+---%<-------------------------------------------------------------------------
+quit
++OK Logging out.
+---%<-------------------------------------------------------------------------
+
+(This file was created from the wiki on 2013-08-05 04:42)

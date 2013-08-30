@@ -44,7 +44,7 @@ include or library paths, you can pass them in the 'CPPFLAGS' and 'LDFLAGS'
 environment variables. For example:
 
 ---%<-------------------------------------------------------------------------
-CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib -ldl" ./configure
+CPPFLAGS="-I/opt/openssl/include" LDFLAGS="-L/opt/openssl/lib" ./configure
 ---%<-------------------------------------------------------------------------
 
 You'll need to create two users for Dovecot's internal use:
@@ -63,7 +63,7 @@ Compiling Dovecot From Mercurial
 If you got Dovecot from Mercurial, for instance with
 
 ---%<-------------------------------------------------------------------------
-hg clone http://hg.dovecot.org/dovecot-2.0/
+hg clone http://hg.dovecot.org/dovecot-2.1/
 ---%<-------------------------------------------------------------------------
 
 you will first need to run './autogen.sh' to generate the 'configure' script
@@ -364,4 +364,4 @@ The plugin filename is prefixed with a number which specifies the order in
 which the plugins are loaded. This is important if one plugin depends on
 another.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

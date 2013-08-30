@@ -1,8 +1,8 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "str.h"
-#include "istream-internal.h"
+#include "istream-private.h"
 #include "istream-tee.h"
 
 #include <stdlib.h>

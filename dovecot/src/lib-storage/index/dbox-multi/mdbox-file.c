@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -302,44 +302,47 @@ int mdbox_file_create_fd(struct dbox_file *file, const char *path, bool parents)
 {
 	struct mdbox_file *mfile = (struct mdbox_file *)file;
 	struct mdbox_map *map = mfile->storage->map;
+	struct mailbox_permissions perm;
 	mode_t old_mask;
 	const char *p, *dir;
 	int fd;
 
-	old_mask = umask(0666 & ~map->create_mode);
+	mailbox_list_get_root_permissions(map->root_list, &perm);
+
+	old_mask = umask(0666 & ~perm.file_create_mode);
 	fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
 	umask(old_mask);
 	if (fd == -1 && errno == ENOENT && parents &&
 	    (p = strrchr(path, '/')) != NULL) {
 		dir = t_strdup_until(path, p);
-		if (mailbox_list_mkdir(map->root_list, dir,
-				       path != file->alt_path ?
-				       MAILBOX_LIST_PATH_TYPE_DIR :
-				       MAILBOX_LIST_PATH_TYPE_ALT_DIR) < 0) {
+		if (mailbox_list_mkdir_root(map->root_list, dir,
+					    path != file->alt_path ?
+					    MAILBOX_LIST_PATH_TYPE_DIR :
+					    MAILBOX_LIST_PATH_TYPE_ALT_DIR) < 0) {
 			mail_storage_copy_list_error(&file->storage->storage,
 						     map->root_list);
 			return -1;
 		}
 		/* try again */
-		old_mask = umask(0666 & ~map->create_mode);
+		old_mask = umask(0666 & ~perm.file_create_mode);
 		fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
 		umask(old_mask);
 	}
 	if (fd == -1) {
 		mail_storage_set_critical(&file->storage->storage,
 			"open(%s, O_CREAT) failed: %m", path);
-	} else if (map->create_gid == (gid_t)-1) {
+	} else if (perm.file_create_gid == (gid_t)-1) {
 		/* no group change */
-	} else if (fchown(fd, (uid_t)-1, map->create_gid) < 0) {
+	} else if (fchown(fd, (uid_t)-1, perm.file_create_gid) < 0) {
 		if (errno == EPERM) {
 			mail_storage_set_critical(&file->storage->storage, "%s",
 				eperm_error_get_chgrp("fchown", path,
-						      map->create_gid,
-						      map->create_gid_origin));
+					perm.file_create_gid,
+					perm.file_create_gid_origin));
 		} else {
 			mail_storage_set_critical(&file->storage->storage,
 				"fchown(%s, -1, %ld) failed: %m",
-				path, (long)map->create_gid);
+				path, (long)perm.file_create_gid);
 		}
 		/* continue anyway */
 	}

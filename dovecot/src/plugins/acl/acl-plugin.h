@@ -17,12 +17,10 @@ struct acl_user {
 	union mail_user_module_context module_ctx;
 
 	const char *master_user;
-	const char *submit_user;			/* APPLE - urlauth */
 	const char *acl_env;
 	const char *const *groups;
 
 	struct acl_lookup_dict *acl_lookup_dict;
-	time_t last_shared_add_check;
 };
 
 struct acl_storage_rights_context {
@@ -33,6 +31,16 @@ struct acl_storage_rights_context {
 struct acl_mailbox_list {
 	union mailbox_list_module_context module_ctx;
 	struct acl_storage_rights_context rights;
+
+	time_t last_shared_add_check;
+};
+
+struct acl_mailbox {
+	union mailbox_module_context module_ctx;
+	struct acl_object *aclobj;
+	bool skip_acl_checks;
+	bool acl_enabled;
+	bool no_read_right;
 };
 
 extern MODULE_CONTEXT_DEFINE(acl_storage_module, &mail_storage_module_register);
@@ -50,7 +58,7 @@ void acl_mail_allocated(struct mail *mail);
 struct acl_backend *acl_mailbox_list_get_backend(struct mailbox_list *list);
 int acl_mailbox_list_have_right(struct mailbox_list *list, const char *name,
 				bool parent, unsigned int acl_storage_right_idx,
-				bool *can_see_r);
+				bool *can_see_r) ATTR_NULL(5);
 
 void acl_plugin_init(struct module *module);
 void acl_plugin_deinit(void);

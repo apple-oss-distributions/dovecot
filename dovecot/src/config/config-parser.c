@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -11,6 +11,7 @@
 #include "service-settings.h"
 #include "master-service.h"
 #include "master-service-settings.h"
+#include "master-service-ssl-settings.h"
 #include "all-settings.h"
 #include "old-set-parser.h"
 #include "config-request.h"
@@ -254,10 +255,14 @@ int config_parse_net(const char *value, struct ip_addr *ip_r,
 	}
 
 	max_bits = IPADDR_IS_V4(&ips[0]) ? 32 : 128;
-	if (p == NULL || str_to_uint(p, &bits) < 0 || bits > max_bits)
+	if (p == NULL)
 		*bits_r = max_bits;
-	else
+	else if (str_to_uint(p, &bits) == 0 && bits <= max_bits)
 		*bits_r = bits;
+	else {
+		*error_r = t_strdup_printf("Invalid network mask: %s", p);
+		return -1;
+	}
 	return 0;
 }
 
@@ -333,9 +338,8 @@ config_filter_parser_check(struct config_parser_context *ctx,
 {
 	for (; p->root != NULL; p++) {
 		/* skip checking settings we don't care about */
-		if (*ctx->module != '\0' &&
-		    !config_module_want_parser(ctx->root_parsers,
-					       ctx->module, p->root))
+		if (!config_module_want_parser(ctx->root_parsers,
+					       ctx->modules, p->root))
 			continue;
 
 		settings_parse_var_skip(p->parser);
@@ -395,7 +399,7 @@ config_all_parsers_check(struct config_parser_context *ctx,
 
 	global_ssl_set = get_str_setting(parsers[0], "ssl", "");
 	for (i = 0; i < count && ret == 0; i++) {
-		if (config_filter_parsers_get(new_filter, tmp_pool, "",
+		if (config_filter_parsers_get(new_filter, tmp_pool, NULL,
 					      &parsers[i]->filter,
 					      &tmp_parsers, &output,
 					      error_r) < 0) {
@@ -427,6 +431,8 @@ str_append_file(string_t *str, const char *key, const char *path,
 	int fd;
 	ssize_t ret;
 
+	*error_r = NULL;
+
 	fd = open(path, O_RDONLY);
 	if (fd == -1) {
 		*error_r = t_strdup_printf("%s: Can't open file %s: %m",
@@ -439,7 +445,7 @@ str_append_file(string_t *str, const char *key, const char *path,
 		*error_r = t_strdup_printf("%s: read(%s) failed: %m",
 					   key, path);
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret < 0 ? -1 : 0;
 }
 
@@ -642,14 +648,25 @@ config_parse_line(struct config_parser_context *ctx,
 		*value_r = "";
 	else {
 		/* get section name */
-		*value_r = line;
-		while (!IS_WHITE(*line) && *line != '\0')
-			line++;
-
-		if (*line != '\0') {
-			*line++ = '\0';
-			while (IS_WHITE(*line))
+		if (*line != '"') {
+			*value_r = line;
+			while (!IS_WHITE(*line) && *line != '\0')
 				line++;
+			if (*line != '\0') {
+				*line++ = '\0';
+				while (IS_WHITE(*line))
+					line++;
+			}
+		} else {
+			char *value = ++line;
+			while (*line != '"' && *line != '\0')
+				line++;
+			if (*line == '"') {
+				*line++ = '\0';
+				while (IS_WHITE(*line))
+					line++;
+				*value_r = str_unescape(value);
+			}
 		}
 		if (*line != '{') {
 			*value_r = "Expecting '='";
@@ -670,10 +687,12 @@ static int config_parse_finish(struct config_parser_context *ctx, const char **e
 	int ret;
 
 	new_filter = config_filter_init(ctx->pool);
-	(void)array_append_space(&ctx->all_parsers);
+	array_append_zero(&ctx->all_parsers);
 	config_filter_add_all(new_filter, array_idx(&ctx->all_parsers, 0));
 
-	if ((ret = config_all_parsers_check(ctx, new_filter, &error)) < 0) {
+	if (ctx->hide_errors)
+		ret = 0;
+	else if ((ret = config_all_parsers_check(ctx, new_filter, &error)) < 0) {
 		*error_r = t_strdup_printf("Error in configuration file %s: %s",
 					   ctx->path, error);
 	}
@@ -712,12 +731,12 @@ config_require_key(struct config_parser_context *ctx, const char *key)
 {
 	struct config_module_parser *l;
 
-	if (*ctx->module == '\0')
+	if (ctx->modules == NULL)
 		return TRUE;
 
 	for (l = ctx->cur_section->parsers; l->root != NULL; l++) {
 		if (config_module_want_parser(ctx->root_parsers,
-					      ctx->module, l->root) &&
+					      ctx->modules, l->root) &&
 		    settings_parse_is_valid_key(l->parser, key))
 			return TRUE;
 	}
@@ -731,7 +750,7 @@ static int config_write_value(struct config_parser_context *ctx,
 	string_t *str = ctx->str;
 	const void *var_name, *var_value, *p;
 	enum setting_type var_type;
-	const char *error;
+	const char *error, *path;
 	bool dump, expand_parent;
 
 	switch (type) {
@@ -745,10 +764,13 @@ static int config_write_value(struct config_parser_context *ctx,
 		} else {
 			if (!config_require_key(ctx, key)) {
 				/* don't even try to open the file */
-			} else if (str_append_file(str, key, value, &error) < 0) {
-				/* file reading failed */
-				ctx->error = p_strdup(ctx->pool, error);
-				return -1;
+			} else {
+				path = fix_relative_path(value, ctx->cur_input);
+				if (str_append_file(str, key, path, &error) < 0) {
+					/* file reading failed */
+					ctx->error = p_strdup(ctx->pool, error);
+					return -1;
+				}
 			}
 		}
 		break;
@@ -875,8 +897,8 @@ void config_parser_apply_line(struct config_parser_context *ctx,
 	}
 }
 
-int config_parse_file(const char *path, bool expand_values, const char *module,
-		      const char **error_r)
+int config_parse_file(const char *path, bool expand_values,
+		      const char *const *modules, const char **error_r)
 {
 	struct input_stack root;
 	struct config_parser_context ctx;
@@ -888,15 +910,21 @@ int config_parse_file(const char *path, bool expand_values, const char *module,
 	int fd, ret = 0;
 	bool handled;
 
-	fd = open(path, O_RDONLY);
-	if (fd < 0) {
-		*error_r = t_strdup_printf("open(%s) failed: %m", path);
-		return 0;
+	if (path == NULL) {
+		path = "<defaults>";
+		fd = -1;
+	} else {
+		fd = open(path, O_RDONLY);
+		if (fd < 0) {
+			*error_r = t_strdup_printf("open(%s) failed: %m", path);
+			return 0;
+		}
 	}
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.pool = pool_alloconly_create("config file parser", 1024*256);
 	ctx.path = path;
+	ctx.hide_errors = fd == -1;
 
 	for (count = 0; all_roots[count] != NULL; count++) ;
 	ctx.root_parsers =
@@ -912,7 +940,7 @@ int config_parse_file(const char *path, bool expand_values, const char *module,
 	root.path = path;
 	ctx.cur_input = &root;
 	ctx.expand_values = expand_values;
-	ctx.module = module;
+	ctx.modules = modules;
 
 	p_array_init(&ctx.all_parsers, ctx.pool, 128);
 	ctx.cur_section = p_new(ctx.pool, struct config_section_stack, 1);
@@ -920,7 +948,9 @@ int config_parse_file(const char *path, bool expand_values, const char *module,
 
 	ctx.str = str_new(ctx.pool, 256);
 	full_line = str_new(default_pool, 512);
-	ctx.cur_input->input = i_stream_create_fd(fd, (size_t)-1, TRUE);
+	ctx.cur_input->input = fd != -1 ?
+		i_stream_create_fd(fd, (size_t)-1, TRUE) :
+		i_stream_create_from_data("", 0);
 	i_stream_set_return_partial_line(ctx.cur_input->input, TRUE);
 	old_settings_init(&ctx);
 	if (hook_config_parser_begin != NULL)
@@ -966,13 +996,13 @@ void config_parse_load_modules(void)
 	struct module_dir_load_settings mod_set;
 	struct module *m;
 	const struct setting_parser_info **roots;
-	ARRAY_DEFINE(new_roots, const struct setting_parser_info *);
+	ARRAY(const struct setting_parser_info *) new_roots;
 	ARRAY_TYPE(service_settings) new_services;
 	struct service_settings *const *services, *service_set;
 	unsigned int i, count;
 
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = master_service_get_version_string(master_service);
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
 	modules = module_dir_load(CONFIG_MODULE_DIR, NULL, &mod_set);
 	module_dir_init(modules);
 
@@ -986,17 +1016,24 @@ void config_parse_load_modules(void)
 				array_append(&new_roots, &roots[i], 1);
 		}
 
-		service_set = module_get_symbol_quiet(m,
-			t_strdup_printf("%s_service_settings", m->name));
-		if (service_set != NULL)
-			array_append(&new_services, &service_set, 1);
+		services = module_get_symbol_quiet(m,
+			t_strdup_printf("%s_service_settings_array", m->name));
+		if (services != NULL) {
+			for (count = 0; services[count] != NULL; count++) ;
+			array_append(&new_services, services, count);
+		} else {
+			service_set = module_get_symbol_quiet(m,
+				t_strdup_printf("%s_service_settings", m->name));
+			if (service_set != NULL)
+				array_append(&new_services, &service_set, 1);
+		}
 	}
 	if (array_count(&new_roots) > 0) {
 		/* modules added new settings. add the defaults and start
 		   using the new list. */
 		for (i = 0; all_roots[i] != NULL; i++)
 			array_append(&new_roots, &all_roots[i], 1);
-		(void)array_append_space(&new_roots);
+		array_append_zero(&new_roots);
 		all_roots = array_idx(&new_roots, 0);
 	}
 	if (array_count(&new_services) > 0) {
@@ -1031,12 +1068,12 @@ static bool parsers_are_connected(const struct setting_parser_info *root,
 }
 
 bool config_module_want_parser(struct config_module_parser *parsers,
-			       const char *module,
+			       const char *const *modules,
 			       const struct setting_parser_info *root)
 {
 	struct config_module_parser *l;
 
-	if (strcmp(root->module_name, module) == 0)
+	if (modules == NULL)
 		return TRUE;
 	if (root == &master_service_setting_parser_info) {
 		/* everyone wants master service settings */
@@ -1044,7 +1081,7 @@ bool config_module_want_parser(struct config_module_parser *parsers,
 	}
 
 	for (l = parsers; l->root != NULL; l++) {
-		if (strcmp(l->root->module_name, module) != 0)
+		if (!str_array_find(modules, l->root->module_name))
 			continue;
 
 		/* see if we can find a way to get from the original parser

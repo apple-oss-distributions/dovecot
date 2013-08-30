@@ -8,8 +8,9 @@ struct dotlock_settings;
 
 /* Synchronization can take a while sometimes, especially when copying lots of
    mails. */
-#define MAIL_TRANSCATION_LOG_LOCK_TIMEOUT (3*60)
-#define MAIL_TRANSCATION_LOG_LOCK_CHANGE_TIMEOUT (3*60)
+#define MAIL_TRANSACTION_LOG_LOCK_TIMEOUT (3*60)
+#define MAIL_TRANSACTION_LOG_LOCK_CHANGE_TIMEOUT (3*60)
+#define MAIL_TRANSACTION_LOG_LOCK_WARN_SECS 30
 
 /* Rotate when log is older than ROTATE_TIME and larger than MIN_SIZE */
 #define MAIL_TRANSACTION_LOG_ROTATE_MIN_SIZE (1024*32)
@@ -116,8 +117,7 @@ mail_transaction_log_file_alloc(struct mail_transaction_log *log,
 				const char *path);
 void mail_transaction_log_file_free(struct mail_transaction_log_file **file);
 
-int mail_transaction_log_file_open(struct mail_transaction_log_file *file,
-				   bool check_existing);
+int mail_transaction_log_file_open(struct mail_transaction_log_file *file);
 int mail_transaction_log_file_create(struct mail_transaction_log_file *file,
 				     bool reset);
 int mail_transaction_log_file_lock(struct mail_transaction_log_file *file);

@@ -1,23 +1,23 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "seq-range-array.h"
+#include "time-util.h"
 #include "imap-commands.h"
 #include "mail-search-build.h"
+#include "imap-search-args.h"
 #include "imap-seqset.h"
 #include "imap-fetch.h"
 #include "imap-sync.h"
 
 #include <stdlib.h>
 
-/* APPLE - urlauth */
-void (*hook_select_send_urlmech)(struct client *client) = NULL;
-
 struct imap_select_context {
 	struct client_command_context *cmd;
 	struct mail_namespace *ns;
 	struct mailbox *box;
 
+	struct timeval start_time;
 	struct imap_fetch_context *fetch_ctx;
 
 	uint32_t qresync_uid_validity;
@@ -200,14 +200,24 @@ static void select_context_free(struct imap_select_context *ctx)
 
 static void cmd_select_finish(struct imap_select_context *ctx, int ret)
 {
+	const char *resp_code;
+	struct timeval end_time;
+	int time_msecs;
+
 	if (ret < 0) {
 		if (ctx->box != NULL)
 			mailbox_free(&ctx->box);
 		ctx->cmd->client->mailbox = NULL;
 	} else {
-		client_send_tagline(ctx->cmd, mailbox_is_readonly(ctx->box) ?
-				    "OK [READ-ONLY] Select completed." :
-				    "OK [READ-WRITE] Select completed.");
+		resp_code = mailbox_is_readonly(ctx->box) ?
+			"READ-ONLY" : "READ-WRITE";
+		if (gettimeofday(&end_time, NULL) < 0)
+			memset(&end_time, 0, sizeof(end_time));
+		time_msecs = timeval_diff_msecs(&end_time, &ctx->start_time);
+		client_send_tagline(ctx->cmd, t_strdup_printf(
+			"OK [%s] %s completed (%d.%03d secs).", resp_code,
+			ctx->cmd->client->mailbox_examined ? "Examine" : "Select",
+			time_msecs/1000, time_msecs%1000));
 	}
 	select_context_free(ctx);
 }
@@ -217,16 +227,17 @@ static bool cmd_select_continue(struct client_command_context *cmd)
         struct imap_select_context *ctx = cmd->context;
 	int ret;
 
-	if (imap_fetch_more(ctx->fetch_ctx) == 0) {
+	if (imap_fetch_more(ctx->fetch_ctx, cmd) == 0) {
 		/* unfinished */
 		return FALSE;
 	}
 
-	ret = imap_fetch_deinit(ctx->fetch_ctx);
+	ret = imap_fetch_end(ctx->fetch_ctx);
 	if (ret < 0) {
 		client_send_storage_error(ctx->cmd,
 					  mailbox_get_storage(ctx->box));
 	}
+	imap_fetch_free(&ctx->fetch_ctx);
 	cmd_select_finish(ctx, ret);
 	return TRUE;
 }
@@ -235,42 +246,46 @@ static int select_qresync(struct imap_select_context *ctx)
 {
 	struct imap_fetch_context *fetch_ctx;
 	struct mail_search_args *search_args;
+	struct imap_fetch_qresync_args qresync_args;
 
 	search_args = mail_search_build_init();
 	search_args->args = p_new(search_args->pool, struct mail_search_arg, 1);
 	search_args->args->type = SEARCH_UIDSET;
 	search_args->args->value.seqset = ctx->qresync_known_uids;
+	imap_search_add_changed_since(search_args, ctx->qresync_modseq);
 
-	fetch_ctx = imap_fetch_init(ctx->cmd, ctx->box);
-	if (fetch_ctx == NULL)
-		return -1;
+	memset(&qresync_args, 0, sizeof(qresync_args));
+	qresync_args.qresync_sample_seqset = &ctx->qresync_sample_seqset;
+	qresync_args.qresync_sample_uidset = &ctx->qresync_sample_uidset;
 
-	fetch_ctx->search_args = search_args;
-	fetch_ctx->send_vanished = TRUE;
-	fetch_ctx->qresync_sample_seqset = &ctx->qresync_sample_seqset;
-	fetch_ctx->qresync_sample_uidset = &ctx->qresync_sample_uidset;
-
-	if (!imap_fetch_add_changed_since(fetch_ctx, ctx->qresync_modseq) ||
-	    !imap_fetch_init_handler(fetch_ctx, "UID", NULL) ||
-	    !imap_fetch_init_handler(fetch_ctx, "FLAGS", NULL) ||
-	    !imap_fetch_init_handler(fetch_ctx, "MODSEQ", NULL)) {
-		(void)imap_fetch_deinit(fetch_ctx);
+	if (imap_fetch_send_vanished(ctx->cmd->client, ctx->box,
+				     search_args, &qresync_args) < 0) {
+		mail_search_args_unref(&search_args);
 		return -1;
 	}
 
-	if (imap_fetch_begin(fetch_ctx) == 0) {
-		if (imap_fetch_more(fetch_ctx) == 0) {
-			/* unfinished */
-			ctx->fetch_ctx = fetch_ctx;
-			ctx->cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
+	fetch_ctx = imap_fetch_alloc(ctx->cmd->client, ctx->cmd->pool);
 
-			ctx->cmd->func = cmd_select_continue;
-			ctx->cmd->context = ctx;
-			return 0;
-		}
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_uid_init);
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_flags_init);
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_modseq_init);
+
+	imap_fetch_begin(fetch_ctx, ctx->box, search_args);
+	mail_search_args_unref(&search_args);
+
+	if (imap_fetch_more(fetch_ctx, ctx->cmd) == 0) {
+		/* unfinished */
+		ctx->fetch_ctx = fetch_ctx;
+		ctx->cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
+
+		ctx->cmd->func = cmd_select_continue;
+		ctx->cmd->context = ctx;
+		return 0;
 	}
-
-	return imap_fetch_deinit(fetch_ctx) < 0 ? -1 : 1;
+	if (imap_fetch_end(fetch_ctx) < 0)
+		return -1;
+	imap_fetch_free(&fetch_ctx);
+	return 1;
 }
 
 static int
@@ -279,10 +294,12 @@ select_open(struct imap_select_context *ctx, const char *mailbox, bool readonly)
 	struct client *client = ctx->cmd->client;
 	struct mailbox_status status;
 	enum mailbox_flags flags = 0;
-	int ret;
+	int ret = 0;
 
 	if (readonly)
-		flags |= MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT;
+		flags |= MAILBOX_FLAG_READONLY;
+	else
+		flags |= MAILBOX_FLAG_DROP_RECENT;
 	ctx->box = mailbox_alloc(ctx->ns->list, mailbox, flags);
 	if (mailbox_open(ctx->box) < 0) {
 		client_send_storage_error(ctx->cmd,
@@ -292,23 +309,24 @@ select_open(struct imap_select_context *ctx, const char *mailbox, bool readonly)
 	}
 
 	if (client->enabled_features != 0)
-		mailbox_enable(ctx->box, client->enabled_features);
-	if (mailbox_sync(ctx->box, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
+		ret = mailbox_enable(ctx->box, client->enabled_features);
+	if (ret < 0 ||
+	    mailbox_sync(ctx->box, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
 		client_send_storage_error(ctx->cmd,
 					  mailbox_get_storage(ctx->box));
 		return -1;
 	}
-	mailbox_get_status(ctx->box, STATUS_MESSAGES | STATUS_RECENT |
-			   STATUS_FIRST_UNSEEN_SEQ | STATUS_UIDVALIDITY |
-			   STATUS_UIDNEXT | STATUS_KEYWORDS |
-			   STATUS_HIGHESTMODSEQ, &status);
+	mailbox_get_open_status(ctx->box, STATUS_MESSAGES | STATUS_RECENT |
+				STATUS_FIRST_UNSEEN_SEQ | STATUS_UIDVALIDITY |
+				STATUS_UIDNEXT | STATUS_KEYWORDS |
+				STATUS_HIGHESTMODSEQ, &status);
 
 	client->mailbox = ctx->box;
-	client->select_counter++;
 	client->mailbox_examined = readonly;
 	client->messages_count = status.messages;
 	client->recent_count = status.recent;
 	client->uidvalidity = status.uidvalidity;
+	client->notify_uidnext = status.uidnext;
 
 	client_update_mailbox_flags(client, status.keywords);
 	client_send_mailbox_flags(client, TRUE);
@@ -341,10 +359,6 @@ select_open(struct imap_select_context *ctx, const char *mailbox, bool readonly)
 				(unsigned long long)status.highest_modseq));
 		client->sync_last_full_modseq = status.highest_modseq;
 	}
-
-	/* APPLE - urlauth */
-	if (hook_select_send_urlmech)
-		hook_select_send_urlmech(client);
 
 	if (ctx->qresync_uid_validity == status.uidvalidity &&
 	    status.uidvalidity != 0) {
@@ -380,8 +394,7 @@ bool cmd_select_full(struct client_command_context *cmd, bool readonly)
 	struct client *client = cmd->client;
 	struct imap_select_context *ctx;
 	const struct imap_arg *args, *list_args;
-	enum mailbox_name_status status;
-	const char *mailbox, *storage_name;
+	const char *mailbox;
 	int ret;
 
 	/* <mailbox> [(optional parameters)] */
@@ -396,21 +409,9 @@ bool cmd_select_full(struct client_command_context *cmd, bool readonly)
 
 	ctx = p_new(cmd->pool, struct imap_select_context, 1);
 	ctx->cmd = cmd;
-	ctx->ns = client_find_namespace(cmd, mailbox, &storage_name, &status);
+	ctx->ns = client_find_namespace(cmd, &mailbox);
+	(void)gettimeofday(&ctx->start_time, NULL);
 	if (ctx->ns == NULL) {
-		close_selected_mailbox(client);
-		return TRUE;
-	}
-	switch (status) {
-	case MAILBOX_NAME_EXISTS_MAILBOX:
-		break;
-	case MAILBOX_NAME_EXISTS_DIR:
-		status = MAILBOX_NAME_VALID;
-		/* fall through */
-	case MAILBOX_NAME_VALID:
-	case MAILBOX_NAME_INVALID:
-	case MAILBOX_NAME_NOINFERIORS:
-		client_fail_mailbox_name_status(cmd, mailbox, NULL, status);
 		close_selected_mailbox(client);
 		return TRUE;
 	}
@@ -431,10 +432,10 @@ bool cmd_select_full(struct client_command_context *cmd, bool readonly)
 	if (ctx->condstore) {
 		/* Enable while no mailbox is opened to avoid sending
 		   HIGHESTMODSEQ for previously opened mailbox */
-		client_enable(client, MAILBOX_FEATURE_CONDSTORE);
+		(void)client_enable(client, MAILBOX_FEATURE_CONDSTORE);
 	}
 
-	ret = select_open(ctx, storage_name, readonly);
+	ret = select_open(ctx, mailbox, readonly);
 	if (ret == 0)
 		return FALSE;
 	cmd_select_finish(ctx, ret);

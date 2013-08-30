@@ -78,6 +78,9 @@ static bool gssapi_initialized = FALSE;
 static gss_OID_desc mech_gssapi_krb5_oid =
 	{ 9, "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02" };
 
+static int
+mech_gssapi_wrap(struct gssapi_auth_request *request, gss_buffer_desc inbuf);
+
 static void mech_gssapi_log_error(struct auth_request *request,
 				  OM_uint32 status_value, int status_type,
 				  const char *description)
@@ -214,6 +217,21 @@ import_name(struct auth_request *request, void *str, size_t len)
 	return name;
 }
 
+static gss_name_t
+duplicate_name(struct auth_request *request, gss_name_t old)
+{
+	OM_uint32 major_status, minor_status;
+	gss_name_t new;
+
+	major_status = gss_duplicate_name(&minor_status, old, &new);
+	if (GSS_ERROR(major_status)) {
+		mech_gssapi_log_error(request, major_status, GSS_C_GSS_CODE,
+				      "gss_duplicate_name");
+		return GSS_C_NO_NAME;
+	}
+	return new;
+}
+
 static bool data_has_nuls(const void *data, unsigned int len)
 {
 	const unsigned char *c = data;
@@ -328,9 +346,15 @@ mech_gssapi_sec_context(struct gssapi_auth_request *request,
 	}
 
 	if (ret == 0) {
-		auth_request_handler_reply_continue(auth_request,
-						    output_token.value,
-						    output_token.length);
+		if (output_token.length > 0) {
+			auth_request_handler_reply_continue(auth_request,
+							    output_token.value,
+							    output_token.length);
+		} else {
+			/* If there is no output token, go straight to wrap,
+			   which is expecting an empty input token. */
+			ret = mech_gssapi_wrap(request, output_token);
+		}
 	}
 	(void)gss_release_buffer(&minor_status, &output_token);
 	return ret;
@@ -380,6 +404,26 @@ mech_gssapi_wrap(struct gssapi_auth_request *request, gss_buffer_desc inbuf)
 
 #ifdef USE_KRB5_USEROK
 static bool
+k5_principal_is_authorized(struct auth_request *request, const char *name)
+{
+	const char *value, *const *authorized_names, *const *tmp;
+
+	value = auth_fields_find(request->extra_fields, "k5principals");
+	if (value == NULL)
+		return FALSE;
+
+	authorized_names = t_strsplit_spaces(value, ",");
+	for (tmp = authorized_names; *tmp != NULL; tmp++) {
+		if (strcmp(*tmp, name) == 0) {
+			auth_request_log_debug(request, "gssapi",
+				"authorized by k5principals field: %s", name);
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+static bool
 mech_gssapi_krb5_userok(struct gssapi_auth_request *request,
 			gss_name_t name, const char *login_user,
 			bool check_name_type)
@@ -389,11 +433,11 @@ mech_gssapi_krb5_userok(struct gssapi_auth_request *request,
 	krb5_error_code krb5_err;
 	gss_OID name_type;
 	const char *princ_display_name;
-	bool ret = FALSE;
+	bool authorized = FALSE;
 
 	/* Parse out the principal's username */
-	if (!get_display_name(&request->auth_request, name, &name_type,
-			      &princ_display_name) < 0)
+	if (get_display_name(&request->auth_request, name, &name_type,
+			     &princ_display_name) < 0)
 		return FALSE;
 
 	if (!mech_gssapi_oid_cmp(name_type, GSS_KRB5_NT_PRINCIPAL_NAME) &&
@@ -419,13 +463,20 @@ mech_gssapi_krb5_userok(struct gssapi_auth_request *request,
 				      "krb5_parse_name() failed: %d",
 				      (int)krb5_err);
 	} else {
+		/* See if the principal is in the list of authorized
+		 * principals for the user */
+		authorized = k5_principal_is_authorized(&request->auth_request,
+							princ_display_name);
+
 		/* See if the principal is authorized to act as the
-		   specified user */
-		ret = krb5_kuserok(ctx, princ, login_user);
+		   specified (UNIX) user */
+		if (!authorized)
+			authorized = krb5_kuserok(ctx, princ, login_user);
+
 		krb5_free_principal(ctx, princ);
 	}
 	krb5_free_context(ctx);
-	return ret;
+	return authorized;
 }
 #endif
 
@@ -483,9 +534,43 @@ mech_gssapi_userok(struct gssapi_auth_request *request, const char *login_user)
 #else
 	auth_request_log_info(auth_request, "gssapi",
 			      "Cross-realm authentication not supported "
-			      "(authz_name=%s)", login_user);
+			      "(authn_name=%s, authz_name=%s)", request->auth_request.original_username, login_user);
 	return -1;
 #endif
+}
+
+static void
+gssapi_credentials_callback(enum passdb_result result,
+			    const unsigned char *credentials ATTR_UNUSED,
+			    size_t size ATTR_UNUSED,
+			    struct auth_request *request)
+{
+	struct gssapi_auth_request *gssapi_request =
+		(struct gssapi_auth_request *)request;
+
+	/* We don't care much whether the lookup succeeded or not because GSSAPI
+	 * does not strictly require a passdb. But if a passdb is configured,
+	 * now the k5principals field will have been filled in. */
+	switch (result) {
+	case PASSDB_RESULT_INTERNAL_FAILURE:
+		auth_request_internal_failure(request);
+		return;
+	case PASSDB_RESULT_USER_DISABLED:
+	case PASSDB_RESULT_PASS_EXPIRED:
+		/* user is explicitly disabled, don't allow it to log in */
+		auth_request_fail(request);
+		return;
+	case PASSDB_RESULT_SCHEME_NOT_AVAILABLE:
+	case PASSDB_RESULT_USER_UNKNOWN:
+	case PASSDB_RESULT_PASSWORD_MISMATCH:
+	case PASSDB_RESULT_OK:
+		break;
+	}
+
+	if (mech_gssapi_userok(gssapi_request, request->user) == 0)
+		auth_request_success(request, NULL, 0);
+	else
+		auth_request_fail(request);
 }
 
 static int
@@ -510,37 +595,53 @@ mech_gssapi_unwrap(struct gssapi_auth_request *request, gss_buffer_desc inbuf)
 
 	/* outbuf[0] contains bitmask for selected security layer,
 	   outbuf[1..3] contains maximum output_message size */
-	if (outbuf.length <= 4) {
+	if (outbuf.length < 4) {
 		auth_request_log_error(auth_request, "gssapi",
 				       "Invalid response length");
 		return -1;
 	}
-	name = (unsigned char *)outbuf.value + 4;
-	name_len = outbuf.length - 4;
 
-	if (data_has_nuls(name, name_len)) {
-		auth_request_log_info(auth_request, "gssapi",
-				      "authz_name has NULs");
-		return -1;
+	if (outbuf.length > 4) {
+		name = (unsigned char *)outbuf.value + 4;
+		name_len = outbuf.length - 4;
+
+		if (data_has_nuls(name, name_len)) {
+			auth_request_log_info(auth_request, "gssapi",
+					      "authz_name has NULs");
+			return -1;
+		}
+
+		login_user = p_strndup(auth_request->pool, name, name_len);
+		request->authz_name = import_name(auth_request, name, name_len);
+	} else {
+		request->authz_name = duplicate_name(auth_request,
+						     request->authn_name);
+		if (get_display_name(auth_request, request->authz_name,
+				     NULL, &login_user) < 0)
+			return -1;
 	}
 
-	login_user = p_strndup(auth_request->pool, name, name_len);
-	request->authz_name = import_name(auth_request, name, name_len);
 	if (request->authz_name == GSS_C_NO_NAME) {
 		auth_request_log_info(auth_request, "gssapi", "no authz_name");
 		return -1;
 	}
 
-	if (mech_gssapi_userok(request, login_user) < 0)
-		return -1;
-
+	/* Set username early, so that the credential lookup is for the
+	 * authorizing user. This means the username in subsequent log
+	 * messagess will be the authorization name, not the authentication
+	 * name, which may mean that future log messages should be adjusted
+	 * to log the right thing. */
 	if (!auth_request_set_username(auth_request, login_user, &error)) {
 		auth_request_log_info(auth_request, "gssapi",
 				      "authz_name: %s", error);
 		return -1;
 	}
 
-	auth_request_success(auth_request, NULL, 0);
+	/* Continue in callback once auth_request is populated with passdb
+	   information. */
+	auth_request->passdb_success = TRUE; /* default to success */
+	auth_request_lookup_credentials(&request->auth_request, "",
+					gssapi_credentials_callback);
 	return 0;
 }
 

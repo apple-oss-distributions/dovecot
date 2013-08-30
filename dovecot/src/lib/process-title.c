@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "env-util.h"
@@ -31,6 +31,8 @@ static void proctitle_hack_init(char *argv[], char *env[])
 	char *last;
 	unsigned int i;
 	bool clear_env;
+
+	i_assert(argv[0] != NULL);
 
 	/* find the last argv or environment string. it should always be the
 	   last string in environ, but don't rely on it. this is what openssh
@@ -146,7 +148,9 @@ void process_title_set(const char *title ATTR_UNUSED)
 	else
 		setproctitle("%s", title);
 #elif defined(PROCTITLE_HACK)
-	proctitle_hack_set(t_strconcat(process_name, " ", title, NULL));
+	T_BEGIN {
+		proctitle_hack_set(t_strconcat(process_name, " ", title, NULL));
+	} T_END;
 #endif
 }
 

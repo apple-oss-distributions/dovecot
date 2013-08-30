@@ -9,23 +9,32 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage/index
 
 libstorage_list_la_SOURCES = \
-	index-mailbox-list.c \
-	index-mailbox-list-sync.c \
 	mailbox-list-delete.c \
 	mailbox-list-fs.c \
 	mailbox-list-fs-flags.c \
 	mailbox-list-fs-iter.c \
+	mailbox-list-index.c \
+	mailbox-list-index-backend.c \
+	mailbox-list-index-iter.c \
+	mailbox-list-index-notify.c \
+	mailbox-list-index-status.c \
+	mailbox-list-index-sync.c \
+	mailbox-list-iter.c \
 	mailbox-list-maildir.c \
 	mailbox-list-maildir-iter.c \
 	mailbox-list-none.c \
+	mailbox-list-notify-tree.c \
 	mailbox-list-subscriptions.c \
 	subscription-file.c
 
 headers = \
-	index-mailbox-list.h \
 	mailbox-list-delete.h \
 	mailbox-list-fs.h \
+	mailbox-list-index.h \
+	mailbox-list-index-storage.h \
+	mailbox-list-index-sync.h \
 	mailbox-list-maildir.h \
+	mailbox-list-notify-tree.h \
 	mailbox-list-subscriptions.h \
 	subscription-file.h
 

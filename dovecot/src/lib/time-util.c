@@ -1,7 +1,11 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "time-util.h"
+
+#include <time.h>
+
+#define STRFTIME_MAX_BUFSIZE (1024*64)
 
 int timeval_cmp(const struct timeval *tv1, const struct timeval *tv2)
 {
@@ -33,5 +37,22 @@ long long timeval_diff_usecs(const struct timeval *tv1,
 		secs--;
 		usecs += 1000000;
 	}
-	return ((long long)secs * 1000000ULL) + usecs;
+	return ((long long)secs * 1000000LL) + usecs;
+}
+
+const char *t_strflocaltime(const char *fmt, time_t t)
+{
+	const struct tm *tm;
+	size_t bufsize = strlen(fmt) + 32;
+	char *buf = t_buffer_get(bufsize);
+	size_t ret;
+
+	tm = localtime(&t);
+	while ((ret = strftime(buf, bufsize, fmt, tm)) == 0) {
+		bufsize *= 2;
+		i_assert(bufsize <= STRFTIME_MAX_BUFSIZE);
+		buf = t_buffer_get(bufsize);
+	}
+	t_buffer_alloc(ret + 1);
+	return buf;
 }

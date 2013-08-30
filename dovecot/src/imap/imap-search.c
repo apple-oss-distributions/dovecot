@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "ostream.h"
@@ -10,10 +10,13 @@
 #include "imap-seqset.h"
 #include "imap-util.h"
 #include "mail-search-build.h"
-#include "mail-storage-private.h"				/* APPLE */
+#include "mail-storage-private.h"		/* APPLE - async search */
+#include "imap-fetch.h"
 #include "imap-commands.h"
 #include "imap-search-args.h"
 #include "imap-search.h"
+
+#include <stdlib.h>
 
 static int imap_search_deinit(struct imap_search_context *ctx);
 
@@ -41,10 +44,28 @@ imap_partial_range_parse(struct imap_search_context *ctx, const char *str)
 }
 
 static bool
+search_parse_fetch_att(struct imap_search_context *ctx,
+		       const struct imap_arg *update_args)
+{
+	const char *error;
+
+	ctx->fetch_pool = pool_alloconly_create("search update fetch", 512);
+	if (imap_fetch_att_list_parse(ctx->cmd->client, ctx->fetch_pool,
+				      update_args, &ctx->fetch_ctx, &error) < 0) {
+		client_send_command_error(ctx->cmd, t_strconcat(
+			"SEARCH UPDATE fetch-att: ", error, NULL));
+		pool_unref(&ctx->fetch_pool);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static bool
 search_parse_return_options(struct imap_search_context *ctx,
 			    const struct imap_arg *args)
 {
 	struct client_command_context *cmd = ctx->cmd;
+	const struct imap_arg *update_args;
 	const char *name, *str;
 	unsigned int idx;
 
@@ -68,8 +89,20 @@ search_parse_return_options(struct imap_search_context *ctx,
 			ctx->return_options |= SEARCH_RETURN_SAVE;
 		else if (strcmp(name, "CONTEXT") == 0) {
 			/* no-op */
-		} else if (strcmp(name, "UPDATE") == 0)
+		} else if (strcmp(name, "UPDATE") == 0) {
+			if ((ctx->return_options & SEARCH_RETURN_UPDATE) != 0) {
+				client_send_command_error(cmd,
+					"SEARCH return options have duplicate UPDATE.");
+				return FALSE;
+			}
 			ctx->return_options |= SEARCH_RETURN_UPDATE;
+			if (imap_arg_get_list(args, &update_args)) {
+				if (!search_parse_fetch_att(ctx, update_args))
+					return FALSE;
+				args++;
+			}
+		} else if (strcmp(name, "RELEVANCY") == 0)
+			ctx->return_options |= SEARCH_RETURN_RELEVANCY;
 		else if (strcmp(name, "PARTIAL") == 0) {
 			if (ctx->partial1 != 0) {
 				client_send_command_error(cmd,
@@ -146,10 +179,11 @@ static void imap_search_result_save(struct imap_search_context *ctx)
 		/* too many updates */
 		string_t *str = t_str_new(256);
 		str_append(str, "* NO [NOUPDATE ");
-		imap_quote_append_string(str, ctx->cmd->tag, FALSE);
+		imap_append_quoted(str, ctx->cmd->tag);
 		str_append_c(str, ']');
 		client_send_line(client, str_c(str));
 		ctx->return_options &= ~SEARCH_RETURN_UPDATE;
+		imap_search_context_free(ctx);
 		return;
 	}
 	result = mailbox_search_result_save(ctx->search_ctx,
@@ -160,6 +194,10 @@ static void imap_search_result_save(struct imap_search_context *ctx)
 	update->tag = i_strdup(ctx->cmd->tag);
 	update->result = result;
 	update->return_uids = ctx->cmd->uid;
+	update->fetch_pool = ctx->fetch_pool;
+	update->fetch_ctx = ctx->fetch_ctx;
+	ctx->fetch_pool = NULL;
+	ctx->fetch_ctx = NULL;
 }
 
 static void imap_search_send_result_standard(struct imap_search_context *ctx)
@@ -174,8 +212,8 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 		for (seq = range->seq1; seq <= range->seq2; seq++)
 			str_printfa(str, " %u", seq);
 		if (str_len(str) >= 1024-32) {
-			o_stream_send(ctx->cmd->client->output,
-				      str_data(str), str_len(str));
+			o_stream_nsend(ctx->cmd->client->output,
+				       str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 	}
@@ -185,8 +223,7 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(ctx->cmd->client->output,
-		      str_data(str), str_len(str));
+	o_stream_nsend(ctx->cmd->client->output, str_data(str), str_len(str));
 }
 
 static void
@@ -233,6 +270,34 @@ imap_search_send_partial(struct imap_search_context *ctx, string_t *str)
 	str_append_c(str, ')');
 }
 
+static void
+imap_search_send_relevancy(struct imap_search_context *ctx, string_t *dest)
+{
+	const float *scores;
+	unsigned int i, count;
+	float diff, imap_score;
+
+	scores = array_get(&ctx->relevancy_scores, &count);
+	if (count == 0)
+		return;
+
+	/* we'll need to convert float scores to numbers 1..100
+	   FIXME: would be a good idea to try to detect non-linear score
+	   mappings and convert them better.. */
+	diff = ctx->max_relevancy - ctx->min_relevancy;
+	if (diff == 0)
+		diff = 1.0;
+	for (i = 0; i < count; i++) {
+		if (i > 0)
+			str_append_c(dest, ' ');
+		imap_score = (scores[i] - ctx->min_relevancy) / diff * 100.0;
+		if (imap_score < 1)
+			str_append(dest, "1");
+		else
+			str_printfa(dest, "%u", (unsigned int)imap_score);
+	}
+}
+
 static void imap_search_send_result(struct imap_search_context *ctx)
 {
 	struct client *client = ctx->cmd->client;
@@ -254,7 +319,7 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 
 	str = str_new(default_pool, 1024);
 	str_append(str, "* ESEARCH (TAG ");
-	imap_quote_append_string(str, ctx->cmd->tag, FALSE);
+	imap_append_string(str, ctx->cmd->tag);
 	str_append_c(str, ')');
 
 	if (ctx->cmd->uid)
@@ -271,6 +336,11 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 			imap_write_seq_range(str, &ctx->result);
 		}
 	}
+	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0) {
+		str_append(str, " RELEVANCY (");
+		imap_search_send_relevancy(ctx, str);
+		str_append_c(str, ')');
+	}
 
 	if ((ctx->return_options & SEARCH_RETURN_PARTIAL) != 0)
 		imap_search_send_partial(ctx, str);
@@ -282,22 +352,37 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(client->output, str_data(str), str_len(str));
+	o_stream_nsend(client->output, str_data(str), str_len(str));
 	str_free(&str);
 }
 
-static void search_update_mail(struct imap_search_context *ctx)
+static void
+search_update_mail(struct imap_search_context *ctx, struct mail *mail)
 {
 	uint64_t modseq;
 
 	if ((ctx->return_options & SEARCH_RETURN_MODSEQ) != 0) {
-		modseq = mail_get_modseq(ctx->mail);
+		modseq = mail_get_modseq(mail);
 		if (ctx->highest_seen_modseq < modseq)
 			ctx->highest_seen_modseq = modseq;
 	}
 	if ((ctx->return_options & SEARCH_RETURN_SAVE) != 0) {
 		seq_range_array_add(&ctx->cmd->client->search_saved_uidset,
-				    0, ctx->mail->uid);
+				    mail->uid);
+	}
+	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0) {
+		const char *str;
+		float score;
+
+		if (mail_get_special(mail, MAIL_FETCH_SEARCH_RELEVANCY, &str) < 0)
+			score = 0;
+		else
+			score = strtod(str, NULL);
+		array_append(&ctx->relevancy_scores, &score, 1);
+		if (ctx->min_relevancy > score)
+			ctx->min_relevancy = score;
+		if (ctx->max_relevancy < score)
+			ctx->max_relevancy = score;
 	}
 }
 
@@ -317,11 +402,12 @@ static void search_add_result_id(struct imap_search_context *ctx, uint32_t id)
 	}
 }
 
-/* APPLE was static */
+/* APPLE - async search - was static */
 bool cmd_search_more(struct client_command_context *cmd)
 {
 	struct imap_search_context *ctx = cmd->context;
 	enum search_return_options opts = ctx->return_options;
+	struct mail *mail;
 	enum mailbox_sync_flags sync_flags;
 	struct timeval end_time;
 	const struct seq_range *range;
@@ -348,9 +434,9 @@ bool cmd_search_more(struct client_command_context *cmd)
 	minmax = (opts & (SEARCH_RETURN_MIN | SEARCH_RETURN_MAX)) != 0 &&
 		(opts & ~(SEARCH_RETURN_NORESULTS |
 			  SEARCH_RETURN_MIN | SEARCH_RETURN_MAX)) == 0;
-	while (mailbox_search_next_nonblock(ctx->search_ctx, ctx->mail,
-					    &tryagain)) {
-		id = cmd->uid ? ctx->mail->uid : ctx->mail->seq;
+	while (mailbox_search_next_nonblock(ctx->search_ctx,
+					    &mail, &tryagain)) {
+		id = cmd->uid ? mail->uid : mail->seq;
 		ctx->result_count++;
 
 		if (minmax) {
@@ -367,7 +453,7 @@ bool cmd_search_more(struct client_command_context *cmd)
 			continue;
 		}
 
-		search_update_mail(ctx);
+		search_update_mail(ctx, mail);
 		if ((opts & ~(SEARCH_RETURN_NORESULTS |
 			      SEARCH_RETURN_COUNT)) == 0) {
 			/* we only want to count (and get modseqs) */
@@ -381,26 +467,28 @@ bool cmd_search_more(struct client_command_context *cmd)
 	if (minmax && array_count(&ctx->result) > 0 &&
 	    (opts & (SEARCH_RETURN_MODSEQ | SEARCH_RETURN_SAVE)) != 0) {
 		/* handle MIN/MAX modseq/save updates */
+		mail = mail_alloc(ctx->trans, 0, NULL);
 		if ((opts & SEARCH_RETURN_MIN) != 0) {
 			i_assert(id_min != 0);
 			if (cmd->uid) {
-				if (!mail_set_uid(ctx->mail, id_min))
+				if (!mail_set_uid(mail, id_min))
 					i_unreached();
 			} else {
-				mail_set_seq(ctx->mail, id_min);
+				mail_set_seq(mail, id_min);
 			}
-			search_update_mail(ctx);
+			search_update_mail(ctx, mail);
 		}
 		if ((opts & SEARCH_RETURN_MAX) != 0) {
 			i_assert(id_max != 0);
 			if (cmd->uid) {
-				if (!mail_set_uid(ctx->mail, id_max))
+				if (!mail_set_uid(mail, id_max))
 					i_unreached();
 			} else {
-				mail_set_seq(ctx->mail, id_max);
+				mail_set_seq(mail, id_max);
 			}
-			search_update_mail(ctx);
+			search_update_mail(ctx, mail);
 		}
+		mail_free(&mail);
 	}
 
 	lost_data = mailbox_search_seen_lost_data(ctx->search_ctx);
@@ -425,7 +513,7 @@ bool cmd_search_more(struct client_command_context *cmd)
 	return cmd_sync(cmd, sync_flags, 0, ok_reply);
 }
 
-/* APPLE was static */
+/* APPLE - async search - was static */
 void cmd_search_more_callback(struct client_command_context *cmd)
 {
 	struct client *client = cmd->client;
@@ -439,7 +527,7 @@ void cmd_search_more_callback(struct client_command_context *cmd)
 		(void)client_handle_unfinished_cmd(cmd);
 	else
 		client_command_free(&cmd);
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 
 	if (client->disconnected)
 		client_destroy(client, NULL);
@@ -459,66 +547,28 @@ int cmd_search_parse_return_if_found(struct imap_search_context *ctx,
 		return 1;
 	}
 
-	if (!search_parse_return_options(ctx, list_args))
+	if (!search_parse_return_options(ctx, list_args)) {
+		imap_search_context_free(ctx);
 		return -1;
+	}
 
 	if ((ctx->return_options & SEARCH_RETURN_SAVE) != 0) {
 		/* wait if there is another SEARCH SAVE command running. */
-		cmd->search_save_result = TRUE;
-		if (client_handle_search_save_ambiguity(cmd))
+		if (client_handle_search_save_ambiguity(cmd)) {
+			imap_search_context_free(ctx);
 			return 0;
+		}
 
 		/* make sure the search result gets cleared if SEARCH fails */
 		if (array_is_created(&cmd->client->search_saved_uidset))
 			array_clear(&cmd->client->search_saved_uidset);
 		else
 			i_array_init(&cmd->client->search_saved_uidset, 128);
+		cmd->search_save_result = TRUE;
 	}
 
 	*_args = args + 2;
 	return 1;
-}
-
-static void wanted_fields_get(struct mailbox *box,
-			      const enum mail_sort_type *sort_program,
-			      enum mail_fetch_field *wanted_fields_r,
-			      struct mailbox_header_lookup_ctx **headers_ctx_r)
-{
-	const char *headers[2];
-
-	*wanted_fields_r = 0;
-	*headers_ctx_r = NULL;
-
-	if (sort_program == NULL)
-		return;
-
-	headers[0] = headers[1] = NULL;
-	switch (sort_program[0] & MAIL_SORT_MASK) {
-	case MAIL_SORT_ARRIVAL:
-		*wanted_fields_r = MAIL_FETCH_RECEIVED_DATE;
-		break;
-	case MAIL_SORT_CC:
-		headers[0] = "Cc";
-		break;
-	case MAIL_SORT_DATE:
-		*wanted_fields_r = MAIL_FETCH_DATE;
-		break;
-	case MAIL_SORT_FROM:
-		headers[0] = "From";
-		break;
-	case MAIL_SORT_SIZE:
-		*wanted_fields_r = MAIL_FETCH_VIRTUAL_SIZE;
-		break;
-	case MAIL_SORT_SUBJECT:
-		headers[0] = "Subject";
-		break;
-	case MAIL_SORT_TO:
-		headers[0] = "To";
-		break;
-	}
-
-	if (headers[0] != NULL)
-		*headers_ctx_r = mailbox_header_lookup_init(box, headers);
 }
 
 bool imap_search_start(struct imap_search_context *ctx,
@@ -526,30 +576,30 @@ bool imap_search_start(struct imap_search_context *ctx,
 		       const enum mail_sort_type *sort_program)
 {
 	struct client_command_context *cmd = ctx->cmd;
-	enum mail_fetch_field wanted_fields;
-	struct mailbox_header_lookup_ctx *wanted_headers;
 
 	imap_search_args_check(ctx, sargs->args);
 
 	if (ctx->have_modseqs) {
 		ctx->return_options |= SEARCH_RETURN_MODSEQ;
-		client_enable(cmd->client, MAILBOX_FEATURE_CONDSTORE);
+		(void)client_enable(cmd->client, MAILBOX_FEATURE_CONDSTORE);
 	}
 
 	ctx->box = cmd->client->mailbox;
-	wanted_fields_get(ctx->box, sort_program,
-			  &wanted_fields, &wanted_headers);
-
 	ctx->trans = mailbox_transaction_begin(ctx->box, 0);
 	ctx->sargs = sargs;
-	ctx->search_ctx = mailbox_search_init(ctx->trans, sargs, sort_program);
-	ctx->search_ctx->imap_ctx = ctx;			/* APPLE */
-	ctx->mail = mail_alloc(ctx->trans, wanted_fields, wanted_headers);
+	ctx->search_ctx =
+		mailbox_search_init(ctx->trans, sargs, sort_program, 0, NULL);
+	ctx->search_ctx->imap_ctx = ctx;	/* APPLE - async search */
 	ctx->sorting = sort_program != NULL;
 	(void)gettimeofday(&ctx->start_time, NULL);
 	i_array_init(&ctx->result, 128);
 	if ((ctx->return_options & SEARCH_RETURN_UPDATE) != 0)
 		imap_search_result_save(ctx);
+	else {
+		i_assert(ctx->fetch_ctx == NULL);
+	}
+	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0)
+		i_array_init(&ctx->relevancy_scores, 128);
 
 	cmd->func = cmd_search_more;
 	cmd->context = ctx;
@@ -567,7 +617,6 @@ static int imap_search_deinit(struct imap_search_context *ctx)
 {
 	int ret = 0;
 
-	mail_free(&ctx->mail);
 	if (mailbox_search_deinit(&ctx->search_ctx) < 0)
 		ret = -1;
 
@@ -583,10 +632,31 @@ static int imap_search_deinit(struct imap_search_context *ctx)
 
 	if (ctx->to != NULL)
 		timeout_remove(&ctx->to);
+	if (array_is_created(&ctx->relevancy_scores))
+		array_free(&ctx->relevancy_scores);
 	array_free(&ctx->result);
 	mail_search_args_deinit(ctx->sargs);
 	mail_search_args_unref(&ctx->sargs);
+	imap_search_context_free(ctx);
 
 	ctx->cmd->context = NULL;
 	return ret;
+}
+
+void imap_search_context_free(struct imap_search_context *ctx)
+{
+	if (ctx->fetch_ctx != NULL) {
+		imap_fetch_free(&ctx->fetch_ctx);
+		pool_unref(&ctx->fetch_pool);
+	}
+}
+
+void imap_search_update_free(struct imap_search_update *update)
+{
+	if (update->fetch_ctx != NULL) {
+		imap_fetch_free(&update->fetch_ctx);
+		pool_unref(&update->fetch_pool);
+	}
+	mailbox_search_result_free(&update->result);
+	i_free(update->tag);
 }

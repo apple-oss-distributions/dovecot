@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -145,7 +145,7 @@ view_sync_add_expunge_guids(ARRAY_TYPE(seq_range) *dest,
 
 	src_count = src_size / sizeof(*src);
 	for (i = 0; i < src_count; i++)
-		seq_range_array_add(dest, 0, src[i].uid);
+		seq_range_array_add(dest, src[i].uid);
 }
 
 static int
@@ -370,7 +370,8 @@ static int view_sync_apply_lost_changes(struct mail_index_view_sync_ctx *ctx,
 					   &kw_reset) < 0)
 			return -1;
 
-		view_sync_update_keywords(ctx, new_rec->uid);
+		if (view_sync_update_keywords(ctx, new_rec->uid) < 0)
+			return -1;
 		changed = TRUE;
 	}
 
@@ -394,7 +395,7 @@ static int view_sync_apply_lost_changes(struct mail_index_view_sync_ctx *ctx,
 	   be avoided by always keeping a private copy of the map in the view,
 	   but that's a waste of memory for as rare of a problem as this. */
 	if (changed)
-		seq_range_array_add(&ctx->lost_flags, 0, new_rec->uid);
+		seq_range_array_add(&ctx->lost_flags, new_rec->uid);
 	return 0;
 }
 
@@ -437,7 +438,7 @@ view_sync_get_log_lost_changes(struct mail_index_view_sync_ctx *ctx,
 			i++; j++;
 		} else if (old_rec->uid < new_rec->uid) {
 			/* message expunged */
-			seq_range_array_add(&ctx->expunges, 0, old_rec->uid);
+			seq_range_array_add(&ctx->expunges, old_rec->uid);
 			i++;
 		} else {
 			/* new message appeared out of nowhere */
@@ -451,7 +452,7 @@ view_sync_get_log_lost_changes(struct mail_index_view_sync_ctx *ctx,
 	/* if there are old messages left, they're all expunged */
 	for (; i < old_count; i++) {
 		old_rec = MAIL_INDEX_MAP_IDX(old_map, i);
-		seq_range_array_add(&ctx->expunges, 0, old_rec->uid);
+		seq_range_array_add(&ctx->expunges, old_rec->uid);
 	}
 	/* if there are new messages left, they're all new messages */
 	thdr.type = MAIL_TRANSACTION_APPEND | MAIL_TRANSACTION_EXTERNAL;
@@ -463,7 +464,8 @@ view_sync_get_log_lost_changes(struct mail_index_view_sync_ctx *ctx,
 			return -1;
 		mail_index_map_lookup_keywords(new_map, j + 1,
 					       &ctx->lost_new_kw);
-		view_sync_update_keywords(ctx, new_rec->uid);
+		if (view_sync_update_keywords(ctx, new_rec->uid) < 0)
+			return -1;
 	}
 	*expunge_count_r = view_sync_expunges2seqs(ctx);
 
@@ -767,12 +769,15 @@ mail_index_view_sync_get_rec(struct mail_index_view_sync_ctx *ctx,
 
 			/* skip internal flag changes */
 			if (ctx->data_offset == ctx->hdr->size)
-				return 0;
+				return FALSE;
 
 			update = CONST_PTR_OFFSET(data, ctx->data_offset);
 		}
 
-		rec->type = MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS;
+		if (update->add_flags != 0 || update->remove_flags != 0)
+			rec->type = MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS;
+		else
+			rec->type = MAIL_INDEX_VIEW_SYNC_TYPE_MODSEQ;
 		rec->uid1 = update->uid1;
 		rec->uid2 = update->uid2;
 		break;
@@ -835,6 +840,7 @@ mail_index_view_sync_next_lost(struct mail_index_view_sync_ctx *ctx,
 	sync_rec->type = MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS;
 	sync_rec->uid1 = range[ctx->lost_flag_idx].seq1;
 	sync_rec->uid2 = range[ctx->lost_flag_idx].seq2;
+	sync_rec->hidden = FALSE;
 	ctx->lost_flag_idx++;
 	return TRUE;
 }

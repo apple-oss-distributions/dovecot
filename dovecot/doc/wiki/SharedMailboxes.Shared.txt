@@ -89,6 +89,8 @@ not try to :INDEX= to have copies of index files. This will only result in
 mailbox corruption. This also means that with dbox there's currently no way to
 have private \Seen flags.
 
+v2.2+ has support for private index files that makes this possible.
+
 Filesystem permissions
 ----------------------
 
@@ -119,9 +121,13 @@ should work pretty well too:
 
 ---%<-------------------------------------------------------------------------
 plugin {
-  acl_shared_dict = file:/var/lib/dovecot/shared-mailboxes.db
+  acl_shared_dict = file:/var/lib/dovecot/db/shared-mailboxes.db
 }
 ---%<-------------------------------------------------------------------------
+
+The IMAP processes must be able to write to the 'db/' directory. If you're
+using system users, you probably want to make it mode 0770 and group
+'sharedusers' and set 'mail_access_groups=sharedusers' (or something similar).
 
 If you use multiple domains and don't wish users to share their mailboxes to
 users in other domains, you can use separate dict files for each domain:
@@ -161,6 +167,9 @@ CREATE TABLE user_shares (
 );
 COMMENT ON TABLE user_shares IS 'User from_user shares folders to user
 to_user.';
+
+CREATE INDEX to_user
+ON user_shares (to_user); -- because we always search for to_user
 
 CREATE TABLE anyone_shares (
   from_user varchar(100) not null,
@@ -290,4 +299,4 @@ Troubleshooting
  * 'doveadm acl debug -u user@domain shared/user/box' can be helpful in
    figuring out why a mailbox can't be accessed.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

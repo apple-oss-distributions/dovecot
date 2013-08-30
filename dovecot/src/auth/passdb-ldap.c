@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "passdb.h"
@@ -6,7 +6,7 @@
 #if defined(PASSDB_LDAP) && (defined(BUILTIN_LDAP) || defined(PLUGIN_BUILD))
 
 #include "ioloop.h"
-#include "hash.h"
+#include "array.h"
 #include "str.h"
 #include "var-expand.h"
 #include "password-scheme.h"
@@ -40,14 +40,19 @@ struct passdb_ldap_request {
 
 static void
 ldap_query_save_result(struct ldap_connection *conn,
-		       LDAPMessage *entry, struct auth_request *auth_request)
+		       struct auth_request *auth_request,
+		       struct ldap_request_search *ldap_request,
+		       LDAPMessage *res)
 {
 	struct db_ldap_result_iterate_context *ldap_iter;
 	const char *name, *const *values;
 
-	ldap_iter = db_ldap_result_iterate_init(conn, entry, auth_request,
-						conn->pass_attr_map);
+	ldap_iter = db_ldap_result_iterate_init(conn, ldap_request, res, FALSE);
 	while (db_ldap_result_iterate_next(ldap_iter, &name, &values)) {
+		if (values[0] == NULL) {
+			auth_request_set_null_field(auth_request, name);
+			continue;
+		}
 		if (values[1] != NULL) {
 			auth_request_log_warning(auth_request, "ldap",
 				"Multiple values found for '%s', "
@@ -56,6 +61,7 @@ ldap_query_save_result(struct ldap_connection *conn,
 		auth_request_set_field(auth_request, name, values[0],
 				       conn->set.default_pass_scheme);
 	}
+	db_ldap_result_iterate_deinit(&ldap_iter);
 }
 
 static void
@@ -78,7 +84,7 @@ ldap_lookup_finish(struct auth_request *auth_request,
 			"pass_filter matched multiple objects, aborting");
 		passdb_result = PASSDB_RESULT_INTERNAL_FAILURE;
 	} else if (auth_request->passdb_password == NULL &&
-		   !auth_request->no_password) {
+		   !auth_fields_exists(auth_request->extra_fields, "nopassword")) {
 		auth_request_log_info(auth_request, "ldap",
 			"No password returned (and no nopassword)");
 		passdb_result = PASSDB_RESULT_PASSWORD_MISMATCH;
@@ -127,7 +133,8 @@ ldap_lookup_pass_callback(struct ldap_connection *conn,
 
 	if (ldap_request->entries++ == 0) {
 		/* first entry */
-		ldap_query_save_result(conn, res, auth_request);
+		ldap_query_save_result(conn, auth_request,
+				       &ldap_request->request.search, res);
 	}
 }
 
@@ -242,7 +249,8 @@ static void ldap_bind_lookup_dn_callback(struct ldap_connection *conn,
 		}
 
 		/* first entry */
-		ldap_query_save_result(conn, res, auth_request);
+		ldap_query_save_result(conn, auth_request,
+				       &passdb_ldap_request->request.search, res);
 
 		/* save dn */
 		dn = ldap_get_dn(conn->ld, res);
@@ -285,6 +293,7 @@ static void ldap_lookup_pass(struct auth_request *auth_request,
 	str_truncate(str, 0);
 	var_expand(str, conn->set.pass_filter, vars);
 	srequest->filter = p_strdup(auth_request->pool, str_c(str));
+	srequest->attr_map = &conn->pass_attr_map;
 	srequest->attributes = conn->pass_attr_names;
 
 	auth_request_log_debug(auth_request, "ldap", "pass search: "
@@ -322,6 +331,7 @@ static void ldap_bind_lookup_dn(struct auth_request *auth_request,
 	/* we don't need the attributes to perform authentication, but they
 	   may contain some extra parameters. if a password is returned,
 	   it's just ignored. */
+	srequest->attr_map = &conn->pass_attr_map;
 	srequest->attributes = conn->pass_attr_names;
 
 	auth_request_log_debug(auth_request, "ldap",
@@ -407,13 +417,10 @@ passdb_ldap_preinit(pool_t pool, const char *args)
 	struct ldap_connection *conn;
 
 	module = p_new(pool, struct ldap_passdb_module, 1);
-	module->conn = conn = db_ldap_init(args);
-	conn->pass_attr_map =
-		hash_table_create(default_pool, conn->pool, 0, strcase_hash,
-				  (hash_cmp_callback_t *)strcasecmp);
-
+	module->conn = conn = db_ldap_init(args, FALSE);
+	p_array_init(&conn->pass_attr_map, pool, 16);
 	db_ldap_set_attrs(conn, conn->set.pass_attrs, &conn->pass_attr_names,
-			  conn->pass_attr_map,
+			  &conn->pass_attr_map,
 			  conn->set.auth_bind ? "password" : NULL);
 	module->module.cache_key =
 		auth_cache_parse_key(pool,

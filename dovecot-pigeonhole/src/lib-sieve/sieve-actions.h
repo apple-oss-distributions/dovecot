@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file 
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_ACTIONS_H
@@ -15,7 +15,7 @@
  * Action execution environment
  */
 
-struct sieve_action_exec_env { 
+struct sieve_action_exec_env {
 	struct sieve_instance *svinst;
 
 	struct sieve_result *result;
@@ -37,49 +37,49 @@ enum sieve_action_flags {
 	SIEVE_ACTFLAG_TRIES_DELIVER = (1 << 0),
 	SIEVE_ACTFLAG_SENDS_RESPONSE = (1 << 1)
 };
- 
-/* 
+
+/*
  * Action definition
  */
 
 struct sieve_action_def {
 	const char *name;
 	unsigned int flags;
-	
+
 	bool (*equals)
-		(const struct sieve_script_env *senv, const struct sieve_action *act1, 
+		(const struct sieve_script_env *senv, const struct sieve_action *act1,
 			const struct sieve_action *act2);
 
 	/* Result verification */
-	
-	int (*check_duplicate)	
+
+	int (*check_duplicate)
 		(const struct sieve_runtime_env *renv,
-			const struct sieve_action *act, 
-			const struct sieve_action *act_other);	
+			const struct sieve_action *act,
+			const struct sieve_action *act_other);
 	int (*check_conflict)
-		(const struct sieve_runtime_env *renv, 
-			const struct sieve_action *act, 
-			const struct sieve_action *act_other);	
+		(const struct sieve_runtime_env *renv,
+			const struct sieve_action *act,
+			const struct sieve_action *act_other);
 
 	/* Result printing */
-	
+
 	void (*print)
-		(const struct sieve_action *action, 
-			const struct sieve_result_print_env *penv, bool *keep);	
-		
-	/* Result execution */	
-		
-	bool (*start)
-		(const struct sieve_action *action, 
-			const struct sieve_action_exec_env *aenv, void **tr_context);		
-	bool (*execute)
-		(const struct sieve_action *action, 
+		(const struct sieve_action *action,
+			const struct sieve_result_print_env *penv, bool *keep);
+
+	/* Result execution */
+
+	int (*start)
+		(const struct sieve_action *action,
+			const struct sieve_action_exec_env *aenv, void **tr_context);
+	int (*execute)
+		(const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context);
-	bool (*commit)
-		(const struct sieve_action *action, 
+	int (*commit)
+		(const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context, bool *keep);
 	void (*rollback)
-		(const struct sieve_action *action, 
+		(const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context, bool success);
 };
 
@@ -93,62 +93,63 @@ struct sieve_action {
 
 	const char *location;
 	void *context;
+	struct mail *mail;
 	bool executed;
 };
 
 #define sieve_action_is(act, definition) \
 	( (act)->def == &(definition) )
 
-/* 
- * Action side effects 
+/*
+ * Action side effects
  */
 
 /* Side effect object */
 
 struct sieve_side_effect_def {
 	struct sieve_object_def obj_def;
-	
+
 	/* The action it is supposed to link to */
-	
+
 	const struct sieve_action_def *to_action;
-		
+
 	/* Context coding */
-	
+
 	bool (*dump_context)
-		(const struct sieve_side_effect *seffect, 
+		(const struct sieve_side_effect *seffect,
 			const struct sieve_dumptime_env *renv, sieve_size_t *address);
 	int (*read_context)
-		(const struct sieve_side_effect *seffect, 
+		(const struct sieve_side_effect *seffect,
 			const struct sieve_runtime_env *renv, sieve_size_t *address,
 			void **se_context);
-		
+
 	/* Result verification */
-	
+
 	int (*merge)
-		(const struct sieve_runtime_env *renv, const struct sieve_action *action, 
+		(const struct sieve_runtime_env *renv, const struct sieve_action *action,
 			const struct sieve_side_effect *old_seffect,
 			const struct sieve_side_effect *new_seffect, void **old_context);
 
-	/* Result printing */	
-			
+	/* Result printing */
+
 	void (*print)
-		(const struct sieve_side_effect *seffect, const struct sieve_action *action, 
+		(const struct sieve_side_effect *seffect, const struct sieve_action *action,
 			const struct sieve_result_print_env *penv, bool *keep);
 
 	/* Result execution */
 
-	bool (*pre_execute)
-		(const struct sieve_side_effect *seffect, const struct sieve_action *action, 
-			const struct sieve_action_exec_env *aenv, void **context, 
+	int (*pre_execute)
+		(const struct sieve_side_effect *seffect, const struct sieve_action *action,
+			const struct sieve_action_exec_env *aenv, void **context,
 			void *tr_context);
-	bool (*post_execute)
-		(const struct sieve_side_effect *seffect, const struct sieve_action *action, 
+	int (*post_execute)
+		(const struct sieve_side_effect *seffect, const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context);
 	void (*post_commit)
-		(const struct sieve_side_effect *seffect, const struct sieve_action *action, 
+		(const struct sieve_side_effect *seffect, const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context, bool *keep);
 	void (*rollback)
-		(const struct sieve_side_effect *seffect, const struct sieve_action *action, 
+		(const struct sieve_side_effect *seffect, const struct sieve_action *action,
 			const struct sieve_action_exec_env *aenv, void *tr_context, bool success);
 };
 
@@ -163,7 +164,7 @@ struct sieve_side_effect {
 /*
  * Side effect operand
  */
- 
+
 #define SIEVE_EXT_DEFINE_SIDE_EFFECT(SEF) SIEVE_EXT_DEFINE_OBJECT(SEF)
 #define SIEVE_EXT_DEFINE_SIDE_EFFECTS(SEFS) SIEVE_EXT_DEFINE_OBJECTS(SEFS)
 
@@ -174,7 +175,7 @@ extern const struct sieve_operand_class sieve_side_effect_operand_class;
 static inline void sieve_opr_side_effect_emit
 (struct sieve_binary_block *sblock, const struct sieve_extension *ext,
 	const struct sieve_side_effect_def *seff)
-{ 
+{
 	sieve_opr_object_emit(sblock, ext, &seff->obj_def);
 }
 
@@ -198,21 +199,21 @@ int sieve_action_opr_optional_read
 		signed int *opt_code, int *exec_status,
 		struct sieve_side_effects_list **list);
 
-/* 
- * Core actions 
+/*
+ * Core actions
  */
 
 extern const struct sieve_action_def act_redirect;
 extern const struct sieve_action_def act_store;
 extern const struct sieve_action_def act_discard;
 
-/* 
+/*
  * Store action
  */
 
 struct act_store_context {
 	/* Folder name represented in utf-8 */
-	const char *mailbox; 
+	const char *mailbox;
 };
 
 struct act_store_transaction {
@@ -220,7 +221,7 @@ struct act_store_transaction {
 	struct mailbox *box;
 	struct mailbox_transaction_context *mail_trans;
 	struct mail *dest_mail;
-	
+
 	const char *error;
 	enum mail_error error_code;
 
@@ -233,7 +234,7 @@ struct act_store_transaction {
 };
 
 int sieve_act_store_add_to_result
-	(const struct sieve_runtime_env *renv, 
+	(const struct sieve_runtime_env *renv,
 		struct sieve_side_effects_list *seffects, const char *folder);
 
 void sieve_act_store_add_flags
@@ -243,7 +244,7 @@ void sieve_act_store_add_flags
 void sieve_act_store_get_storage_error
 	(const struct sieve_action_exec_env *aenv, struct act_store_transaction *trans);
 
-/*		
+/*
  * Action utility functions
  */
 

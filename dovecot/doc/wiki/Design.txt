@@ -7,9 +7,13 @@ Dovecot Design
  * <Design of authentication process> [Design.AuthProcess.txt]
     * <Authentication protocol> [Design.AuthProtocol.txt]
  * <Design of IMAP/POP3 processes> [Design.MailProcess.txt]
+ * <Doveadm server protocol> [Design.DoveadmProtocol.txt]
 
 Code APIs
-=========
+---------
+
+ * <Code design> [Design.Code.txt] - explanations how and why the coding style
+   is the way it is
 
 Look at the *.h files for the actual API documentation. The documentation below
 doesn't attempt to list full API documentation.
@@ -45,4 +49,4 @@ lib-storage:
  * <Plugins> [Design.Storage.Plugins.txt] - how to hook into lib-storage
    functions.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

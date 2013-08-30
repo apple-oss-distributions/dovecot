@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_RUNTIME_H
@@ -14,6 +14,8 @@ struct sieve_runtime_env {
 	/* Interpreter */
 	struct sieve_instance *svinst;
 	struct sieve_interpreter *interp;
+	enum sieve_runtime_flags flags;
+	struct sieve_error_handler *ehandler;
 
 	/* Executing script */
 	struct sieve_script *script;
@@ -23,11 +25,11 @@ struct sieve_runtime_env {
 	/* Executing binary */
 	struct sieve_binary *sbin;
 	struct sieve_binary_block *sblock;
-	
+
 	/* Current code */
 	sieve_size_t pc;
-	const struct sieve_operation *oprtn; 	
-	
+	const struct sieve_operation *oprtn;
+
 	/* Tested message */
 	const struct sieve_message_data *msgdata;
 	struct sieve_message_context *msgctx;

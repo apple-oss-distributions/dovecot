@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -15,6 +15,7 @@ struct auth_client_request {
 
 	struct auth_server_connection *conn;
 	unsigned int id;
+	time_t created;
 
 	struct auth_request_info request_info;
 
@@ -30,10 +31,12 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 
 	str = t_str_new(512);
 	str_printfa(str, "AUTH\t%u\t", request->id);
-	str_tabescape_write(str, info->mech);
+	str_append_tabescaped(str, info->mech);
 	str_append(str, "\tservice=");
-	str_tabescape_write(str, info->service);
+	str_append_tabescaped(str, info->service);
 
+	if ((info->flags & AUTH_REQUEST_FLAG_SUPPORT_FINAL_RESP) != 0)
+		str_append(str, "\tfinal-resp-ok");
 	if ((info->flags & AUTH_REQUEST_FLAG_SECURED) != 0)
 		str_append(str, "\tsecured");
 	if ((info->flags & AUTH_REQUEST_FLAG_NO_PENALTY) != 0)
@@ -41,9 +44,13 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 	if ((info->flags & AUTH_REQUEST_FLAG_VALID_CLIENT_CERT) != 0)
 		str_append(str, "\tvalid-client-cert");
 
+	if (info->session_id != NULL) {
+		str_append(str, "\tsession=");
+		str_append_tabescaped(str, info->session_id);
+	}
 	if (info->cert_username != NULL) {
 		str_append(str, "\tcert_username=");
-		str_tabescape_write(str, info->cert_username);
+		str_append_tabescaped(str, info->cert_username);
 	}
 	if (info->local_ip.family != 0)
 		str_printfa(str, "\tlip=%s", net_ip2addr(&info->local_ip));
@@ -53,9 +60,29 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 		str_printfa(str, "\tlport=%u", info->local_port);
 	if (info->remote_port != 0)
 		str_printfa(str, "\trport=%u", info->remote_port);
+
+	/* send the real_* variants only when they differ from the unreal
+	   ones */
+	if (info->real_local_ip.family != 0 &&
+	    !net_ip_compare(&info->real_local_ip, &info->local_ip)) {
+		str_printfa(str, "\treal_lip=%s",
+			    net_ip2addr(&info->real_local_ip));
+	}
+	if (info->real_remote_ip.family != 0 &&
+	    !net_ip_compare(&info->real_remote_ip, &info->remote_ip)) {
+		str_printfa(str, "\treal_rip=%s",
+			    net_ip2addr(&info->real_remote_ip));
+	}
+	if (info->real_local_port != 0 &&
+	    info->real_local_port != info->local_port)
+		str_printfa(str, "\treal_lport=%u", info->real_local_port);
+	if (info->real_remote_port != 0 &&
+	    info->real_remote_port != info->remote_port)
+		str_printfa(str, "\treal_rport=%u", info->real_remote_port);
+
 	if (info->initial_resp_base64 != NULL) {
 		str_append(str, "\tresp=");
-		str_tabescape_write(str, info->initial_resp_base64);
+		str_append_tabescaped(str, info->initial_resp_base64);
 	}
 	str_append_c(str, '\n');
 
@@ -79,16 +106,19 @@ auth_client_request_new(struct auth_client *client,
 	request->request_info = *request_info;
 	request->request_info.mech = p_strdup(pool, request_info->mech);
 	request->request_info.service = p_strdup(pool, request_info->service);
+	request->request_info.session_id =
+		p_strdup_empty(pool, request_info->session_id);
 	request->request_info.cert_username =
-		p_strdup(pool, request_info->cert_username);
+		p_strdup_empty(pool, request_info->cert_username);
 	request->request_info.initial_resp_base64 =
-		p_strdup(pool, request_info->initial_resp_base64);
+		p_strdup_empty(pool, request_info->initial_resp_base64);
 	
 	request->callback = callback;
 	request->context = context;
 
 	request->id =
 		auth_server_connection_add_request(request->conn, request);
+	request->created = ioloop_time;
 	T_BEGIN {
 		auth_server_send_new_request(request->conn, request);
 	} T_END;
@@ -114,10 +144,11 @@ void auth_client_request_continue(struct auth_client_request *request,
 		i_error("Error sending continue request to auth server: %m");
 }
 
-static void call_callback(struct auth_client_request *request,
-			  enum auth_request_status status,
-			  const char *data_base64,
-			  const char *const *args)
+static void ATTR_NULL(3, 4)
+call_callback(struct auth_client_request *request,
+	      enum auth_request_status status,
+	      const char *data_base64,
+	      const char *const *args)
 {
 	auth_request_callback_t *callback = request->callback;
 
@@ -133,7 +164,7 @@ void auth_client_request_abort(struct auth_client_request **_request)
 	*_request = NULL;
 
 	auth_client_send_cancel(request->conn->client, request->id);
-	call_callback(request, AUTH_REQUEST_STATUS_FAIL, NULL, NULL);
+	call_callback(request, AUTH_REQUEST_STATUS_ABORT, NULL, NULL);
 }
 
 unsigned int auth_client_request_get_id(struct auth_client_request *request)
@@ -155,6 +186,11 @@ const char *auth_client_request_get_cookie(struct auth_client_request *request)
 bool auth_client_request_is_aborted(struct auth_client_request *request)
 {
 	return request->callback == NULL;
+}
+
+time_t auth_client_request_get_create_time(struct auth_client_request *request)
+{
+	return request->created;
 }
 
 void auth_client_request_server_input(struct auth_client_request *request,
@@ -182,6 +218,8 @@ void auth_client_request_server_input(struct auth_client_request *request,
 		args = NULL;
 		break;
 	case AUTH_REQUEST_STATUS_FAIL:
+	case AUTH_REQUEST_STATUS_INTERNAL_FAIL:
+	case AUTH_REQUEST_STATUS_ABORT:
 		break;
 	}
 

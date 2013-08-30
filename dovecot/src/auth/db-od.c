@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -252,7 +252,7 @@ static bool od_open ( struct db_od *in_od_info )
 		return( FALSE );
 	}
 
-	in_od_info->users_table = hash_table_create( system_pool, system_pool, 100, str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&in_od_info->users_table, system_pool, 100, str_hash, strcmp);
 	return( TRUE );
 } /* od_open */
 
@@ -319,12 +319,12 @@ void db_od_unref ( struct db_od **in_od_info_p )
 		in_od_info->od_session_ref = NULL;
 	}
 
-	if ( in_od_info->users_table != NULL ) {
+	if ( hash_table_is_created(in_od_info->users_table) ) {
 		struct hash_iterate_context *iter = hash_table_iterate_init(in_od_info->users_table);
 		char *name;
 		struct od_user *user;
 
-		while (hash_table_iterate(iter, (void **) &name, (void **) &user)) {
+		while (hash_table_iterate(iter, in_od_info->users_table, &name, &user)) {
 			hash_table_remove(in_od_info->users_table, name);
 			i_free(name);
 			db_od_user_unref(&user);
@@ -1316,7 +1316,7 @@ struct od_user *db_od_user_lookup ( struct auth_request *in_request, struct db_o
 
 	/* does user exist in hash table */
 	auth_request_log_debug(in_request, "od[usr lookup]", "cache lookup for user %s", in_user_name);
-	if (hash_table_lookup_full(in_od_info->users_table, in_user_name, (void **) &key, (void **) &out_user)) {
+	if (hash_table_lookup_full(in_od_info->users_table, in_user_name, &key, &out_user)) {
 		/* is the cached entry fresh or stale? */
 		time_t now = time(NULL);
 		time_t expiry = out_user->create_time;

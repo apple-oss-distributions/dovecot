@@ -22,12 +22,14 @@ Effective uid=1000, gid=1000, home=/home/user
 In above configuration rawlog would expect to find '/home/user/dovecot.rawlog/'
 directory writable by uid 1000.
 
-If you don't have the home directory and you can't or don't want to modify
-userdb configuration, you can add:
+If your userdb doesn't have a home directory, with v2.1+ you can add:
 
 ---%<-------------------------------------------------------------------------
-mail_home = /home/%u
-# or temporarily even e.g. mail_home = /tmp/temp-home
+userdb {
+  # ...
+  default_fields = home=/home/%u
+  # or temporarily even e.g. default_fields = home=/tmp/temp-home
+}
 ---%<-------------------------------------------------------------------------
 
 Configuration
@@ -63,4 +65,4 @@ You can also give parameters to rawlog:
     * -i: Log only to *.in files
     * -o: Log only to *.out files
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

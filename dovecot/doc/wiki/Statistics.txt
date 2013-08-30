@@ -166,7 +166,7 @@ simply add more UNIX/TCP listeners to the stats service, e.g.:
 ---%<-------------------------------------------------------------------------
 service stats {
   inet_listener {
-    listen = 127.0.0.1
+    address = 127.0.0.1
     port = 24242
   }
 }
@@ -182,4 +182,4 @@ EXPORT<tab>session<tab>connected<lf>
 
 The output will be identical to 'doveadm stats dump session connected' command.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

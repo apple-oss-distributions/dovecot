@@ -75,7 +75,9 @@ mailboxes. They are used mainly for two purposes:
  1. Removing some permissions from users' personal mailboxes. For example each
     user might have an "Invoices" mailbox which will be read-only.
  2. Giving permissions to master user logins. Master user is not the mailbox
-    owner, so by default it has no permissions to any of the mailboxes.
+    owner, so by default it has no permissions to any of the mailboxes. See
+    <Authentication/MasterUsers#ACLs> [Authentication.MasterUsers.txt] for more
+    information.
 
 Global ACL directory is specified as a parameter to vfile backend in 'acl'
 setting ('/etc/dovecot/acls/' in the above example). They are looked up using
@@ -196,4 +198,4 @@ List cache
 you manually add/edit 'dovecot-acl' files, you may need to delete the
 'dovecot-acl-list' to get the mailboxes visible.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

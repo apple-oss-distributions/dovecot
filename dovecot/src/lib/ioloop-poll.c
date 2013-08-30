@@ -1,9 +1,9 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
 #include "lib.h"
-#include "ioloop-internal.h"
+#include "ioloop-private.h"
 
 #ifdef IOLOOP_POLL
 

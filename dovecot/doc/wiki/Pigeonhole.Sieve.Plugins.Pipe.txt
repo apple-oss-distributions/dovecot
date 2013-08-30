@@ -1,11 +1,15 @@
 Pigeonhole Sieve Pipe Plugin
 ============================
 
-The sieve_pipe plugin adds the vnd.dovecot.pipe extension to the Sieve
-language. The extension adds a new action command for piping messages to a
-pre-defined set of external programs. To mitigate the security concerns, the
-external programs cannot be chosen arbitrarily; the available programs are
-restricted through administrator configuration
+The sieve_pipe plugin adds the vnd.dovecot.pipe extension to the Sieve language
+[http://www.sieve.info]. The extension adds a new action command for piping
+messages to a pre-defined set of external programs. To mitigate the security
+concerns, the external programs cannot be chosen arbitrarily; the available
+programs are restricted through administrator configuration.
+
+This plugin is available for <Pigeonhole.txt> v0.2. This plugin is superseded
+by the <Extprograms> [Pigeonhole.Sieve.Plugins.Extprograms.txt] plugin for
+Pigeonhole v0.3 and beyond.
 
 Getting the sources
 -------------------
@@ -180,4 +184,4 @@ jid=USER@DOMAIN.TLD
 password=PASSWORD
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

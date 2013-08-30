@@ -1,15 +1,17 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "crc32.h"
 #include "istream.h"
 #include "str.h"
+#include "unichar.h"
 #include "imap-parser.h"
 #include "imap-match.h"
 #include "mail-namespace.h"
 #include "mail-search-build.h"
 #include "mail-search-parser.h"
+#include "mailbox-list-iter.h"
 #include "virtual-storage.h"
 #include "virtual-plugin.h"
 
@@ -26,6 +28,7 @@ struct virtual_parse_context {
 
 	char sep;
 	bool have_wildcards;
+	bool have_mailbox_defines;
 };
 
 static struct mail_search_args *
@@ -36,6 +39,7 @@ virtual_search_args_parse(const string_t *rule, const char **error_r)
 	const struct imap_arg *args;
 	struct mail_search_parser *parser;
 	struct mail_search_args *sargs;
+	const char *charset = "UTF-8";
 	bool fatal;
 	int ret;
 
@@ -56,12 +60,12 @@ virtual_search_args_parse(const string_t *rule, const char **error_r)
 	} else {
 		parser = mail_search_parser_init_imap(args);
 		if (mail_search_build(mail_search_register_get_imap(),
-				      parser, "UTF-8", &sargs, error_r) < 0)
+				      parser, &charset, &sargs, error_r) < 0)
 			sargs = NULL;
 		mail_search_parser_deinit(&parser);
 	}
 
-	imap_parser_destroy(&imap_parser);
+	imap_parser_unref(&imap_parser);
 	i_stream_destroy(&input);
 	return sargs;
 }
@@ -137,7 +141,12 @@ virtual_config_parse_line(struct virtual_parse_context *ctx, const char *line,
 	if (*line == '-' || *line == '+' || *line == '!') line++;
 	bbox->ns = strcasecmp(line, "INBOX") == 0 ?
 		mail_namespace_find_inbox(user->namespaces) :
-		mail_namespace_find(user->namespaces, &line);
+		mail_namespace_find(user->namespaces, line);
+	if (!uni_utf8_str_is_valid(bbox->name)) {
+		*error_r = t_strdup_printf("Mailbox name not UTF-8: %s",
+					   bbox->name);
+		return -1;
+	}
 	if (bbox->ns == NULL) {
 		*error_r = t_strdup_printf("Namespace not found for %s",
 					   bbox->name);
@@ -162,6 +171,7 @@ virtual_config_parse_line(struct virtual_parse_context *ctx, const char *line,
 		bbox->name++;
 		ctx->mbox->save_bbox = bbox;
 	}
+	ctx->have_mailbox_defines = TRUE;
 	array_append(&ctx->mbox->backend_boxes, &bbox, 1);
 	return 0;
 }
@@ -238,6 +248,20 @@ static void virtual_config_copy_expanded(struct virtual_parse_context *ctx,
 	array_append(&ctx->mbox->backend_boxes, &bbox, 1);
 }
 
+static bool virtual_ns_match(struct mail_namespace *config_ns,
+			     struct mail_namespace *iter_ns)
+{
+	/* we match only one namespace for each pattern, except with shared
+	   namespaces match also autocreated children */
+	if (config_ns == iter_ns)
+		return TRUE;
+	if (config_ns->type == iter_ns->type &&
+	    (config_ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0 &&
+	    (iter_ns->flags & NAMESPACE_FLAG_AUTOCREATED) != 0)
+		return TRUE;
+	return FALSE;
+}
+
 static bool virtual_config_match(const struct mailbox_info *info,
 				 ARRAY_TYPE(virtual_backend_box) *boxes_arr,
 				 unsigned int *idx_r)
@@ -248,16 +272,15 @@ static bool virtual_config_match(const struct mailbox_info *info,
 	boxes = array_get_modifiable(boxes_arr, &count);
 	for (i = 0; i < count; i++) {
 		if (boxes[i]->glob != NULL) {
-			/* we match only one namespace for each pattern. */
-			if (boxes[i]->ns == info->ns &&
+			if (virtual_ns_match(boxes[i]->ns, info->ns) &&
 			    imap_match(boxes[i]->glob,
-				       info->name) == IMAP_MATCH_YES) {
+				       info->vname) == IMAP_MATCH_YES) {
 				*idx_r = i;
 				return TRUE;
 			}
 		} else {
 			i_assert(boxes[i]->name[0] == '-');
-			if (strcmp(boxes[i]->name + 1, info->name) == 0) {
+			if (strcmp(boxes[i]->name + 1, info->vname) == 0) {
 				*idx_r = i;
 				return TRUE;
 			}
@@ -268,8 +291,8 @@ static bool virtual_config_match(const struct mailbox_info *info,
 
 static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 {
-	const enum namespace_type iter_ns_types =
-		NAMESPACE_PRIVATE | NAMESPACE_SHARED | NAMESPACE_PUBLIC;
+	const enum mail_namespace_type iter_ns_types =
+		MAIL_NAMESPACE_TYPE_MASK_ALL;
 	const enum mailbox_list_iter_flags iter_flags =
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS;
 	struct mail_user *user = ctx->mbox->storage->storage.user;
@@ -305,9 +328,9 @@ static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 		if (virtual_config_match(info, &wildcard_boxes, &i) &&
 		    !virtual_config_match(info, &neg_boxes, &j) &&
 		    virtual_backend_box_lookup_name(ctx->mbox,
-						    info->name) == NULL) {
+						    info->vname) == NULL) {
 			virtual_config_copy_expanded(ctx, wboxes[i],
-						     info->name);
+						     info->vname);
 		}
 	}
 	for (i = 0; i < count; i++)
@@ -334,31 +357,32 @@ int virtual_config_read(struct virtual_mailbox *mbox)
 	struct mail_storage *storage = mbox->box.storage;
 	struct virtual_parse_context ctx;
 	struct stat st;
-	const char *path, *line, *error;
+	const char *box_path, *path, *line, *error;
 	unsigned int linenum = 0;
 	int fd, ret = 0;
 
 	i_array_init(&mbox->backend_boxes, 8);
 	mbox->search_args_crc32 = (uint32_t)-1;
 
-	path = t_strconcat(mbox->box.path, "/"VIRTUAL_CONFIG_FNAME, NULL);
+	box_path = mailbox_get_path(&mbox->box);
+	path = t_strconcat(box_path, "/"VIRTUAL_CONFIG_FNAME, NULL);
 	fd = open(path, O_RDONLY);
 	if (fd == -1) {
 		if (errno == EACCES) {
 			mail_storage_set_critical(storage, "%s",
-				mail_error_eacces_msg("stat", mbox->box.path));
+				mail_error_eacces_msg("open", path));
 		} else if (errno != ENOENT) {
 			mail_storage_set_critical(storage,
 						  "open(%s) failed: %m", path);
-		} else if (stat(mbox->box.path, &st) == 0) {
+		} else if (stat(box_path, &st) == 0) {
 			mail_storage_set_error(storage, MAIL_ERROR_NOTPOSSIBLE,
 				"Virtual mailbox missing configuration file");
 		} else if (errno == ENOENT) {
 			mail_storage_set_error(storage, MAIL_ERROR_NOTFOUND,
-				T_MAIL_ERR_MAILBOX_NOT_FOUND(mbox->box.name));
+				T_MAIL_ERR_MAILBOX_NOT_FOUND(mbox->box.vname));
 		} else {
 			mail_storage_set_critical(storage,
-				"stat(%s) failed: %m", mbox->box.path);
+				"stat(%s) failed: %m", box_path);
 		}
 		return -1;
 	}
@@ -398,7 +422,7 @@ int virtual_config_read(struct virtual_mailbox *mbox)
 	if (ret == 0 && ctx.have_wildcards)
 		ret = virtual_config_expand_wildcards(&ctx);
 
-	if (ret == 0 && array_count(&mbox->backend_boxes) == 0) {
+	if (ret == 0 && !ctx.have_mailbox_defines) {
 		mail_storage_set_critical(storage,
 					  "%s: No mailboxes defined", path);
 		ret = -1;
@@ -406,7 +430,7 @@ int virtual_config_read(struct virtual_mailbox *mbox)
 	if (ret == 0)
 		virtual_config_search_args_dup(mbox);
 	i_stream_unref(&ctx.input);
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret;
 }
 

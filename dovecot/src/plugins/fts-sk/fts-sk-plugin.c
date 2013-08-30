@@ -1,6 +1,6 @@
 /* Copyright (c) 2006-2010 Dovecot authors, see the included COPYING file */
 /*
- * Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -33,7 +33,7 @@
 #include "lib.h"
 #include "fts-sk-plugin.h"
 
-const char *fts_sk_plugin_version = DOVECOT_VERSION;
+const char *fts_sk_plugin_version = DOVECOT_ABI_VERSION;
 
 void fts_sk_plugin_init(struct module *module ATTR_UNUSED)
 {

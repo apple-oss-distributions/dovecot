@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -289,6 +289,13 @@ sync_ext_resize(const struct mail_transaction_ext_intro *u,
 				   new_size - old_size);
 		ext->hdr_size = u->hdr_size;
 		modified = TRUE;
+	} else {
+		if (ext->hdr_size != u->hdr_size) {
+			/* aligned sizes were the same, but the actual sizes
+			   had changed */
+			ext->hdr_size = u->hdr_size;
+			modified = TRUE;
+		}
 	}
 
 	if (ext->record_align < u->record_align ||
@@ -310,7 +317,6 @@ sync_ext_resize(const struct mail_transaction_ext_intro *u,
 		i_assert((map->hdr_copy_buf->used % sizeof(uint64_t)) == 0);
 		map->hdr_base = map->hdr_copy_buf->data;
 		map->hdr.header_size = map->hdr_copy_buf->used;
-		map->write_base_header = map->write_ext_header = TRUE;
 
 		ext_hdr = get_ext_header(map, ext);
 		ext_hdr->reset_id = ext->reset_id;
@@ -570,8 +576,6 @@ static void mail_index_sync_ext_clear(struct mail_index_view *view,
 		memset(PTR_OFFSET(rec, ext->record_offset), 0,
 		       ext->record_size);
 	}
-	map->rec_map->write_seq_first = 1;
-	map->rec_map->write_seq_last = view->map->rec_map->records_count;
 }
 
 int mail_index_sync_ext_reset(struct mail_index_sync_map_ctx *ctx,
@@ -623,10 +627,15 @@ int mail_index_sync_ext_hdr_update(struct mail_index_sync_map_ctx *ctx,
 		return 1;
 
 	ext = array_idx(&map->extensions, ctx->cur_ext_map_idx);
-	if (ext->hdr_offset + offset + size > map->hdr.header_size) {
+	if (offset + size > ext->hdr_size) {
+#if 1
 		mail_index_sync_set_corrupted(ctx,
 			"Extension header update points outside header size");
 		return -1;
+#else
+		size = offset > ext->hdr_size ? 0 :
+			ext->hdr_size - offset;
+#endif
 	}
 
 	buffer_write(map->hdr_copy_buf, ext->hdr_offset + offset, data, size);
@@ -634,8 +643,6 @@ int mail_index_sync_ext_hdr_update(struct mail_index_sync_map_ctx *ctx,
 
 	if (ext->index_idx == ctx->view->index->modseq_ext_id)
 		mail_index_modseq_hdr_update(ctx->modseq_ctx);
-
-	map->write_ext_header = TRUE;
 	return 1;
 }
 
@@ -683,8 +690,6 @@ mail_index_sync_ext_rec_update(struct mail_index_sync_map_ctx *ctx,
 		if (ret <= 0)
 			return ret;
 	}
-
-	mail_index_sync_write_seq_update(ctx, seq, seq);
 
 	/* @UNSAFE */
 	memcpy(old_data, u + 1, ext->record_size);
@@ -785,7 +790,5 @@ mail_index_sync_ext_atomic_inc(struct mail_index_sync_map_ctx *ctx,
 			u->uid, u->diff, (unsigned long long)orig_num);
 		return -1;
 	}
-
-	mail_index_sync_write_seq_update(ctx, seq, seq);
 	return 1;
 }

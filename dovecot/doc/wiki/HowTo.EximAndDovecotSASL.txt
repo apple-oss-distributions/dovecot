@@ -44,4 +44,4 @@ If you are having problems with this not working ensure that you are using
 version 4.72 or greater of exim. Previous versions of exim have trouble with
 the version of the protocol used in Dovecot 2
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

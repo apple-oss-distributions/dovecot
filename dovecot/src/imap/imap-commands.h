@@ -10,6 +10,7 @@ struct client_command_context;
 #include "imap-commands-util.h"
 
 typedef bool command_func_t(struct client_command_context *cmd);
+typedef void command_hook_callback_t(struct client_command_context *ctx);
 
 enum command_flags {
 	/* Command uses sequences as its input parameters */
@@ -29,10 +30,7 @@ enum command_flags {
 	   Dovecot internally returns it for all kinds of commands,
 	   but unfortunately RFC 5530 specifies it only for "delete something"
 	   operations. */
-	COMMAND_FLAG_USE_NONEXISTENT	= 0x10,
-
-	/* APPLE - urlauth */
-	COMMAND_FLAG_OK_FOR_SUBMIT_USER = 0x20
+	COMMAND_FLAG_USE_NONEXISTENT	= 0x10
 };
 
 struct command {
@@ -54,6 +52,14 @@ void command_unregister(const char *name);
 /* Register array of commands. */
 void command_register_array(const struct command *cmdarr, unsigned int count);
 void command_unregister_array(const struct command *cmdarr, unsigned int count);
+
+/* Register hook callbacks that are called before and after all commands */
+void command_hook_register(command_hook_callback_t *pre,
+			   command_hook_callback_t *post);
+void command_hook_unregister(command_hook_callback_t *pre,
+			     command_hook_callback_t *post);
+/* Execute command and hooks */
+bool command_exec(struct client_command_context *cmd);
 
 struct command *command_find(const char *name);
 
@@ -101,24 +107,25 @@ bool cmd_enable(struct client_command_context *cmd);
 bool cmd_id(struct client_command_context *cmd);
 bool cmd_idle(struct client_command_context *cmd);
 bool cmd_namespace(struct client_command_context *cmd);
+bool cmd_notify(struct client_command_context *cmd);
 bool cmd_sort(struct client_command_context *cmd);
 bool cmd_thread(struct client_command_context *cmd);
 bool cmd_uid_expunge(struct client_command_context *cmd);
+bool cmd_move(struct client_command_context *cmd);
 bool cmd_unselect(struct client_command_context *cmd);
 bool cmd_x_cancel(struct client_command_context *cmd);
 #ifdef APPLE_OS_X_SERVER
 bool cmd_x_apple_push_service(struct client_command_context *cmd);
 #endif
 
+/* IMAP URLAUTH (RFC4467): */
+bool cmd_genurlauth(struct client_command_context *cmd);
+bool cmd_resetkey(struct client_command_context *cmd);
+bool cmd_urlfetch(struct client_command_context *cmd);
+
 /* private: */
 bool cmd_list_full(struct client_command_context *cmd, bool lsub);
 bool cmd_select_full(struct client_command_context *cmd, bool readonly);
 bool cmd_subscribe_full(struct client_command_context *cmd, bool subscribe);
-
-/* APPLE fetch_parse_args() was static - urlauth */
-struct imap_fetch_context;
-bool fetch_parse_args(struct imap_fetch_context *ctx,
-		      const struct imap_arg *arg,
-		      const struct imap_arg **next_arg_r);
 
 #endif

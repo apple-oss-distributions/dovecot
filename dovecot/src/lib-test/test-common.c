@@ -1,7 +1,7 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
-#include "istream-internal.h"
+#include "istream-private.h"
 #include "test-common.h"
 
 #include <stdio.h>
@@ -17,7 +17,7 @@ static unsigned int total_count;
 struct test_istream {
 	struct istream_private istream;
 	unsigned int skip_diff;
-	size_t max_pos, max_buffer_size;
+	size_t max_pos;
 	bool allow_eof;
 };
 
@@ -29,7 +29,7 @@ static ssize_t test_read(struct istream_private *stream)
 
 	i_assert(stream->skip <= stream->pos);
 
-	if (stream->pos - stream->skip >= tstream->max_buffer_size)
+	if (stream->pos - stream->skip >= tstream->istream.max_buffer_size)
 		return -2;
 
 	if (tstream->max_pos < stream->pos) {
@@ -37,7 +37,7 @@ static ssize_t test_read(struct istream_private *stream)
 		ret = 0;
 	} else {
 		/* move around the buffer */
-		new_skip_diff = rand() % 128;
+		new_skip_diff = random() % 128;			/* APPLE */
 		stream->buffer = (stream->buffer + tstream->skip_diff) -
 			new_skip_diff;
 		stream->skip = (stream->skip - tstream->skip_diff) +
@@ -85,10 +85,10 @@ struct istream *test_istream_create_data(const void *data, size_t size)
 
 	tstream->istream.istream.blocking = FALSE;
 	tstream->istream.istream.seekable = TRUE;
-	(void)i_stream_create(&tstream->istream, NULL, -1);
+	i_stream_create(&tstream->istream, NULL, -1);
 	tstream->istream.statbuf.st_size = tstream->max_pos = size;
 	tstream->allow_eof = TRUE;
-	tstream->max_buffer_size = (size_t)-1;
+	tstream->istream.max_buffer_size = (size_t)-1;
 	return &tstream->istream.istream;
 }
 
@@ -110,7 +110,7 @@ void test_istream_set_max_buffer_size(struct istream *input, size_t size)
 	struct test_istream *tstream =
 		(struct test_istream *)input->real_stream;
 
-	tstream->max_buffer_size = size;
+	tstream->istream.max_buffer_size = size;
 }
 
 void test_istream_set_size(struct istream *input, uoff_t size)
@@ -185,7 +185,7 @@ void test_out_reason(const char *name, bool success, const char *reason)
 	total_count++;
 }
 
-static void
+static void ATTR_FORMAT(2, 0)
 test_error_handler(const struct failure_context *ctx,
 		   const char *format, va_list args)
 {

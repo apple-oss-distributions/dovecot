@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "utc-mktime.h"
@@ -35,7 +35,7 @@ time_t utc_mktime(const struct tm *tm)
 	if (time_t_signed())
 		t = 0;
 	else
-		t = 1 << (time_t_max_bits() - 1);
+		t = (time_t) 1 << (time_t_max_bits() - 1);
 	for (bits = time_t_max_bits() - 2;; bits--) {
 		try_tm = gmtime(&t);
 		dir = tm_cmp(tm, try_tm);

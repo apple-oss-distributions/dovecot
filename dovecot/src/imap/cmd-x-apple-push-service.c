@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without  
  * modification, are permitted provided that the following conditions  
@@ -140,13 +140,13 @@ static const char *aps_reply_generate (struct client_command_context *cmd,
 
 		/* generate aps response */
 		string_t *str = t_str_new(256);
-		imap_dquote_append( str, "aps-version" );
+		imap_append_quoted( str, "aps-version" );
 		str_append_c(str, ' ');
-		imap_dquote_append( str, APS_VERSION );
+		imap_append_quoted( str, APS_VERSION );
 		str_append_c(str, ' ');
-		imap_dquote_append( str, "aps-topic" );
+		imap_append_quoted( str, "aps-topic" );
 		str_append_c(str, ' ');
-		imap_dquote_append( str, aps_topic );
+		imap_append_quoted( str, aps_topic );
 		return str_c(str);
 	}
 	return NULL;

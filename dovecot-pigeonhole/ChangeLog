@@ -1,8 +1,2047 @@
-2012-02-03  Stephan Bosch  <stephan@rename-it.nl>
+2013-07-03  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/Makefile.am:
+	Merged changes from Pigeonhole v0.3 tree.
+	[597c1dcbda11] [tip]
+
+2013-06-18  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/Makefile.am:
+	Fixed deprecated INCLUDE= assignment in Makefile.am
+	[53ee9655e78e]
+
+	* src/lib-sievestorage/sieve-storage-script.c:
+	lib-sievestorage: Removed PATH_MAX limitation for active symlink.
+	Fixes issue for GNU/Hurd.
+	[1b1a0c271383]
+
+	* src/lib-sieve/cmd-redirect.c:
+	Fixed line endings in X-Sieve headers added by redirect command.
+	Modified patch by Andriy Syrovenko.
+	[e439789e3211]
+
+	* src/sieve-tools/sieve-filter.c:
+	Don't access ns->storage. Patch by Timo Sirainen.
+	[204d48dc7529]
+
+2013-06-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/cmd-discard.c, src/lib-sieve/cmd-redirect.c, src/lib-
+	sieve/ext-reject.c, src/lib-sieve/plugins/enotify/cmd-notify.c, src
+	/lib-sieve/plugins/imap4flags/tag-flags.c, src/lib-
+	sieve/plugins/mailbox/tag-mailbox-create.c, src/lib-
+	sieve/plugins/notify/cmd-notify.c, src/lib-sieve/plugins/vacation
+	/cmd-vacation.c, src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-
+	duplicate-common.c, src/lib-sieve/sieve-actions.c, src/lib-sieve
+	/sieve-actions.h, src/lib-sieve/sieve-binary-file.c, src/lib-sieve
+	/sieve-result.c, src/lib-sieve/sieve-result.h, src/lib-sieve/sieve-
+	script-dict.c, src/lib-sieve/sieve-script-file.c, src/lib-sieve
+	/sieve-script.c, src/lib-sieve/sieve-types.h, src/lib-sieve/sieve.c,
+	src/lib-sieve/sieve.h, src/lib-sievestorage/sieve-storage.c,
+	src/managesieve/managesieve-client.c, src/plugins/lda-sieve/lda-
+	sieve-plugin.c, src/plugins/sieve-extprograms/cmd-pipe.c,
+	src/plugins/sieve-extprograms/sieve-extprograms-common.c, src/sieve-
+	tools/sieve-filter.c, src/sieve-tools/sieve-test.c,
+	src/testsuite/testsuite.c:
+	Finished support for temporary failures. This change is bigger than
+	I would have liked, so this needs to be tested more.
+	[ca6735be7bba]
+
+2013-05-24  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client.c:
+	Merged changes from Pigeonhole v0.3 tree.
+	[eff46ace3456]
+
+	* src/managesieve-login/client.c:
+	managesieve-login: Fixed '[' ']' stupidity for response codes.
+	Emerged when Sieve and ManageSieve were merged into Pigeonhole.
+	[d4ae981567e1]
+
+2013-05-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/example-config/conf.d/20-managesieve.conf:
+	Fixed setting name in example-config/conf.d/20-managesieve.conf.
+	[7319f0becc98]
+
+2013-05-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/sieve-extprograms/script-client-remote.c, src/plugins
+	/sieve-extprograms/script-client.c:
+	Sieve extprograms plugin: Fixed interaction between pipe command and
+	remote script service. The output from the script service was never
+	read, causing a broken pipe error at the script service. Apparently,
+	this was broken since the I/O handling for extprograms was last
+	revised.
+	[d4e9ca7fddcf]
+
+2013-05-15  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/rfc2822.c:
+	lib-sieve: Fixed datastack problem in message header composition.
+	[04ad3c2f0765]
+
+2013-05-09  Stephan Bosch  <stephan@rename-it.nl>
+
+	* README, doc/man/pigeonhole.7.in, doc/man/sieve-dump.1.in, doc/man
+	/sieve-filter.1.in, doc/man/sieve-test.1.in, doc/man/sievec.1.in:
+	Forgot to update Dovecot version in README and man pages.
+	[a32b12ab5ea6]
+
+	* .hgsigs:
+	Added signature for changeset 3a8dc1250e9b
+	[1e0a6a4f4634]
+
+	* .hgtags:
+	Added tag 0.4.0 for changeset 3a8dc1250e9b
+	[b41f5cf04b8f]
+
+	* INSTALL, Makefile.am, NEWS, configure.ac, m4/dovecot.m4:
+	Released v0.4.0 for Dovecot v2.2.1.
+	[3a8dc1250e9b] [0.4.0]
+
+	* .hgsigs:
+	Added signature for changeset 374ec9399958
+	[34cb3668f86d]
+
+	* .hgtags:
+	Added tag 0.3.5 for changeset 374ec9399958
+	[59c48b78f3aa]
+
+	* NEWS, configure.in:
+	Released v0.3.5 for Dovecot v2.1.16.
+	[374ec9399958] [0.3.5]
+
+	* m4/dovecot.m4:
+	Fixed problem in `make distcheck`. Added --disable-shared to
+	DISTCHECK_CONFIGURE_FLAGS (in dovecot.m4) to prevent libtool from
+	relinking the libraries.
+	[9d76d51685e1]
+
+	* m4/dovecot.m4:
+	Updated dovecot.m4 to latest version.
+	[01ac5c3f5b07]
+
+	* configure.ac:
+	Removed UNSTABLE notice from configure.
+	[26c30ba221d0]
+
+	* src/lib-sieve/edit-mail.c:
+	Merged changed from Pigeonhole v0.3.
+	[39848c052666]
+
+2013-05-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c, src/lib-sieve/plugins/editheader/cmd-
+	deleteheader.c, tests/extensions/editheader/deleteheader.svtest:
+	lib-sieve: editheader extension: Fixed interaction with body
+	extension. Forgot to rewind mail stream before header parsing.
+	Wrapped mail stream is obtained long before parsing, so if it is
+	used in the mean time, it must be rewound to the beginning.
+	[0163c45094a3]
+
+2013-04-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* tests/extensions/date/basic.svtest:
+	testsuite: fixed local timezone dependency in date extension tests.
+	[bc2126771d00]
+
+2013-05-09  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage-private.h, src/lib-sievestorage
+	/sieve-storage-save.c, src/lib-sievestorage/sieve-storage-script.c,
+	src/lib-sievestorage/sieve-storage.c, src/lib-sievestorage/sieve-
+	storage.h, src/managesieve/managesieve-client.c, src/plugins
+	/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Fixed synchronization of script deletions. Sieve
+	storage now updates sieve attributes in the user's INBOX if used by
+	ManageSieve.
+	[676ca33ea4f6]
+
+2013-05-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage.c, src/plugins/doveadm-sieve
+	/doveadm-sieve-plugin.c:
+	doveadm-sieve: Fix ping-pong problem in active Sieve script
+	synchronization. Patch by Timo Sirainen.
+	[e2e1ecc75a72]
+
+2013-04-23  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage-private.h, src/lib-sievestorage
+	/sieve-storage-save.c, src/lib-sievestorage/sieve-storage-script.c,
+	src/lib-sievestorage/sieve-storage-script.h, src/lib-sievestorage
+	/sieve-storage.c, src/managesieve/cmd-setactive.c, src/plugins
+	/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Fixed mtime updates. Patch by Timo Sirainen.
+	[5892c2ab9b0d]
+
+2013-04-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage-save.c, src/lib-sievestorage
+	/sieve-storage-save.h, src/lib-sievestorage/sieve-storage.c, src
+	/lib-sievestorage/sieve-storage.h, src/plugins/doveadm-sieve
+	/doveadm-sieve-plugin.c:
+	doveadm-sieve: Set mtime of modified scripts and sieve dir to
+	timestamp from dsync. Still does not fix the ping-pong issue.
+	[94cd5a1c85cf]
+
+2013-04-19  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage-save.c, src/lib-sievestorage
+	/sieve-storage-script.c:
+	doveadm-sieve: Made active script last_change time always dependent
+	on sieve_dir mtime. Change is preliminary. Still doing some
+	experiments, 'ping-pong' problem is not solved.
+	[2de5c020cc03]
+
+	* src/lib-sievestorage/sieve-storage-private.h, src/lib-sievestorage
+	/sieve-storage-script.c, src/lib-sievestorage/sieve-storage.c, src
+	/lib-sievestorage/sieve-storage.h, src/managesieve/managesieve-
+	client.c, src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Prevented Sieve storage from logging useless while
+	synchronizing. Added flag to prevent warnings about non-link active
+	scripts and disable critical error logging. A rather fundamental
+	synchronization problem remains to be solved.
+	[9f14740cc1c0]
+
+	* INSTALL, NEWS, README, TODO, doc/plugins/sieve_extprograms.txt:
+	Made preparations for first v0.4 release.
+	[5fa5e2dfbb57]
+
+	* src/testsuite/testsuite-variables.c,
+	tests/plugins/extprograms/bin/sleep10,
+	tests/plugins/extprograms/execute/command.svtest,
+	tests/plugins/extprograms/execute/errors.svtest,
+	tests/plugins/extprograms/execute/execute.svtest,
+	tests/plugins/extprograms/filter/command.svtest,
+	tests/plugins/extprograms/filter/errors.svtest,
+	tests/plugins/extprograms/filter/execute.svtest,
+	tests/plugins/extprograms/pipe/command.svtest,
+	tests/plugins/extprograms/pipe/errors.svtest,
+	tests/plugins/extprograms/pipe/errors/timeout.sieve,
+	tests/plugins/extprograms/pipe/execute.svtest:
+	Fixed distcheck failure on sieve_extprograms plugin testsuite.
+	[ee5a40db9e73]
+
+	* tests/plugins/extprograms/execute/execute.svtest:
+	Fixed test suite for vnd.dovecot.execute extension. Testsuite
+	hostname is now true local hostname.
+	[2688c750b426]
+
+2013-04-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve.c:
+	Fixed doveconf crash caused by previous change. Patch by Timo
+	Sirainen.
+	[70f0b7140939]
+
+2013-04-11  Stephan Bosch  <stephan@rename-it.nl>
+
+	* README, src/lib-sieve-tool/sieve-tool.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-sieve
+	/sieve-common.h, src/lib-sieve/sieve-types.h, src/lib-sieve/sieve.c,
+	src/plugins/lda-sieve/lda-sieve-plugin.c,
+	tests/extensions/environment/basic.svtest,
+	tests/extensions/environment/rfc.svtest:
+	lib-sieve: environment extension: Finally finished this extension a
+	much as possible. Some environment items in the base specification
+	are not (yet) applicable to Dovecot and are therefore not supported.
+	[9d38ca755000]
+
+	* src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Updated to dsync changes in Dovecot mail storage API.
+	Patch by Timo Sirainen.
+	[1a3a4545fa10]
+
+2013-04-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/sieve-extprograms/script-client-remote.c, src/plugins
+	/sieve-extprograms/sieve-extprograms-common.h:
+	Compile warning fixes.
+	[aafcff20c8a7]
+
+	* TODO:
+	Updated TODO to include items related to sieve_extprograms plugin.
+	[1d2bf4a7dc9f]
+
+	* INSTALL, Makefile.am, configure.ac, doc/Makefile.am, doc/example-
+	config/conf.d/90-sieve-extprograms.conf, doc/example-
+	config/conf.d/90-sieve.conf, doc/example-config/conf.d/Makefile.am,
+	doc/plugins/sieve_extprograms.txt, doc/rfc/spec-bosch-sieve-
+	extprograms.txt, doc/rfc/xml/reference.DSN.xml,
+	doc/rfc/xml/reference.MDN.xml, doc/rfc/xml/reference.NET-
+	UNICODE.xml, doc/rfc/xml/reference.RFC.3894.xml,
+	doc/rfc/xml/reference.RFC.5429.xml,
+	doc/rfc/xml/reference.SUBADDRESS.xml,
+	doc/rfc/xml/reference.UTF-8.xml, doc/rfc/xml/spec-bosch-sieve-
+	extprograms.xml, src/plugins/Makefile.am, src/plugins/sieve-
+	extprograms/Makefile.am, src/plugins/sieve-extprograms/cmd-
+	execute.c, src/plugins/sieve-extprograms/cmd-filter.c, src/plugins
+	/sieve-extprograms/cmd-pipe.c, src/plugins/sieve-extprograms/ext-
+	execute.c, src/plugins/sieve-extprograms/ext-filter.c, src/plugins
+	/sieve-extprograms/ext-pipe.c, src/plugins/sieve-extprograms/script-
+	client-local.c, src/plugins/sieve-extprograms/script-client-
+	private.h, src/plugins/sieve-extprograms/script-client-remote.c,
+	src/plugins/sieve-extprograms/script-client.c, src/plugins/sieve-
+	extprograms/script-client.h, src/plugins/sieve-extprograms/sieve-
+	extprograms-common.c, src/plugins/sieve-extprograms/sieve-
+	extprograms-common.h, src/plugins/sieve-extprograms/sieve-
+	extprograms-plugin.c, src/plugins/sieve-extprograms/sieve-
+	extprograms-plugin.h, tests/plugins/extprograms/bin/addheader,
+	tests/plugins/extprograms/bin/cat,
+	tests/plugins/extprograms/bin/env,
+	tests/plugins/extprograms/bin/frame,
+	tests/plugins/extprograms/bin/modify,
+	tests/plugins/extprograms/bin/program,
+	tests/plugins/extprograms/bin/replace,
+	tests/plugins/extprograms/bin/sleep2,
+	tests/plugins/extprograms/bin/stderr,
+	tests/plugins/extprograms/errors.svtest,
+	tests/plugins/extprograms/errors/arguments.sieve,
+	tests/plugins/extprograms/errors/programname.sieve,
+	tests/plugins/extprograms/execute/command.svtest,
+	tests/plugins/extprograms/execute/errors.svtest,
+	tests/plugins/extprograms/execute/errors/syntax.sieve,
+	tests/plugins/extprograms/execute/errors/variables.sieve,
+	tests/plugins/extprograms/execute/execute.svtest,
+	tests/plugins/extprograms/filter/command.svtest,
+	tests/plugins/extprograms/filter/errors.svtest,
+	tests/plugins/extprograms/filter/errors/syntax.sieve,
+	tests/plugins/extprograms/filter/execute.svtest,
+	tests/plugins/extprograms/pipe/command.svtest,
+	tests/plugins/extprograms/pipe/errors.svtest,
+	tests/plugins/extprograms/pipe/errors/syntax.sieve,
+	tests/plugins/extprograms/pipe/errors/timeout.sieve,
+	tests/plugins/extprograms/pipe/execute.svtest:
+	Added sieve_extprograms plugin to the main Pigeonhole tree. It is
+	still a plugin, but no longer a separate package.
+	[a68530fb25d4]
+
+	* TODO:
+	Updated TODO.
+	[c6c6af49f8ac]
+
+	* TODO, configure.ac, src/lib-managesieve/managesieve-parser.c, src
+	/lib-sieve-tool/mail-raw.c, src/lib-sieve/cmd-redirect.c, src/lib-
+	sieve/edit-mail.c, src/lib-sieve/ext-encoded-character.c, src/lib-
+	sieve/ext-envelope.c, src/lib-sieve/ext-fileinto.c, src/lib-sieve
+	/ext-reject.c, src/lib-sieve/plugins/body/ext-body-common.c, src
+	/lib-sieve/plugins/body/ext-body.c, src/lib-
+	sieve/plugins/comparator-i-ascii-numeric/ext-cmp-i-ascii-numeric.c,
+	src/lib-sieve/plugins/copy/ext-copy.c, src/lib-sieve/plugins/date
+	/ext-date-common.c, src/lib-sieve/plugins/date/ext-date.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-
+	sieve/plugins/enotify/ext-enotify-common.h, src/lib-
+	sieve/plugins/enotify/ext-enotify.c, src/lib-
+	sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-
+	sieve/plugins/environment/ext-environment.c, src/lib-
+	sieve/plugins/ihave/ext-ihave-binary.c, src/lib-sieve/plugins/ihave
+	/ext-ihave-common.h, src/lib-sieve/plugins/ihave/ext-ihave.c, src
+	/lib-sieve/plugins/ihave/tst-ihave.c, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags.c, src/lib-
+	sieve/plugins/imap4flags/ext-imapflags.c, src/lib-
+	sieve/plugins/imap4flags/tag-flags.c, src/lib-sieve/plugins/include
+	/cmd-include.c, src/lib-sieve/plugins/include/ext-include-binary.c,
+	src/lib-sieve/plugins/include/ext-include-binary.h, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-
+	sieve/plugins/include/ext-include.c, src/lib-sieve/plugins/mailbox
+	/ext-mailbox.c, src/lib-sieve/plugins/notify/cmd-notify.c, src/lib-
+	sieve/plugins/notify/ext-notify-common.c, src/lib-
+	sieve/plugins/notify/ext-notify.c, src/lib-sieve/plugins/regex/ext-
+	regex.c, src/lib-sieve/plugins/regex/mcht-regex.c, src/lib-
+	sieve/plugins/relational/ext-relational.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest.c, src/lib-
+	sieve/plugins/subaddress/ext-subaddress.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-seconds.c, src/lib-
+	sieve/plugins/vacation/ext-vacation.c, src/lib-
+	sieve/plugins/variables/cmd-set.c, src/lib-sieve/plugins/variables
+	/ext-variables-common.c, src/lib-sieve/plugins/variables/ext-
+	variables-dump.c, src/lib-sieve/plugins/variables/ext-variables.c,
+	src/lib-sieve/plugins/vnd.dovecot/debug/ext-debug.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-
+	sieve/rfc2822.c, src/lib-sieve/rfc2822.h, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-address-parts.c, src/lib-sieve/sieve-
+	ast.c, src/lib-sieve/sieve-binary-file.c, src/lib-sieve/sieve-
+	binary-private.h, src/lib-sieve/sieve-binary.h, src/lib-sieve/sieve-
+	code-dumper.c, src/lib-sieve/sieve-comparators.c, src/lib-sieve
+	/sieve-error.c, src/lib-sieve/sieve-extensions.c, src/lib-sieve
+	/sieve-extensions.h, src/lib-sieve/sieve-generator.c, src/lib-sieve
+	/sieve-generator.h, src/lib-sieve/sieve-interpreter.c, src/lib-sieve
+	/sieve-lexer.c, src/lib-sieve/sieve-match-types.c, src/lib-sieve
+	/sieve-message.c, src/lib-sieve/sieve-plugins.c, src/lib-sieve
+	/sieve-result.c, src/lib-sieve/sieve-script-dict.c, src/lib-sieve
+	/sieve-script-file.c, src/lib-sieve/sieve-script-private.h, src/lib-
+	sieve/sieve-script.c, src/lib-sieve/sieve-script.h, src/lib-sieve
+	/sieve-smtp.c, src/lib-sieve/sieve-smtp.h, src/lib-sieve/sieve-
+	stringlist.c, src/lib-sieve/sieve-types.h, src/lib-sieve/sieve-
+	validator.c, src/lib-sieve/sieve.c, src/lib-sievestorage/sieve-
+	storage-list.c, src/lib-sievestorage/sieve-storage-private.h, src
+	/lib-sievestorage/sieve-storage-save.c, src/lib-sievestorage/sieve-
+	storage-save.h, src/lib-sievestorage/sieve-storage-script.c, src
+	/lib-sievestorage/sieve-storage-script.h, src/lib-sievestorage
+	/sieve-storage.c, src/lib-sievestorage/sieve-storage.h, src
+	/managesieve-login/client-authenticate.c, src/managesieve-login
+	/client-authenticate.h, src/managesieve-login/client.c, src
+	/managesieve-login/client.h, src/managesieve-login/managesieve-
+	login-settings-plugin.c, src/managesieve-login/managesieve-proxy.c,
+	src/managesieve-login/managesieve-proxy.h, src/managesieve/cmd-
+	getscript.c, src/managesieve/cmd-putscript.c,
+	src/managesieve/main.c, src/managesieve/managesieve-capabilities.c,
+	src/managesieve/managesieve-client.c, src/managesieve/managesieve-
+	commands.c, src/managesieve/managesieve-settings.c, src/plugins
+	/doveadm-sieve/doveadm-sieve-plugin.c, src/plugins/lda-sieve/lda-
+	sieve-plugin.c, src/sieve-tools/sieve-dump.c, src/sieve-tools/sieve-
+	test.c, src/sieve-tools/sievec.c, src/testsuite/ext-testsuite.c,
+	src/testsuite/testsuite-log.c, src/testsuite/testsuite-settings.c,
+	src/testsuite/testsuite-smtp.c, src/testsuite/testsuite-smtp.h:
+	Merged changes from Pigeonhole v0.3 tree.
+	[f4b4676a2784]
+
+2013-04-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* .hgsigs:
+	Added signature for changeset 493202676845
+	[e3700924ac8c]
+
+	* .hgtags:
+	Added tag 0.3.4 for changeset 493202676845
+	[c318f65361af]
+
+	* NEWS, TODO, configure.in:
+	Released v0.3.4 for Dovecot v2.1.16.
+	[493202676845] [0.3.4]
+
+	* src/lib-managesieve/managesieve-arg.c, src/lib-managesieve
+	/managesieve-arg.h, src/lib-managesieve/managesieve-parser.c, src
+	/lib-managesieve/managesieve-parser.h, src/lib-managesieve
+	/managesieve-quote.c, src/lib-managesieve/managesieve-quote.h, src
+	/lib-sieve-tool/mail-raw.c, src/lib-sieve-tool/mail-raw.h, src/lib-
+	sieve-tool/sieve-tool.c, src/lib-sieve-tool/sieve-tool.h, src/lib-
+	sieve/cmd-discard.c, src/lib-sieve/cmd-if.c, src/lib-sieve/cmd-
+	keep.c, src/lib-sieve/cmd-redirect.c, src/lib-sieve/cmd-require.c,
+	src/lib-sieve/cmd-stop.c, src/lib-sieve/cmp-i-ascii-casemap.c, src
+	/lib-sieve/cmp-i-octet.c, src/lib-sieve/edit-mail.c, src/lib-sieve
+	/edit-mail.h, src/lib-sieve/ext-encoded-character.c, src/lib-sieve
+	/ext-envelope.c, src/lib-sieve/ext-fileinto.c, src/lib-sieve/ext-
+	reject.c, src/lib-sieve/mcht-contains.c, src/lib-sieve/mcht-is.c,
+	src/lib-sieve/mcht-matches.c, src/lib-sieve/plugins/body/ext-body-
+	common.c, src/lib-sieve/plugins/body/ext-body-common.h, src/lib-
+	sieve/plugins/body/ext-body.c, src/lib-sieve/plugins/body/tst-
+	body.c, src/lib-sieve/plugins/comparator-i-ascii-numeric/ext-cmp-i
+	-ascii-numeric.c, src/lib-sieve/plugins/copy/ext-copy.c, src/lib-
+	sieve/plugins/copy/sieve-ext-copy.h, src/lib-sieve/plugins/date/ext-
+	date-common.c, src/lib-sieve/plugins/date/ext-date-common.h, src
+	/lib-sieve/plugins/date/ext-date.c, src/lib-sieve/plugins/date/tst-
+	date.c, src/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.h, src/lib-
+	sieve/plugins/editheader/ext-editheader-limits.h, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-
+	sieve/plugins/enotify/cmd-notify.c, src/lib-sieve/plugins/enotify
+	/ext-enotify-common.c, src/lib-sieve/plugins/enotify/ext-enotify-
+	common.h, src/lib-sieve/plugins/enotify/ext-enotify-limits.h, src
+	/lib-sieve/plugins/enotify/ext-enotify.c, src/lib-
+	sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/enotify/mailto/uri-mailto.c, src/lib-
+	sieve/plugins/enotify/mailto/uri-mailto.h, src/lib-
+	sieve/plugins/enotify/sieve-ext-enotify.h, src/lib-
+	sieve/plugins/enotify/tst-notify-method-capability.c, src/lib-
+	sieve/plugins/enotify/tst-valid-notify-method.c, src/lib-
+	sieve/plugins/enotify/vmodf-encodeurl.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.h, src/lib-
+	sieve/plugins/environment/ext-environment.c, src/lib-
+	sieve/plugins/environment/sieve-ext-environment.h, src/lib-
+	sieve/plugins/environment/tst-environment.c, src/lib-
+	sieve/plugins/ihave/cmd-error.c, src/lib-sieve/plugins/ihave/ext-
+	ihave-binary.c, src/lib-sieve/plugins/ihave/ext-ihave-binary.h, src
+	/lib-sieve/plugins/ihave/ext-ihave-common.c, src/lib-
+	sieve/plugins/ihave/ext-ihave-common.h, src/lib-sieve/plugins/ihave
+	/ext-ihave.c, src/lib-sieve/plugins/ihave/tst-ihave.c, src/lib-
+	sieve/plugins/imap4flags/cmd-flag.c, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags-common.c, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags-common.h, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags.c, src/lib-
+	sieve/plugins/imap4flags/ext-imapflags.c, src/lib-
+	sieve/plugins/imap4flags/tag-flags.c, src/lib-
+	sieve/plugins/imap4flags/tst-hasflag.c, src/lib-
+	sieve/plugins/include/cmd-global.c, src/lib-sieve/plugins/include
+	/cmd-include.c, src/lib-sieve/plugins/include/cmd-return.c, src/lib-
+	sieve/plugins/include/ext-include-binary.c, src/lib-
+	sieve/plugins/include/ext-include-binary.h, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-
+	sieve/plugins/include/ext-include-limits.h, src/lib-
+	sieve/plugins/include/ext-include-variables.c, src/lib-
+	sieve/plugins/include/ext-include-variables.h, src/lib-
+	sieve/plugins/include/ext-include.c, src/lib-sieve/plugins/mailbox
+	/ext-mailbox-common.h, src/lib-sieve/plugins/mailbox/ext-mailbox.c,
+	src/lib-sieve/plugins/mailbox/tag-mailbox-create.c, src/lib-
+	sieve/plugins/mailbox/tst-mailboxexists.c, src/lib-
+	sieve/plugins/notify/cmd-denotify.c, src/lib-sieve/plugins/notify
+	/cmd-notify.c, src/lib-sieve/plugins/notify/ext-notify-common.c, src
+	/lib-sieve/plugins/notify/ext-notify-common.h, src/lib-
+	sieve/plugins/notify/ext-notify-limits.h, src/lib-
+	sieve/plugins/notify/ext-notify.c, src/lib-sieve/plugins/regex/ext-
+	regex-common.c, src/lib-sieve/plugins/regex/ext-regex-common.h, src
+	/lib-sieve/plugins/regex/ext-regex.c, src/lib-sieve/plugins/regex
+	/mcht-regex.c, src/lib-sieve/plugins/relational/ext-relational-
+	common.c, src/lib-sieve/plugins/relational/ext-relational-common.h,
+	src/lib-sieve/plugins/relational/ext-relational.c, src/lib-
+	sieve/plugins/relational/mcht-count.c, src/lib-
+	sieve/plugins/relational/mcht-value.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest-common.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest-common.h, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest.c, src/lib-
+	sieve/plugins/spamvirustest/tst-spamvirustest.c, src/lib-
+	sieve/plugins/subaddress/ext-subaddress.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-common.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-common.h, src/lib-
+	sieve/plugins/vacation/ext-vacation-seconds.c, src/lib-
+	sieve/plugins/vacation/ext-vacation.c, src/lib-
+	sieve/plugins/variables/cmd-set.c, src/lib-sieve/plugins/variables
+	/ext-variables-arguments.c, src/lib-sieve/plugins/variables/ext-
+	variables-arguments.h, src/lib-sieve/plugins/variables/ext-
+	variables-common.c, src/lib-sieve/plugins/variables/ext-variables-
+	common.h, src/lib-sieve/plugins/variables/ext-variables-dump.c, src
+	/lib-sieve/plugins/variables/ext-variables-dump.h, src/lib-
+	sieve/plugins/variables/ext-variables-limits.h, src/lib-
+	sieve/plugins/variables/ext-variables-modifiers.c, src/lib-
+	sieve/plugins/variables/ext-variables-modifiers.h, src/lib-
+	sieve/plugins/variables/ext-variables-name.c, src/lib-
+	sieve/plugins/variables/ext-variables-name.h, src/lib-
+	sieve/plugins/variables/ext-variables-namespaces.c, src/lib-
+	sieve/plugins/variables/ext-variables-namespaces.h, src/lib-
+	sieve/plugins/variables/ext-variables-operands.c, src/lib-
+	sieve/plugins/variables/ext-variables-operands.h, src/lib-
+	sieve/plugins/variables/ext-variables.c, src/lib-
+	sieve/plugins/variables/sieve-ext-variables.h, src/lib-
+	sieve/plugins/variables/tst-string.c, src/lib-
+	sieve/plugins/vnd.dovecot/debug/cmd-debug-log.c, src/lib-
+	sieve/plugins/vnd.dovecot/debug/ext-debug-common.h, src/lib-
+	sieve/plugins/vnd.dovecot/debug/ext-debug.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.h, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c, src/lib-
+	sieve/rfc2822.c, src/lib-sieve/rfc2822.h, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-actions.h, src/lib-sieve/sieve-
+	address-parts.c, src/lib-sieve/sieve-address-parts.h, src/lib-sieve
+	/sieve-address.c, src/lib-sieve/sieve-address.h, src/lib-sieve
+	/sieve-ast.c, src/lib-sieve/sieve-ast.h, src/lib-sieve/sieve-binary-
+	code.c, src/lib-sieve/sieve-binary-debug.c, src/lib-sieve/sieve-
+	binary-dumper.c, src/lib-sieve/sieve-binary-dumper.h, src/lib-sieve
+	/sieve-binary-file.c, src/lib-sieve/sieve-binary-private.h, src/lib-
+	sieve/sieve-binary.c, src/lib-sieve/sieve-binary.h, src/lib-sieve
+	/sieve-code-dumper.c, src/lib-sieve/sieve-code-dumper.h, src/lib-
+	sieve/sieve-code.c, src/lib-sieve/sieve-code.h, src/lib-sieve/sieve-
+	commands.c, src/lib-sieve/sieve-commands.h, src/lib-sieve/sieve-
+	common.h, src/lib-sieve/sieve-comparators.c, src/lib-sieve/sieve-
+	comparators.h, src/lib-sieve/sieve-config.h, src/lib-sieve/sieve-
+	dump.h, src/lib-sieve/sieve-error-private.h, src/lib-sieve/sieve-
+	error.c, src/lib-sieve/sieve-error.h, src/lib-sieve/sieve-
+	extensions.c, src/lib-sieve/sieve-extensions.h, src/lib-sieve/sieve-
+	generator.c, src/lib-sieve/sieve-generator.h, src/lib-sieve/sieve-
+	interpreter.c, src/lib-sieve/sieve-interpreter.h, src/lib-sieve
+	/sieve-lexer.c, src/lib-sieve/sieve-lexer.h, src/lib-sieve/sieve-
+	limits.h, src/lib-sieve/sieve-match-types.c, src/lib-sieve/sieve-
+	match-types.h, src/lib-sieve/sieve-match.c, src/lib-sieve/sieve-
+	match.h, src/lib-sieve/sieve-message.c, src/lib-sieve/sieve-
+	message.h, src/lib-sieve/sieve-objects.c, src/lib-sieve/sieve-
+	objects.h, src/lib-sieve/sieve-parser.c, src/lib-sieve/sieve-
+	parser.h, src/lib-sieve/sieve-plugins.c, src/lib-sieve/sieve-
+	plugins.h, src/lib-sieve/sieve-result.c, src/lib-sieve/sieve-
+	result.h, src/lib-sieve/sieve-runtime-trace.c, src/lib-sieve/sieve-
+	runtime-trace.h, src/lib-sieve/sieve-runtime.h, src/lib-sieve/sieve-
+	script-dict.c, src/lib-sieve/sieve-script-file.c, src/lib-sieve
+	/sieve-script-file.h, src/lib-sieve/sieve-script-private.h, src/lib-
+	sieve/sieve-script.c, src/lib-sieve/sieve-script.h, src/lib-sieve
+	/sieve-settings.c, src/lib-sieve/sieve-settings.h, src/lib-sieve
+	/sieve-smtp.c, src/lib-sieve/sieve-smtp.h, src/lib-sieve/sieve-
+	stringlist.c, src/lib-sieve/sieve-stringlist.h, src/lib-sieve/sieve-
+	types.h, src/lib-sieve/sieve-validator.c, src/lib-sieve/sieve-
+	validator.h, src/lib-sieve/sieve.c, src/lib-sieve/sieve.h, src/lib-
+	sieve/tst-address.c, src/lib-sieve/tst-allof.c, src/lib-sieve/tst-
+	anyof.c, src/lib-sieve/tst-exists.c, src/lib-sieve/tst-header.c, src
+	/lib-sieve/tst-not.c, src/lib-sieve/tst-size.c, src/lib-sieve/tst-
+	truefalse.c, src/lib-sievestorage/sieve-storage-list.c, src/lib-
+	sievestorage/sieve-storage-list.h, src/lib-sievestorage/sieve-
+	storage-private.h, src/lib-sievestorage/sieve-storage-quota.c, src
+	/lib-sievestorage/sieve-storage-quota.h, src/lib-sievestorage/sieve-
+	storage-save.c, src/lib-sievestorage/sieve-storage-save.h, src/lib-
+	sievestorage/sieve-storage-script.c, src/lib-sievestorage/sieve-
+	storage-script.h, src/lib-sievestorage/sieve-storage.c, src/lib-
+	sievestorage/sieve-storage.h, src/managesieve-login/client-
+	authenticate.c, src/managesieve-login/client-authenticate.h, src
+	/managesieve-login/client.c, src/managesieve-login/client.h, src
+	/managesieve-login/managesieve-login-settings-plugin.c, src
+	/managesieve-login/managesieve-login-settings-plugin.h, src
+	/managesieve-login/managesieve-login-settings.c, src/managesieve-
+	login/managesieve-login-settings.h, src/managesieve-login
+	/managesieve-proxy.c, src/managesieve-login/managesieve-proxy.h,
+	src/managesieve/cmd-capability.c, src/managesieve/cmd-
+	deletescript.c, src/managesieve/cmd-getscript.c, src/managesieve
+	/cmd-havespace.c, src/managesieve/cmd-listscripts.c, src/managesieve
+	/cmd-logout.c, src/managesieve/cmd-noop.c, src/managesieve/cmd-
+	putscript.c, src/managesieve/cmd-renamescript.c, src/managesieve
+	/cmd-setactive.c, src/managesieve/main.c, src/managesieve
+	/managesieve-capabilities.c, src/managesieve/managesieve-
+	capabilities.h, src/managesieve/managesieve-client.c,
+	src/managesieve/managesieve-client.h, src/managesieve/managesieve-
+	commands.c, src/managesieve/managesieve-commands.h, src/managesieve
+	/managesieve-common.h, src/managesieve/managesieve-quota.c,
+	src/managesieve/managesieve-quota.h, src/managesieve/managesieve-
+	settings.c, src/managesieve/managesieve-settings.h, src/plugins/lda-
+	sieve/lda-sieve-plugin.c, src/plugins/lda-sieve/lda-sieve-plugin.h,
+	src/sieve-tools/sieve-dump.c, src/sieve-tools/sieve-filter.c, src
+	/sieve-tools/sieve-test.c, src/sieve-tools/sievec.c, src/testsuite
+	/cmd-test-binary.c, src/testsuite/cmd-test-config.c, src/testsuite
+	/cmd-test-fail.c, src/testsuite/cmd-test-mailbox.c, src/testsuite
+	/cmd-test-message.c, src/testsuite/cmd-test-result.c, src/testsuite
+	/cmd-test-set.c, src/testsuite/cmd-test.c, src/testsuite/ext-
+	testsuite.c, src/testsuite/testsuite-arguments.c, src/testsuite
+	/testsuite-arguments.h, src/testsuite/testsuite-binary.c,
+	src/testsuite/testsuite-binary.h, src/testsuite/testsuite-common.c,
+	src/testsuite/testsuite-common.h, src/testsuite/testsuite-log.c,
+	src/testsuite/testsuite-log.h, src/testsuite/testsuite-mailstore.c,
+	src/testsuite/testsuite-mailstore.h, src/testsuite/testsuite-
+	message.c, src/testsuite/testsuite-message.h, src/testsuite
+	/testsuite-objects.c, src/testsuite/testsuite-objects.h,
+	src/testsuite/testsuite-result.c, src/testsuite/testsuite-result.h,
+	src/testsuite/testsuite-script.c, src/testsuite/testsuite-script.h,
+	src/testsuite/testsuite-settings.c, src/testsuite/testsuite-
+	settings.h, src/testsuite/testsuite-smtp.c, src/testsuite/testsuite-
+	smtp.h, src/testsuite/testsuite-substitutions.c, src/testsuite
+	/testsuite-substitutions.h, src/testsuite/testsuite-variables.c,
+	src/testsuite/testsuite-variables.h, src/testsuite/testsuite.c,
+	src/testsuite/tst-test-error.c, src/testsuite/tst-test-
+	multiscript.c, src/testsuite/tst-test-result-action.c, src/testsuite
+	/tst-test-result-execute.c, src/testsuite/tst-test-script-compile.c,
+	src/testsuite/tst-test-script-run.c:
+	Updated copyright notices to include the year 2013.
+	[850cdbcf7976]
+
+2013-04-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Fixed handling of non-link active script. Unsetting
+	the normal active script attribute would 'rescue' the non-link
+	script and turn it into a symlink.
+	[1a06d4b9483c]
+
+2013-04-05  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Adjusted to Dovecot API change.
+	[3514cbec0e06]
+
+2013-04-03  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Prevented initializing the Sieve storage multiple
+	times.
+	[097d68a9dd32]
+
+2013-04-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-plugins.c:
+	Merged changes from Pigeonhole v0.3 tree.
+	[0dffac42192b]
+
+	* src/lib-sieve/sieve-plugins.c, src/lib-sievestorage/sieve-storage-
+	list.c, src/lib-sievestorage/sieve-storage-save.c, src/lib-
+	sievestorage/sieve-storage-save.h, src/lib-sievestorage/sieve-
+	storage-script.c, src/lib-sievestorage/sieve-storage-script.h, src
+	/lib-sievestorage/sieve-storage.c, src/plugins/doveadm-sieve
+	/doveadm-sieve-plugin.c:
+	doveadm-sieve: Implemented handling the situation when the main
+	active script is a regular file. Tested whether this change breaks
+	ManageSieve and basic dsync, but not much more. More tests pending.
+	If you use sync be careful with this commit.
+	[8b8bba6e8c2c]
+
+	* src/lib-sieve/sieve-plugins.c:
+	lib-sieve: Fixed plugin module load functionality. Initializing
+	multiple Sieve instances would hang.
+	[5860cbaaffaa]
+
+2013-03-28  Stephan Bosch  <stephan@rename-it.nl>
+
+	* Merged changes from Pigeonhole v0.3 tree.
+	[5323b5e65289]
+
+	* src/lib-sievestorage/sieve-storage-save.c:
+	lib-sievestorage: Fixed a few potential problems in script save
+	code.
+	[b086291b9b9a]
+
+	* src/lib-sievestorage/sieve-storage-script.c, src/lib-sievestorage
+	/sieve-storage.c:
+	Merged changes from Pigeonhole v0.3 tree.
+	[42f11a1be763]
+
+	* src/lib-sievestorage/sieve-storage-script.c, src/lib-sievestorage
+	/sieve-storage.c:
+	lib-sievestorage: A few debug messages were still logged using
+	i_info() instead of i_debug().
+	[3ba1c379a6b8]
+
+	* src/lib-sievestorage/sieve-storage-private.h, src/lib-sievestorage
+	/sieve-storage-script.c, src/lib-sievestorage/sieve-storage-
+	script.h, src/lib-sievestorage/sieve-storage.c, src/plugins/doveadm-
+	sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Implemented obtaining last modification time for the
+	active script attribute. It compiles, doesn't break normal
+	ManageSieve operation, but it remains untested otherwise.
+	[c6e283350b5d]
+
+2013-03-25  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/doveadm-sieve/doveadm-sieve-plugin.c:
+	doveadm-sieve: Crash instead of writing empty .sieve files. Patch by
+	Timo Sirainen.
+	[097764f6bbe3]
+
+2013-03-23  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/Makefile.am:
+	Fixed compile order for previous change.
+	[cb910570ad88]
+
+2013-03-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* configure.ac, src/lib-sievestorage/Makefile.am, src/lib-sievestorage
+	/sieve-storage.c, src/lib-sievestorage/sieve-storage.h,
+	src/managesieve/Makefile.am, src/plugins/Makefile.am, src/plugins
+	/doveadm-sieve/Makefile.am, src/plugins/doveadm-sieve/doveadm-sieve-
+	plugin.c:
+	Committed Timo's patch that adds a plugin that provides Sieve dsync
+	support. http://dovecot.org/patches/2.2/doveadm-sieve-plugin.diff
+	Made some small modifications. This code should not interfere with
+	normal ManageSieve operation, so I commit this right now without
+	much testing. The actual doveadm sieve plugin has a few open issues
+	that need to be resolved still.
+	[43b09b9a2f72]
+
+2013-03-04  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-actions.c:
+	lib-sieve: Fixed segfault bug in reject. Passed senv->script_context
+	rather than senv itself. Somehow the compiler fails to warn about
+	this.
+	[b75b00760b86]
+
+2013-03-03  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Merged changes from Pigeonhole v0.3.
+	[07983d15ad19]
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve plugin: further reduced useless error messages in
+	administrator log.
+	[06c89405bdc6]
+
+	* src/lib-sieve/sieve-script.c, src/plugins/lda-sieve/lda-sieve-
+	plugin.c:
+	LDA Sieve plugin: fixed bug in opening script files for multiscript.
+	Used sieve_script_create instead of sieve_script_create_open.
+	Changed plugin debug output a bit as well.
+	[f43c7609497c]
+
+	* src/lib-sieve/cmd-redirect.c, src/lib-sieve/edit-mail.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-sieve
+	/sieve-ast.c, src/lib-sieve/sieve-error.c, src/lib-sieve/sieve-
+	validator.c, src/managesieve-login/client-authenticate.c,
+	src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Merged changes from Pigeonhole v0.3.
+	[feb8fca97a0e]
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve plugin: fixed stupid mistake in error handling for
+	multiscript. Used errno instead of error variable.
+	[9e8392895ab7]
+
+2013-03-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve plugin: adjusted script compile/load error reporting. Made
+	normal compile error an info log item in the administrator log.
+	[5a440010d1cf]
+
+2013-02-28  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c,
+	tests/extensions/editheader/alternating.svtest:
+	Sieve: editheader: fixed bug in header cloning for snapshot. Forgot
+	to increment count for the clone.
+	[994b45b58e91]
+
+	* src/lib-sieve/edit-mail.c:
+	Sieve: editheader: fixed bug in full header parsing when addheader
+	:last is used.
+	[13d41cc284fc]
+
+2013-02-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client-authenticate.c:
+	managesieve: Fixed bug in skipping of CRLF at end of AUTHENTICATE
+	command. Setting skip_newline is useless when the connection is
+	transfered to another process after successful login.
+	[32d178f5e1a2]
+
+2013-01-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/sieve-ast.c, src/lib-sieve/sieve-binary.c, src/lib-sieve
+	/sieve-error.c, src/lib-sieve/sieve-validator.c:
+	lib-sieve: Increased a few initial memory pool sizes.
+	[f8fad363984d]
+
+	* src/lib-sieve/cmd-redirect.c:
+	Changed behavior of redirect in case of a duplicate message delivery
+	or a mail loop. If a duplicate is detected the implicit keep is
+	canceled, as though the redirect was successful. This prevents
+	getting local deliveries. The original SMTP recipient is used when
+	it is available to augment the entry in the LDA duplicate database.
+	This way, duplicates are only detected when (initially) addressed to
+	the same recipient. The main goal of the duplicate detection is mail
+	loop prevention, but this also has the effect that mere duplicate
+	deliveries are handled specially whithout a good reason. We should
+	fix this in a future version.
+	[ab15c5eabc09]
+
+2013-03-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve.c:
+	lib-sieve: added debug message showing Pigeonhole version at
+	initialization. Very useful to show that debugging is enabled and
+	what version of pigeonhole is actually running.
+	[44721c50833e]
+
+2013-01-14  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/vacation/cmd-vacation.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-sieve
+	/sieve-message.c:
+	Merged changes from Pigeonhole v0.3 tree.
+	[99eec511aa2c]
+
+2012-12-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/Makefile.am:
+	Fixed compile on Mageia Linux. Added LIBDOVECOT_STORAGE to library
+	dependencies in src/lib-sieve/Makefile.am.
+	[fe5f2738d538]
+
+2012-12-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-config.h, src/lib-sieve/sieve-message.c:
+	lib-sieve: Prevent passing NULL sender to raw mail storage when
+	active message is substituted.
+	[fc0bf6b1cb6b]
+
+2012-11-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/vacation/cmd-vacation.c:
+	lib-sieve: vacation extension: Fixed determination of From: address
+	for when sieve_vacation_dont_check_recipient is active.
+	[b56711807edc]
+
+2012-10-17  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/extensions/vnd.dovecot.duplicate.txt:
+	Updated installation documentation for vnd.dovecot.duplicate
+	extension.
+	[0dc8453e07c4]
+
+	* src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c:
+	lib-sieve: vnd.dovecot.duplicate: Fixed default max period setting.
+	[c3b14a8784dc]
+
+	* doc/rfc/spec-bosch-sieve-duplicate.txt,
+	doc/rfc/xml/reference.INCLUDE.xml, doc/rfc/xml/spec-bosch-sieve-
+	duplicate.xml:
+	Improved specification of the vnd.dovecot.duplicate extension.
+	[fd7257cb40ea]
+
+	* src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c,
+	src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.h,
+	src/lib-sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c:
+	lib-sieve: vnd.dovecot.duplicate extension: Only track duplicate
+	when Sieve script executes successfully.
+	[762b6a885897]
+
+	* src/lib-sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c:
+	lib-sieve: vnd.dovecot.duplicate extension: Fixed segfault occurring
+	in testsuite.
+	[3a972efe012b]
+
+	* src/lib-sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c:
+	lib-sieve: vnd.dovecot.duplicate extension: fixed bug in previous
+	change. Forgot to initialize variable, causing a segfault at
+	runtime.
+	[2b767751ff27]
+
+2012-10-16  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/rfc/spec-bosch-sieve-duplicate.txt,
+	doc/rfc/xml/reference.IMAP4FLAGS.xml,
+	doc/rfc/xml/reference.MAILBOX.xml,
+	doc/rfc/xml/reference.VACATION.xml, doc/rfc/xml/spec-bosch-sieve-
+	duplicate.xml, src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-
+	duplicate-common.c, src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-
+	duplicate-common.h, src/lib-sieve/plugins/vnd.dovecot/duplicate/ext-
+	duplicate.c, src/lib-sieve/plugins/vnd.dovecot/duplicate/tst-
+	duplicate.c, tests/extensions/vnd.dovecot/duplicate/errors.svtest,
+	tests/extensions/vnd.dovecot/duplicate/errors/syntax.sieve,
+	tests/extensions/vnd.dovecot/duplicate/execute.svtest:
+	lib-sieve: vnd.dovecot.duplicate extension: Added new features to
+	the duplicate test. It is now possible to track duplicates based on
+	arbitrary headers or even arbitrary string values using the new
+	:header and :value arguments respectively. The experation time can
+	be configured using the new :seconds argument. This change is
+	backwards compatible as long as the name argument wasn't used. This
+	is now a :handle <handle> argument.
+	[12a4e11ecd4c]
+
+2013-01-09  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-smtp.c:
+	Fixed SMTP crash. By Timo Sirainen.
+	[c937a4060ee2]
+
+	* src/lib-sieve/edit-mail.c:
+	Adjusted to changes in Dovecot.
+	[50c067006c67]
+
+2012-10-29  Stephan Bosch  <stephan@rename-it.nl>
+
+	* configure.ac, configure.in:
+	Renamed configure.in to configure.ac. Apparently automakes in future
+	won't support configure.in anymore.
+	[613258f9f541]
+
+2012-10-17  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-script-dict.c:
+	lib-sieve: Fixed a stupidity in the dict script implementation.
+	[f147ddb83586]
+
+2012-10-13  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-script-dict.c:
+	Adjusted to Dovecot dict API changes.
+	[6979dbc334fa]
+
+	* src/lib-sieve/plugins/date/ext-date-common.c, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-error.c, src/lib-sieve/sieve-
+	result.c, src/lib-sieve/sieve-script-dict.c, src/managesieve-
+	login/client.c, src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Merged changes from Pigeonhole v0.3.
+	[9f9459bd038f]
+
+	* src/lib-sieve/sieve-script-dict.c:
+	lib-sieve: dict script: fixed potential segfault occuring when dict
+	initialization fails.
+	[2b5ff3818a9f]
+
+2012-10-11  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client.c:
+	ManageSieve: fixed handling of unkown commands pre-login. Forgot to
+	skip line upon error.
+	[ceef02768dee]
+
+	* src/lib-sieve/sieve-actions.c, src/lib-sieve/sieve-error-private.h,
+	src/lib-sieve/sieve-error.c, src/lib-sieve/sieve-error.h, src/lib-
+	sieve/sieve-result.c, src/lib-sieve/sieve-result.h, src/plugins/lda-
+	sieve/lda-sieve-plugin.c:
+	lib-sieve: Further improved handling of quota errors. Added means to
+	log user errors/warnings as info in master log. Previous change was
+	inadequate because an error was still logged.
+	[5c1ce25596ed]
+
+	* src/lib-sieve/sieve-actions.c:
+	lib-sieve: fileinto/keep: don't log quota errors to syslog but
+	rather to user's log. Prevents administrator frustration about
+	useless log messages caused by users with too much mail.
+	[7301a7ed8800]
+
+2012-09-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* tests/extensions/date/basic.svtest:
+	testsuite: date extension: Added test for date comparisons.
+	[1963a329c539]
+
+	* src/lib-sieve/plugins/date/ext-date-common.c, src/lib-
+	sieve/plugins/date/ext-date-common.h, src/lib-sieve/plugins/date
+	/tst-date.c:
+	lib-sieve: date extension: Generate warning when invalid date part
+	is specified.
+	[bf7b7aa7f667]
+
+2012-10-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-plugins.c, src/managesieve-login/managesieve-
+	login-settings-plugin.c, src/managesieve/managesieve-settings.c:
+	Incorporated Dovecot plugin ABI changes (forgot a few issues).
+	[cf079ce8368b]
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Incorporated Dovecot plugin ABI changes.
+	[c7db8f43e414]
+
+2012-10-03  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client.h, src/managesieve/managesieve-
+	client.c:
+	Adjusted to changes in Dovecot network API.
+	[df0ac1d9be50]
+
+2012-09-23  Stephan Bosch  <stephan@rename-it.nl>
+
+	* configure.in, src/lib-sieve/plugins/include/ext-include-binary.c,
+	src/sieve-tools/sieve-dump.c, src/sieve-tools/sieve-test.c, src
+	/sieve-tools/sievec.c:
+	Merged changes from Pigeonhole v0.3.
+	[7d171ec86a4c]
+
+	* src/lib-sieve/plugins/mailbox/tag-mailbox-create.c:
+	lib-sieve: mailbox extension: After creating mailbox only open it,
+	don't bother syncing it.
+	[fcd5208ed8b2]
+
+2012-09-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/man/sieve-dump.1.in, doc/man/sievec.1.in, src/sieve-tools/sieve-
+	dump.c, src/sieve-tools/sievec.c:
+	sieve-tools: The -D option wasn't enabled and documented for all
+	tools. Change backported from Pigeonhole v0.4 tree, which means that
+	this change will duplicate there upon merge.
+	[d7b06a1be3e1]
+
+	* src/lib-sieve/plugins/include/ext-include-binary.c:
+	lib-sieve: include extension: fixed missing error cleanup that
+	caused a resource leak.
+	[df4088161da0]
+
+2012-09-18  Stephan Bosch  <stephan@rename-it.nl>
+
+	* .hgsigs:
+	Added signature for changeset 64474c359678
+	[1e4ecd174edf]
+
+	* .hgtags:
+	Added tag 0.3.3 for changeset 64474c359678
+	[e4fe281d33e8]
+
+	* NEWS, configure.in:
+	Released v0.3.3 for Dovecot v2.1.10.
+	[64474c359678] [0.3.3]
+
+	* src/lib-sieve/Makefile.am:
+	Fixed compile against installed Dovecot headers. This was broken by
+	the ld.gold fix.
+	[8144fb698cb3]
+
+	* .hgsigs:
+	Added signature for changeset 265061e0d3f4
+	[2347ddfd9057]
+
+	* .hgtags:
+	Added tag 0.3.2 for changeset 265061e0d3f4
+	[2dbb17d08591]
+
+	* configure.in:
+	Released v0.3.2 for Dovecot v2.1.9.
+	[265061e0d3f4] [0.3.2]
+
+	* NEWS:
+	Updated NEWS file for next release.
+	[0505fc4b10c4]
+
+2012-09-09  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/man/sieve-filter.1.in:
+	sieve-refilter: improved man page documentation by explicitly
+	specifying the syntax used for mailbox arguments.
+	[b1bedb88e615]
+
+2012-08-16  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/spamvirustest/ext-spamvirustest-common.c, src
+	/lib-sieve/plugins/spamvirustest/tst-spamvirustest.c:
+	lib-sieve: spamvirustest: improved trace debugging of score
+	calculation.
+	[ff55c9946366]
+
+2012-08-15  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve-tool/sieve-tool.c, src/lib-sieve-tool/sieve-tool.h,
+	src/sieve-tools/sieve-dump.c, src/sieve-tools/sieve-filter.c, src
+	/sieve-tools/sieve-test.c, src/sieve-tools/sievec.c,
+	src/testsuite/testsuite.c:
+	sieve-tools: sievec and sieve-dump now ignore mail_uid and mail_gid
+	settings when run as root. Before, sievec and sieve-dump would
+	switch to mail_uid:mail_gid and then fail to compile/dump a root
+	script.
+	[cfe8e9f49dfe]
+
+2012-09-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/include/ext-include-binary.c, src/lib-
+	sieve/plugins/include/ext-include-common.c:
+	lib-sieve: include extension: didn't get semantics of mixing
+	optional and non-optional includes for the same script quite right.
+	[ead2e76425bf]
+
+	* src/lib-sieve/plugins/include/ext-include-binary.c:
+	Fixed a few resource leaks caused by previous change.
+	[3d3d8549c834]
+
+	* Makefile.am, README, TODO, doc/rfc/draft-ietf-sieve-include-05.txt,
+	doc/rfc/include.rfc6609.txt, src/lib-sieve/plugins/include/cmd-
+	include.c, src/lib-sieve/plugins/include/ext-include-binary.c, src
+	/lib-sieve/plugins/include/ext-include-binary.h, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-
+	sieve/plugins/include/ext-include.c, src/lib-sieve/sieve-lexer.c,
+	src/lib-sieve/sieve-script-dict.c, src/lib-sieve/sieve-script-
+	file.c, src/lib-sieve/sieve-script-private.h, src/lib-sieve/sieve-
+	script.c, src/lib-sieve/sieve-script.h, src/lib-sieve/sieve.c, src
+	/lib-sievestorage/sieve-storage-script.c, src/managesieve/cmd-
+	getscript.c, src/plugins/lda-sieve/lda-sieve-plugin.c,
+	tests/extensions/include/execute/optional.sieve,
+	tests/extensions/include/included/optional-1.sieve,
+	tests/extensions/include/included/optional-2.sieve,
+	tests/extensions/include/optional.svtest:
+	lib-sieve: Finished implementation of include extension. Added
+	support for the :optional tag of the include command. Changed Sieve
+	script API in the process; opening the script is now available as a
+	separate step.
+	[7e2dbfc9206d]
+
+	* doc/man/sieve-dump.1.in, doc/man/sievec.1.in, src/sieve-tools/sieve-
+	dump.c, src/sieve-tools/sievec.c:
+	sieve-tools: The -D option wasn't enabled and documented for all
+	tools.
+	[ea0eef5b5578]
+
+2012-09-19  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/managesieve-login-settings-plugin.c:
+	Last commit was quite inadequate.
+	[f069f8bff55b]
+
+	* src/managesieve-login/managesieve-login-settings-plugin.c:
+	Updated to changes in Dovecot config API.
+	[b16a4c228dd5]
+
+2012-09-18  Stephan Bosch  <stephan@rename-it.nl>
+
+	* TODO:
+	Minor change to TODO.
+	[fa9411b742f6]
+
+	* src/lib-sieve/sieve-binary-file.c, src/lib-sieve/sieve-binary.h, src
+	/lib-sieve/sieve-extensions.h:
+	lib-sieve: Added version numbers to Sieve extensions. Those version
+	numbers are now also stored in the binary, making sure it is
+	recompiled when a new version of an extension is used. This avoids
+	updating the binary version for minor changes to extensions and also
+	makes this work for plugins.
+	[47c3b3dd8cf4]
+
+	* src/lib-sieve/ext-encoded-character.c, src/lib-sieve/ext-envelope.c,
+	src/lib-sieve/ext-fileinto.c, src/lib-sieve/ext-reject.c, src/lib-
+	sieve/plugins/body/ext-body.c, src/lib-sieve/plugins/comparator-i
+	-ascii-numeric/ext-cmp-i-ascii-numeric.c, src/lib-sieve/plugins/copy
+	/ext-copy.c, src/lib-sieve/plugins/date/ext-date.c, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-
+	sieve/plugins/enotify/ext-enotify.c, src/lib-
+	sieve/plugins/environment/ext-environment.c, src/lib-
+	sieve/plugins/ihave/ext-ihave.c, src/lib-sieve/plugins/imap4flags
+	/ext-imap4flags.c, src/lib-sieve/plugins/imap4flags/ext-imapflags.c,
+	src/lib-sieve/plugins/include/ext-include.c, src/lib-
+	sieve/plugins/mailbox/ext-mailbox.c, src/lib-sieve/plugins/notify
+	/ext-notify.c, src/lib-sieve/plugins/regex/ext-regex.c, src/lib-
+	sieve/plugins/relational/ext-relational.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest.c, src/lib-
+	sieve/plugins/subaddress/ext-subaddress.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-seconds.c, src/lib-
+	sieve/plugins/vacation/ext-vacation.c, src/lib-
+	sieve/plugins/variables/ext-variables.c, src/lib-
+	sieve/plugins/vnd.dovecot/debug/ext-debug.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-sieve
+	/sieve-address-parts.c, src/lib-sieve/sieve-comparators.c, src/lib-
+	sieve/sieve-extensions.c, src/lib-sieve/sieve-extensions.h, src/lib-
+	sieve/sieve-match-types.c, src/testsuite/ext-testsuite.c:
+	lib-sieve: Changed the way Sieve extensions are defined to a more
+	compact format.
+	[a80af8740468]
+
+	* src/lib-sieve/plugins/date/ext-date-common.c:
+	lib-sieve: date extension: composition of iso8601 dates is moved to
+	Dovecot.
+	[fb47824079c7]
+
+	* src/lib-sieve/plugins/body/ext-body-common.c, src/lib-
+	sieve/plugins/notify/ext-notify-common.c, src/lib-sieve/sieve-
+	script-dict.c:
+	Updated to recent changes in Dovecot.
+	[e31e89e7791b]
+
+2012-09-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve/main.c:
+	Adjusted to buffer API change in Dovecot.
+	[dda9e3c21214]
+
+2012-09-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/Makefile.am:
+	Small compile fix.
+	[66adbdd89d5c]
+
+2012-08-29  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c:
+	lib-sieve: fixed edit-mail istream to work with latest Dovecot.
+	Testsuite failed with an assertion, because the stream returned -2
+	at an unexpected time. I've restructured the buffering
+	implementation to prevent this. The testsuite succeeds now, but this
+	needs to be tested more thoroughly.
+	[061d4993b509]
+
+2012-08-28  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-managesieve/managesieve-parser.c, src/lib-sieve/edit-mail.c,
+	src/lib-sieve/sieve-lexer.c:
+	Adjusted to changes in Dovecot istream API.
+	[0eafbad49e41]
+
+2012-08-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/include/ext-include-binary.c, src/lib-
+	sieve/plugins/variables/ext-variables-common.c, src/lib-sieve/sieve-
+	extensions.c, src/testsuite/testsuite-settings.c:
+	Adjusted to some more changes in Dovecot API.
+	[6ccbfb64bea5]
+
+	* src/lib-sieve/cmd-redirect.c, src/lib-sieve/edit-mail.c, src/lib-
+	sieve/ext-envelope.c, src/lib-sieve/plugins/body/ext-body-common.c,
+	src/lib-sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/enotify/ext-enotify-common.h, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-
+	sieve/plugins/ihave/ext-ihave-binary.c, src/lib-sieve/plugins/ihave
+	/ext-ihave-common.h, src/lib-sieve/plugins/ihave/tst-ihave.c, src
+	/lib-sieve/plugins/imap4flags/tag-flags.c, src/lib-
+	sieve/plugins/include/ext-include-binary.c, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-
+	sieve/plugins/regex/mcht-regex.c, src/lib-sieve/plugins/vacation
+	/cmd-vacation.c, src/lib-sieve/plugins/variables/cmd-set.c, src/lib-
+	sieve/plugins/variables/ext-variables-common.c, src/lib-
+	sieve/plugins/variables/ext-variables-dump.c, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-ast.c, src/lib-sieve/sieve-binary-
+	private.h, src/lib-sieve/sieve-code-dumper.c, src/lib-sieve/sieve-
+	error.c, src/lib-sieve/sieve-extensions.c, src/lib-sieve/sieve-
+	generator.c, src/lib-sieve/sieve-generator.h, src/lib-sieve/sieve-
+	interpreter.c, src/lib-sieve/sieve-match-types.c, src/lib-sieve
+	/sieve-message.c, src/lib-sieve/sieve-result.c, src/lib-sieve/sieve-
+	stringlist.c, src/lib-sieve/sieve-validator.c, src/managesieve/cmd-
+	putscript.c, src/managesieve/managesieve-capabilities.c,
+	src/managesieve/managesieve-commands.c, src/testsuite/testsuite-
+	log.c, src/testsuite/testsuite-settings.c, src/testsuite/testsuite-
+	smtp.c:
+	Adjusted to changes in Dovecot API regarding arrays and hash tables.
+	Also contains a few other small fixes by Timo.
+	[02f24456eabf]
+
+2012-08-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c:
+	lib-sieve: Adjusted edit-mail.c to changes in Dovecot mail storage
+	API.
+	[c5cebc7dbd6b]
+
+	* TODO, configure.in, src/lib-managesieve/managesieve-parser.c, src
+	/lib-sieve-tool/mail-raw.c, src/lib-sieve/cmd-redirect.c, src/lib-
+	sieve/edit-mail.c, src/lib-sieve/plugins/body/ext-body-common.c, src
+	/lib-sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/notify/cmd-notify.c, src/lib-sieve/plugins/vacation
+	/cmd-vacation.c, src/lib-sieve/rfc2822.c, src/lib-sieve/rfc2822.h,
+	src/lib-sieve/sieve-actions.c, src/lib-sieve/sieve-types.h, src
+	/managesieve-login/client-authenticate.c, src/managesieve-
+	login/client.c, src/managesieve-login/client.h, src/managesieve-
+	login/managesieve-proxy.c, src/plugins/lda-sieve/lda-sieve-plugin.c,
+	src/sieve-tools/sieve-test.c, src/testsuite/testsuite-smtp.c,
+	src/testsuite/testsuite-smtp.h:
+	Merged changes from Pigeonhole v0.3.
+	[69ee3b171848]
+
+	* AUTHORS, COPYING, INSTALL, Makefile.am, NEWS, README, TODO,
+	configure.in, doc/devel/DESIGN, doc/example-
+	config/conf.d/20-managesieve.conf, doc/example-
+	config/conf.d/90-sieve.conf, doc/extensions/editheader.txt,
+	doc/extensions/include.txt, doc/extensions/spamtest-virustest.txt,
+	doc/extensions/vacation.txt, doc/man/pigeonhole.7.in, doc/man/sieve-
+	dump.1.in, doc/man/sieve-filter.1.in, doc/man/sieve-test.1.in,
+	doc/man/sievec.1.in, doc/script-location-dict.txt, src/lib-
+	managesieve/Makefile.am, src/lib-managesieve/managesieve-arg.c, src
+	/lib-managesieve/managesieve-arg.h, src/lib-managesieve/managesieve-
+	parser.c, src/lib-managesieve/managesieve-parser.h, src/lib-
+	managesieve/managesieve-quote.c, src/lib-sieve-tool/mail-raw.c, src
+	/lib-sieve-tool/sieve-tool.c, src/lib-sieve-tool/sieve-tool.h, src
+	/lib-sieve/Makefile.am, src/lib-sieve/cmd-discard.c, src/lib-sieve
+	/cmd-if.c, src/lib-sieve/cmd-keep.c, src/lib-sieve/cmd-redirect.c,
+	src/lib-sieve/cmd-require.c, src/lib-sieve/cmd-stop.c, src/lib-
+	sieve/cmp-i-ascii-casemap.c, src/lib-sieve/cmp-i-octet.c, src/lib-
+	sieve/edit-mail.c, src/lib-sieve/ext-encoded-character.c, src/lib-
+	sieve/ext-envelope.c, src/lib-sieve/ext-fileinto.c, src/lib-sieve
+	/ext-reject.c, src/lib-sieve/mcht-contains.c, src/lib-sieve/mcht-
+	is.c, src/lib-sieve/mcht-matches.c, src/lib-
+	sieve/plugins/Makefile.am, src/lib-sieve/plugins/body/ext-body-
+	common.c, src/lib-sieve/plugins/body/ext-body-common.h, src/lib-
+	sieve/plugins/body/ext-body.c, src/lib-sieve/plugins/body/tst-
+	body.c, src/lib-sieve/plugins/comparator-i-ascii-numeric/ext-cmp-i
+	-ascii-numeric.c, src/lib-sieve/plugins/copy/Makefile.am, src/lib-
+	sieve/plugins/copy/ext-copy.c, src/lib-sieve/plugins/date/ext-date-
+	common.c, src/lib-sieve/plugins/date/ext-date-common.h, src/lib-
+	sieve/plugins/date/ext-date.c, src/lib-sieve/plugins/date/tst-
+	date.c, src/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-limits.h, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-
+	sieve/plugins/enotify/Makefile.am, src/lib-sieve/plugins/enotify
+	/cmd-notify.c, src/lib-sieve/plugins/enotify/ext-enotify-common.c,
+	src/lib-sieve/plugins/enotify/ext-enotify-common.h, src/lib-
+	sieve/plugins/enotify/ext-enotify-limits.h, src/lib-
+	sieve/plugins/enotify/ext-enotify.c, src/lib-
+	sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/enotify/mailto/uri-mailto.c, src/lib-
+	sieve/plugins/enotify/mailto/uri-mailto.h, src/lib-
+	sieve/plugins/enotify/sieve-ext-enotify.h, src/lib-
+	sieve/plugins/enotify/tst-notify-method-capability.c, src/lib-
+	sieve/plugins/enotify/tst-valid-notify-method.c, src/lib-
+	sieve/plugins/enotify/vmodf-encodeurl.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.h, src/lib-
+	sieve/plugins/environment/ext-environment.c, src/lib-
+	sieve/plugins/environment/sieve-ext-environment.h, src/lib-
+	sieve/plugins/environment/tst-environment.c, src/lib-
+	sieve/plugins/ihave/ext-ihave-binary.c, src/lib-sieve/plugins/ihave
+	/ext-ihave-binary.h, src/lib-sieve/plugins/ihave/ext-ihave-common.c,
+	src/lib-sieve/plugins/ihave/ext-ihave.c, src/lib-sieve/plugins/ihave
+	/tst-ihave.c, src/lib-sieve/plugins/imap4flags/Makefile.am, src/lib-
+	sieve/plugins/imap4flags/cmd-flag.c, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags-common.c, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags-common.h, src/lib-
+	sieve/plugins/imap4flags/ext-imap4flags.c, src/lib-
+	sieve/plugins/imap4flags/ext-imapflags.c, src/lib-
+	sieve/plugins/imap4flags/tag-flags.c, src/lib-
+	sieve/plugins/imap4flags/tst-hasflag.c, src/lib-
+	sieve/plugins/include/cmd-global.c, src/lib-sieve/plugins/include
+	/cmd-include.c, src/lib-sieve/plugins/include/cmd-return.c, src/lib-
+	sieve/plugins/include/ext-include-binary.c, src/lib-
+	sieve/plugins/include/ext-include-binary.h, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-
+	sieve/plugins/include/ext-include-variables.c, src/lib-
+	sieve/plugins/include/ext-include-variables.h, src/lib-
+	sieve/plugins/include/ext-include.c, src/lib-sieve/plugins/mailbox
+	/ext-mailbox.c, src/lib-sieve/plugins/mailbox/tag-mailbox-create.c,
+	src/lib-sieve/plugins/mailbox/tst-mailboxexists.c, src/lib-
+	sieve/plugins/notify/cmd-denotify.c, src/lib-sieve/plugins/notify
+	/cmd-notify.c, src/lib-sieve/plugins/notify/ext-notify-common.c, src
+	/lib-sieve/plugins/notify/ext-notify-common.h, src/lib-
+	sieve/plugins/notify/ext-notify-limits.h, src/lib-
+	sieve/plugins/notify/ext-notify.c, src/lib-sieve/plugins/regex/ext-
+	regex-common.c, src/lib-sieve/plugins/regex/ext-regex.c, src/lib-
+	sieve/plugins/regex/mcht-regex.c, src/lib-
+	sieve/plugins/relational/Makefile.am, src/lib-
+	sieve/plugins/relational/ext-relational-common.c, src/lib-
+	sieve/plugins/relational/ext-relational-common.h, src/lib-
+	sieve/plugins/relational/ext-relational.c, src/lib-
+	sieve/plugins/relational/mcht-count.c, src/lib-
+	sieve/plugins/relational/mcht-value.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest-common.c, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest-common.h, src/lib-
+	sieve/plugins/spamvirustest/ext-spamvirustest.c, src/lib-
+	sieve/plugins/spamvirustest/tst-spamvirustest.c, src/lib-
+	sieve/plugins/subaddress/ext-subaddress.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-common.c, src/lib-
+	sieve/plugins/vacation/ext-vacation-common.h, src/lib-
+	sieve/plugins/vacation/ext-vacation-seconds.c, src/lib-
+	sieve/plugins/vacation/ext-vacation.c, src/lib-
+	sieve/plugins/variables/Makefile.am, src/lib-sieve/plugins/variables
+	/cmd-set.c, src/lib-sieve/plugins/variables/ext-variables-
+	arguments.c, src/lib-sieve/plugins/variables/ext-variables-
+	arguments.h, src/lib-sieve/plugins/variables/ext-variables-common.c,
+	src/lib-sieve/plugins/variables/ext-variables-common.h, src/lib-
+	sieve/plugins/variables/ext-variables-dump.c, src/lib-
+	sieve/plugins/variables/ext-variables-dump.h, src/lib-
+	sieve/plugins/variables/ext-variables-limits.h, src/lib-
+	sieve/plugins/variables/ext-variables-modifiers.c, src/lib-
+	sieve/plugins/variables/ext-variables-modifiers.h, src/lib-
+	sieve/plugins/variables/ext-variables-name.h, src/lib-
+	sieve/plugins/variables/ext-variables-namespaces.c, src/lib-
+	sieve/plugins/variables/ext-variables-namespaces.h, src/lib-
+	sieve/plugins/variables/ext-variables-operands.c, src/lib-
+	sieve/plugins/variables/ext-variables-operands.h, src/lib-
+	sieve/plugins/variables/ext-variables.c, src/lib-
+	sieve/plugins/variables/sieve-ext-variables.h, src/lib-
+	sieve/plugins/variables/tst-string.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.h, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c, src/lib-
+	sieve/rfc2822.c, src/lib-sieve/rfc2822.h, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-actions.h, src/lib-sieve/sieve-
+	address-parts.c, src/lib-sieve/sieve-address-parts.h, src/lib-sieve
+	/sieve-address.c, src/lib-sieve/sieve-address.h, src/lib-sieve
+	/sieve-ast.c, src/lib-sieve/sieve-ast.h, src/lib-sieve/sieve-binary-
+	code.c, src/lib-sieve/sieve-binary-debug.c, src/lib-sieve/sieve-
+	binary-dumper.c, src/lib-sieve/sieve-binary-dumper.h, src/lib-sieve
+	/sieve-binary-file.c, src/lib-sieve/sieve-binary-private.h, src/lib-
+	sieve/sieve-binary.c, src/lib-sieve/sieve-binary.h, src/lib-sieve
+	/sieve-code-dumper.c, src/lib-sieve/sieve-code-dumper.h, src/lib-
+	sieve/sieve-code.c, src/lib-sieve/sieve-code.h, src/lib-sieve/sieve-
+	commands.c, src/lib-sieve/sieve-commands.h, src/lib-sieve/sieve-
+	common.h, src/lib-sieve/sieve-comparators.c, src/lib-sieve/sieve-
+	comparators.h, src/lib-sieve/sieve-config.h, src/lib-sieve/sieve-
+	dump.h, src/lib-sieve/sieve-error-private.h, src/lib-sieve/sieve-
+	error.c, src/lib-sieve/sieve-error.h, src/lib-sieve/sieve-
+	extensions.c, src/lib-sieve/sieve-extensions.h, src/lib-sieve/sieve-
+	generator.c, src/lib-sieve/sieve-generator.h, src/lib-sieve/sieve-
+	interpreter.c, src/lib-sieve/sieve-interpreter.h, src/lib-sieve
+	/sieve-lexer.c, src/lib-sieve/sieve-lexer.h, src/lib-sieve/sieve-
+	match-types.c, src/lib-sieve/sieve-match-types.h, src/lib-sieve
+	/sieve-match.c, src/lib-sieve/sieve-match.h, src/lib-sieve/sieve-
+	message.c, src/lib-sieve/sieve-message.h, src/lib-sieve/sieve-
+	objects.c, src/lib-sieve/sieve-objects.h, src/lib-sieve/sieve-
+	parser.c, src/lib-sieve/sieve-parser.h, src/lib-sieve/sieve-
+	plugins.c, src/lib-sieve/sieve-plugins.h, src/lib-sieve/sieve-
+	result.c, src/lib-sieve/sieve-result.h, src/lib-sieve/sieve-runtime-
+	trace.c, src/lib-sieve/sieve-runtime-trace.h, src/lib-sieve/sieve-
+	runtime.h, src/lib-sieve/sieve-script-dict.c, src/lib-sieve/sieve-
+	script-file.c, src/lib-sieve/sieve-script-file.h, src/lib-sieve
+	/sieve-script-private.h, src/lib-sieve/sieve-script.c, src/lib-sieve
+	/sieve-script.h, src/lib-sieve/sieve-settings.c, src/lib-sieve
+	/sieve-stringlist.c, src/lib-sieve/sieve-stringlist.h, src/lib-sieve
+	/sieve-types.h, src/lib-sieve/sieve-validator.c, src/lib-sieve
+	/sieve-validator.h, src/lib-sieve/sieve.c, src/lib-sieve/sieve.h,
+	src/lib-sieve/tst-address.c, src/lib-sieve/tst-allof.c, src/lib-
+	sieve/tst-anyof.c, src/lib-sieve/tst-exists.c, src/lib-sieve/tst-
+	header.c, src/lib-sieve/tst-not.c, src/lib-sieve/tst-size.c, src
+	/lib-sieve/tst-truefalse.c, src/lib-sievestorage/Makefile.am, src
+	/lib-sievestorage/sieve-storage-list.c, src/lib-sievestorage/sieve-
+	storage-list.h, src/lib-sievestorage/sieve-storage-private.h, src
+	/lib-sievestorage/sieve-storage-quota.c, src/lib-sievestorage/sieve-
+	storage-quota.h, src/lib-sievestorage/sieve-storage-save.c, src/lib-
+	sievestorage/sieve-storage-script.c, src/lib-sievestorage/sieve-
+	storage.c, src/lib-sievestorage/sieve-storage.h, src/managesieve-
+	login/client-authenticate.c, src/managesieve-login/client.c, src
+	/managesieve-login/client.h, src/managesieve-login/managesieve-
+	login-settings-plugin.c, src/managesieve-login/managesieve-login-
+	settings.c, src/managesieve-login/managesieve-proxy.c,
+	src/managesieve/Makefile.am, src/managesieve/cmd-capability.c,
+	src/managesieve/cmd-deletescript.c, src/managesieve/cmd-getscript.c,
+	src/managesieve/cmd-listscripts.c, src/managesieve/cmd-putscript.c,
+	src/managesieve/cmd-renamescript.c, src/managesieve/cmd-setactive.c,
+	src/managesieve/managesieve-capabilities.c, src/managesieve
+	/managesieve-client.c, src/managesieve/managesieve-client.h,
+	src/managesieve/managesieve-commands.c, src/managesieve/managesieve-
+	quota.c, src/managesieve/managesieve-settings.c, src/plugins/lda-
+	sieve/Makefile.am, src/plugins/lda-sieve/lda-sieve-plugin.c, src
+	/sieve-tools/Makefile.am, src/sieve-tools/sieve-dump.c, src/sieve-
+	tools/sieve-filter.c, src/sieve-tools/sieve-test.c, src/sieve-
+	tools/sievec.c, src/testsuite/cmd-test-binary.c, src/testsuite/cmd-
+	test-config.c, src/testsuite/cmd-test-fail.c, src/testsuite/cmd-
+	test-mailbox.c, src/testsuite/cmd-test-message.c, src/testsuite/cmd-
+	test-result.c, src/testsuite/cmd-test-set.c, src/testsuite/cmd-
+	test.c, src/testsuite/ext-testsuite.c, src/testsuite/testsuite-
+	arguments.c, src/testsuite/testsuite-binary.c, src/testsuite
+	/testsuite-binary.h, src/testsuite/testsuite-common.c, src/testsuite
+	/testsuite-common.h, src/testsuite/testsuite-log.c, src/testsuite
+	/testsuite-mailstore.c, src/testsuite/testsuite-mailstore.h,
+	src/testsuite/testsuite-message.c, src/testsuite/testsuite-
+	objects.c, src/testsuite/testsuite-objects.h, src/testsuite
+	/testsuite-result.c, src/testsuite/testsuite-result.h, src/testsuite
+	/testsuite-script.c, src/testsuite/testsuite-script.h, src/testsuite
+	/testsuite-settings.c, src/testsuite/testsuite-smtp.c, src/testsuite
+	/testsuite-smtp.h, src/testsuite/testsuite-substitutions.c,
+	src/testsuite/testsuite-substitutions.h, src/testsuite/testsuite-
+	variables.c, src/testsuite/testsuite-variables.h,
+	src/testsuite/testsuite.c, src/testsuite/tst-test-error.c,
+	src/testsuite/tst-test-multiscript.c, src/testsuite/tst-test-result-
+	action.c, src/testsuite/tst-test-result-execute.c, src/testsuite
+	/tst-test-script-compile.c, src/testsuite/tst-test-script-run.c,
+	tests/compile/errors.svtest, tests/compile/errors/address.sieve,
+	tests/compile/errors/envelope.sieve, tests/compile/errors/if.sieve,
+	tests/compile/errors/keep.sieve, tests/compile/errors/lexer.sieve,
+	tests/compile/errors/out-address.sieve,
+	tests/compile/errors/parser.sieve,
+	tests/compile/errors/require.sieve, tests/compile/errors/size.sieve,
+	tests/compile/errors/tag.sieve, tests/compile/errors/typos.sieve,
+	tests/compile/errors/unsupported.sieve,
+	tests/compile/recover.svtest, tests/control-if.svtest,
+	tests/deprecated/notify/basic.svtest,
+	tests/deprecated/notify/mailto.svtest, tests/execute/actions.svtest,
+	tests/execute/actions/redirect.sieve, tests/execute/errors.svtest,
+	tests/execute/examples.svtest, tests/execute/mailstore.svtest,
+	tests/extensions/body/basic.svtest,
+	tests/extensions/body/content.svtest,
+	tests/extensions/body/raw.svtest,
+	tests/extensions/date/basic.svtest,
+	tests/extensions/date/zones.svtest,
+	tests/extensions/editheader/addheader.svtest,
+	tests/extensions/editheader/alternating.svtest,
+	tests/extensions/editheader/deleteheader.svtest,
+	tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/command-syntax.sieve,
+	tests/extensions/editheader/protected.svtest, tests/extensions
+	/encoded-character.svtest, tests/extensions/enotify/basic.svtest,
+	tests/extensions/enotify/errors/uri-mailto.sieve,
+	tests/extensions/enotify/mailto.svtest,
+	tests/extensions/enotify/valid_notify_method.svtest,
+	tests/extensions/envelope.svtest,
+	tests/extensions/environment/rfc.svtest,
+	tests/extensions/imap4flags/basic.svtest,
+	tests/extensions/imap4flags/execute.svtest,
+	tests/extensions/imap4flags/execute/flags-side-effect.sieve,
+	tests/extensions/imap4flags/hasflag.svtest,
+	tests/extensions/imap4flags/multiscript.svtest,
+	tests/extensions/include/execute.svtest,
+	tests/extensions/regex/basic.svtest, tests/extensions/regex/match-
+	values.svtest, tests/extensions/relational/basic.svtest,
+	tests/extensions/relational/comparators.svtest,
+	tests/extensions/relational/errors/validation.sieve,
+	tests/extensions/relational/rfc.svtest,
+	tests/extensions/spamvirustest/spamtest.svtest,
+	tests/extensions/subaddress/basic.svtest,
+	tests/extensions/subaddress/rfc.svtest,
+	tests/extensions/vacation/execute.svtest,
+	tests/extensions/vacation/execute/no-handle.sieve,
+	tests/extensions/vacation/message.svtest,
+	tests/extensions/vacation/reply.svtest,
+	tests/extensions/vacation/utf-8.svtest,
+	tests/extensions/variables/basic.svtest,
+	tests/extensions/variables/errors/limits.sieve,
+	tests/extensions/variables/match.svtest,
+	tests/extensions/variables/modifiers.svtest,
+	tests/extensions/variables/quoting.svtest,
+	tests/extensions/variables/regex.svtest,
+	tests/extensions/variables/string.svtest, tests/match-
+	types/contains.svtest, tests/match-types/is.svtest, tests/match-
+	types/matches.svtest, tests/multiscript/basic.svtest,
+	tests/multiscript/conflicts.svtest, tests/test-address.svtest, tests
+	/test-allof.svtest, tests/test-anyof.svtest, tests/test-
+	exists.svtest, tests/test-header.svtest, tests/testsuite.svtest:
+	Removed trailing whitespace everywhere.
+	[7e100dcd888a]
+
+2012-08-09  Stephan Bosch  <stephan@rename-it.nl>
+
+	* Merged changes from Pigeonhole v0.3 tree.
+	[368c8f1c0511]
+
+	* doc/rfc/spec-bosch-sieve-debug.txt,
+	doc/rfc/xml/reference.VARIABLES.xml, doc/rfc/xml/spec-bosch-sieve-
+	debug.xml, doc/rfc/xml/spec-bosch-sieve-duplicate.xml:
+	Created specification for the vnd.dovecot.debug extension. Also
+	fixed a small mistake in the spefication for the
+	vnd.dovecot.duplicate extension.
+	[54a0d0552be7]
+
+2012-08-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-result.c:
+	lib-sieve: increase action instance count (for limit checking) only
+	when an action is actually created.
+	[9d962388f5f6]
+
+	* src/lib-sieve/sieve-result.c:
+	lib-sieve: fixed potential action duplication bug.
+	[837c108f0363]
+
+2012-08-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-result.c:
+	lib-sieve: made action limit error messages more verbose.
+	[b25d4208949f]
+
+2012-08-05  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/testsuite/testsuite-variables.c:
+	Testsuite: fixed compiler warning.
+	[bb8a9332e3d5]
+
+	* src/testsuite/Makefile.am, src/testsuite/cmd-test-binary.c,
+	src/testsuite/ext-testsuite.c, src/testsuite/testsuite-common.c,
+	src/testsuite/testsuite-common.h, src/testsuite/testsuite-script.c,
+	src/testsuite/testsuite-script.h, src/testsuite/testsuite-
+	variables.c, src/testsuite/testsuite-variables.h,
+	src/testsuite/testsuite.c, tests/extensions/include/execute.svtest,
+	tests/extensions/include/execute/namespace.sieve,
+	tests/extensions/include/included-global/namespace.dict,
+	tests/extensions/include/included/namespace.dict:
+	Testsuite: added support for executing sub-scripts and added tst
+	variables namespace. Added test for interaction between include
+	extension and dict script location support.
+	[e44101914a27]
+
+2012-08-04  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/testsuite/testsuite-log.c:
+	Testsuite: fixed displaying debug messages.
+	[09e393e4274b]
+
+2012-08-03  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-script-dict.c, src/lib-sieve/sieve-script-
+	file.c, src/lib-sieve/sieve-script.c,
+	tests/extensions/include/execute.svtest, tests/extensions/include
+	/included-global/namespace.sieve,
+	tests/extensions/include/included/namespace.sieve:
+	Include: fixed namespace separation of :global and :personal
+	scripts. Sieve script equality function implementation was wrong.
+	[6a34eda7924e]
+
+2012-07-31  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/rfc2822.h:
+	Merged changes from Pigeonhole v0.2 tree.
+	[bea6fcece21e]
+
+	* src/lib-sieve/Makefile.am:
+	Fix linkage with ld.gold. Patch by Eray Aslan.
+	[c52a0c561311]
+
+2012-07-30  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/rfc2822.h, src/lib-sieve/sieve-binary-dumper.c, src
+	/lib-sieve/sieve-binary-dumper.h, src/lib-sieve/sieve-error.c, src
+	/lib-sieve/sieve-result.h, src/lib-sieve/sieve-runtime-trace.c, src
+	/lib-sieve/sieve-runtime-trace.h, src/lib-sievestorage/sieve-
+	storage.c, src/testsuite/testsuite-log.c:
+	Fixed several Clang compile warnings and a few potential bugs. Patch
+	by Timo Sirainen.
+	[e3ea0270985a]
+
+2012-07-25  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/editheader/cmd-addheader.c:
+	Editheader: name of added header is now first sanitized to have
+	capital letters where conventional.
+	[b614a99f40f1]
+
+2012-07-16  Stephan Bosch  <stephan@rename-it.nl>
+
+	* doc/example-config/conf.d/20-managesieve.conf:
+	Example config: disabled default sections for managesieve and
+	managesieve-login services. This currently breaks uninstall when the
+	settings plugins are removed and 20-managesieve.conf remains in
+	conf.d directory. These sections only need to be active in the
+	config file when settings for the services themselves need to be
+	disabled.
+	[e6d102e6f0fc]
+
+2012-07-13  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-managesieve/managesieve-parser.c:
+	ManageSieve: fixed segfault caused by Dovecot API change.
+	[a1668b71e657]
+
+	* configure.in:
+	Merged changes from Dovecot v2.1.
+	[d6ccbf5136bd]
+
+2012-07-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sievestorage/sieve-storage-save.c:
+	ManageSieve: fixed segfault bug triggered by CHECKSCRIPT command.
+	[6ceeb6421231]
+
+2012-05-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* .hgsigs:
+	Added signature for changeset e9ed5d5cef4b
+	[602d93069d3a]
+
+	* .hgtags:
+	Added tag 0.3.1 for changeset e9ed5d5cef4b
+	[396e429dc550]
+
+	* NEWS, configure.in:
+	Released v0.3.1 for Dovecot v2.1.6.
+	[e9ed5d5cef4b] [0.3.1]
+
+2012-07-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-managesieve/managesieve-parser.c, src/lib-sieve-tool/mail-
+	raw.c, src/lib-sieve/edit-mail.c:
+	Adjusted to Dovecot API changes.
+	[f9b7eb9a567e]
+
+2012-05-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* configure.in, doc/editheader.txt, doc/include.txt, doc/spamtest-
+	virustest.txt, doc/vacation.txt, src/lib-sieve-tool/mail-raw.c, src
+	/lib-sieve/cmd-redirect.c, src/lib-sieve/edit-mail.c, src/lib-
+	sieve/plugins/body/ext-body-common.c, src/lib-sieve/sieve-smtp.c,
+	src/managesieve-login/client-authenticate.c, src/plugins/lda-sieve
+	/lda-sieve-plugin.c, src/sieve-tools/sieve-test.c:
+	Merged changes from Pigeonhole v0.2 tree.
+	[258d83f111b9]
+
+2012-05-11  Stephan Bosch  <stephan@rename-it.nl>
+
+	* INSTALL, Makefile.am, configure.in, doc/Makefile.am,
+	doc/editheader.txt, doc/extensions/editheader.txt,
+	doc/extensions/include.txt, doc/extensions/spamtest-virustest.txt,
+	doc/extensions/vacation.txt,
+	doc/extensions/vnd.dovecot.duplicate.txt, doc/include.txt,
+	doc/rfc/Makefile.am, doc/rfc/spec-bosch-sieve-duplicate.txt,
+	doc/rfc/xml/reference.KEYWORDS.xml, doc/rfc/xml/reference.SIEVE.xml,
+	doc/rfc/xml/spec-bosch-sieve-duplicate.xml, doc/spamtest-
+	virustest.txt, doc/vacation.txt, src/lib-sieve/Makefile.am, src/lib-
+	sieve/plugins/vnd.dovecot/Makefile.am, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/Makefile.am, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate-common.h, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/ext-duplicate.c, src/lib-
+	sieve/plugins/vnd.dovecot/duplicate/tst-duplicate.c, src/lib-sieve
+	/sieve-extensions.c,
+	tests/extensions/vnd.dovecot/duplicate/errors.svtest,
+	tests/extensions/vnd.dovecot/duplicate/errors/syntax.sieve,
+	tests/extensions/vnd.dovecot/duplicate/execute.svtest:
+	Incorporated sieve_duplicate plugin into main Pigeonhole tree as a
+	normal extension (vnd.dovecot.duplicate). Also restructured doc dir
+	a bit in the process.
+	[12bcfe5e748a]
+
+	* src/lib-sieve/sieve-validator.c:
+	Fixed compiler warning.
+	[f362b56485fa]
+
+2012-05-04  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve plugin: fixed sieve_before bug that made it only work when
+	mail_debug=yes.
+	[aa611f912da6]
+
+2012-05-02  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve-tool/mail-raw.c, src/lib-sieve/cmd-redirect.c, src
+	/lib-sieve/edit-mail.c, src/lib-sieve/mcht-matches.c, src/lib-
+	sieve/plugins/body/ext-body-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/imap4flags/tag-flags.c, src/lib-sieve/plugins/include
+	/cmd-include.c, src/lib-sieve/plugins/notify/ext-notify-common.c,
+	src/lib-sieve/plugins/variables/ext-variables-modifiers.c, src/lib-
+	sieve/plugins/variables/ext-variables-namespaces.c, src/lib-sieve
+	/sieve-address.c, src/lib-sieve/sieve-ast.c, src/lib-sieve/sieve-
+	ast.h, src/lib-sieve/sieve-commands.h, src/lib-sieve/sieve-script.c,
+	src/lib-sieve/sieve-validator.c, src/lib-sieve/sieve.c, src/lib-
+	sievestorage/sieve-storage-quota.c, src/managesieve-login
+	/managesieve-login-settings-plugin.c, src/plugins/lda-sieve/lda-
+	sieve-plugin.c, src/sieve-tools/sieve-dump.c, src/sieve-tools/sieve-
+	filter.c, src/sieve-tools/sieve-test.c, src/sieve-tools/sievec.c,
+	src/testsuite/cmd-test-message.c, src/testsuite/testsuite.c:
+	Fixed several small issues, including a few potential segfault bugs,
+	based on static analysis. Clang static analyzer is happy now.
+	[7f9218fe9fac]
+
+2012-04-30  Stephan Bosch  <stephan@rename-it.nl>
+
+	* INSTALL, README, doc/example-config/conf.d/90-sieve.conf, src/lib-
+	sieve/sieve.c, src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Added support for specifying multiple sieve_before and sieve_after
+	paths. Additional paths are specified by adding a sequence number
+	(starting at 2) to the setting name. Added support for specifying
+	home-relative paths for sieve_before and sieve_after. This enables
+	administrators to specify user-specific global Sieve scripts that
+	cannot be viewed or changed by virtual users.
+	[b2ff597c2279]
+
+2012-04-27  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-smtp.c:
+	Fixed segfault bug. Forgot to change Sieve SMTP API to use scriptenv
+	in stead of script_context directly.
+	[f146790b5db3]
+
+2012-04-24  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-binary-file.c, src/lib-sieve/sieve-script-
+	file.c, src/lib-sieve/sieve.c:
+	sievec tool: fixed segfault bug and another bug making it omit
+	actually saving the binary.
+	[93bfa75d9ab9]
+
+	* src/lib-managesieve/managesieve-parser.c, src/managesieve-login
+	/client-authenticate.c, src/managesieve/cmd-putscript.c:
+	lib-managesieve: changed EPROTO error to EIO in ManageSieve string
+	stream because it is apparently not known in BSD.
+	[ef5045159e6b]
+
+2012-05-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* TODO, src/lib-sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/notify/cmd-notify.c, src/lib-sieve/plugins/vacation
+	/cmd-vacation.c, src/lib-sieve/sieve-actions.c, src/lib-sieve/sieve-
+	types.h, src/managesieve-login/client-authenticate.c, src/plugins
+	/lda-sieve/lda-sieve-plugin.c, src/sieve-tools/sieve-test.c,
+	src/testsuite/testsuite-smtp.c, src/testsuite/testsuite-smtp.h:
+	Merged changes from Pigeonhole v0.2 tree.
+	[2841e6b2f973]
+
+2012-04-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-script-dict.c, src/lib-sieve/sieve-script.c:
+	lib-sieve: fixed cleanup bug in dict script implementation.
+	[2ff0a5c5c892]
+
+	* doc/script-location-dict.txt:
+	Finished documentation example for SQL dict script location type.
+	[d07dad1ad41c]
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve: fixed bug in debug message.
+	[3161dcf7cd8e]
+
+	* INSTALL, TODO, doc/script-location-dict.txt, src/lib-sieve-tool
+	/sieve-tool.c, src/lib-sieve/Makefile.am, src/lib-
+	sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
+	sieve/plugins/environment/ext-environment-common.c, src/lib-
+	sieve/plugins/environment/sieve-ext-environment.h, src/lib-
+	sieve/plugins/include/cmd-include.c, src/lib-sieve/plugins/include
+	/ext-include-binary.c, src/lib-sieve/plugins/include/ext-include-
+	common.c, src/lib-sieve/plugins/include/ext-include-common.h, src
+	/lib-sieve/plugins/notify/cmd-notify.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-binary-file.c, src/lib-sieve/sieve-
+	binary.c, src/lib-sieve/sieve-binary.h, src/lib-sieve/sieve-
+	common.h, src/lib-sieve/sieve-message.c, src/lib-sieve/sieve-
+	message.h, src/lib-sieve/sieve-script-dict.c, src/lib-sieve/sieve-
+	script-file.c, src/lib-sieve/sieve-script-file.h, src/lib-sieve
+	/sieve-script-private.h, src/lib-sieve/sieve-script.c, src/lib-sieve
+	/sieve-script.h, src/lib-sieve/sieve-settings.h, src/lib-sieve
+	/sieve-types.h, src/lib-sieve/sieve.c, src/lib-sieve/sieve.h, src
+	/lib-sievestorage/sieve-storage-list.c, src/lib-sievestorage/sieve-
+	storage-quota.c, src/lib-sievestorage/sieve-storage-save.c, src/lib-
+	sievestorage/sieve-storage-script.c, src/lib-sievestorage/sieve-
+	storage.c, src/managesieve/cmd-getscript.c, src/managesieve
+	/managesieve-capabilities.c, src/managesieve/managesieve-client.c,
+	src/plugins/lda-sieve/lda-sieve-plugin.c, src/sieve-tools/sieve-
+	filter.c, src/sieve-tools/sieve-test.c, src/sieve-tools/sievec.c,
+	src/testsuite/testsuite-binary.c, src/testsuite/testsuite-script.c,
+	src/testsuite/testsuite-smtp.c, src/testsuite/testsuite-smtp.h,
+	src/testsuite/testsuite.c,
+	tests/extensions/environment/basic.svtest:
+	Added support for retrieving Sieve scripts from dict lookup.
+	  - Built generic interface for alternative script sources.
+	  - Implemented dict script location. NOTE: ManageSieve will not work
+	with this yet, nor will sieve_before/sieve_after.
+	[f7ea71241032]
+
+2012-05-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* Merged minor changes from Pigeonhole v0.2 tree (causes a few
+	duplicate commit messages).
+	[39730d5f39e4]
+
+2012-03-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* m4/dovecot.m4:
+	Updated dovecot.m4.
+	[a88c63b2d0b0]
+
+2012-03-19  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/sieve-tools/sieve-filter.c, src/sieve-tools/sieve-test.c:
+	sieve-tools: forgot to enable debug in error handlers.
+	[916f09fc6a5e]
+
+2012-03-15  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client-authenticate.c:
+	managesieve-login: fixed x86 compile warning.
+	[75c1a2fd9b26]
+
+2012-03-08  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve/main.c, src/managesieve/managesieve-client.c,
+	src/managesieve/managesieve-client.h, src/managesieve/managesieve-
+	common.h:
+	Added a "session ID" string for managesieve connections, available
+	in %{session} variable. This change matches a similar change in
+	Dovecot for IMAP/POP3. Also includes other small changes that make
+	ManageSieve match IMAP implementation a little more closely.
+	[e55350fb6786]
+
+2012-03-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* stamp.h.in:
+	Gave stamp.h.in some content to prevent it from disappearing in
+	patch files.
+	[36c9ab4d2b45]
+
+2012-02-29  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve.c:
+	Fixed bug that caused SunStudio CC compile failure (reported by
+	Piotr Tarnowski).
+	[9da3a8398ea4]
+
+2012-02-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/enotify/ext-enotify-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/debug/ext-debug.c, src/lib-sieve/sieve-
+	interpreter.c, src/lib-sieve/sieve-runtime.h:
+	lib-sieve: made error handler part of public runtime environment.
+	[a4ea7e3f8d9e]
+
+2012-02-16  Stephan Bosch  <stephan@rename-it.nl>
+
+	* .hgsigs:
+	Added signature for changeset fe7bd7ee6c2e
+	[6cca5f460f86]
+
+	* .hgtags:
+	Added tag 0.3.0 for changeset fe7bd7ee6c2e
+	[abf95290dc4d]
+
+	* NEWS:
+	Released v0.3.0 for Dovecot v2.1.0.
+	[fe7bd7ee6c2e] [0.3.0]
+
+2012-02-29  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve-tool/mail-raw.c, src/lib-sieve/cmd-redirect.c, src
+	/lib-sieve/edit-mail.c, src/lib-sieve/plugins/enotify/mailto/ntfy-
+	mailto.c, src/lib-sieve/plugins/notify/cmd-notify.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-sieve/rfc2822.c, src
+	/lib-sieve/rfc2822.h, src/lib-sieve/sieve-actions.c, src/lib-sieve
+	/sieve-smtp.c, src/lib-sieve/sieve-smtp.h, src/lib-sieve/sieve-
+	types.h, src/plugins/lda-sieve/lda-sieve-plugin.c, src/sieve-tools
+	/sieve-test.c, src/testsuite/testsuite-smtp.c, src/testsuite
+	/testsuite-smtp.h:
+	Adjusted Sieve implementation and testsuite to Dovecot's new
+	smtp_client_open() API.
+	[b88a6d76839b]
+
+	* src/lib-sieve/sieve.c:
+	Fixed bug that caused SunStudio CC compile failure (reported by
+	Piotr Tarnowski).
+	[7b8cc0897a79]
+
+2012-02-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/plugins/enotify/ext-enotify-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/vnd.dovecot/debug/ext-debug.c, src/lib-sieve/sieve-
+	interpreter.c, src/lib-sieve/sieve-runtime.h:
+	lib-sieve: made error handler part of public runtime environment.
+	[b4c69a7ae260]
+
+2012-02-13  Stephan Bosch  <stephan@rename-it.nl>
+
+	* TODO, src/lib-sieve/plugins/body/ext-body-common.c:
+	Applied sieve-body-fix.patch. Fixes behavior of body test with
+	multipart MIME body parts. Testsuite needs to be extended
+	accordingly.
+	[eed6fba433f4]
+
+2012-02-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* configure.in, src/managesieve-login/client-authenticate.c, src
+	/managesieve-login/client-authenticate.h, src/managesieve-
+	login/client.c, src/managesieve-login/client.h, src/managesieve-
+	login/managesieve-proxy.c, src/managesieve-login/managesieve-
+	proxy.h:
+	Updated to Dovecot v2.2. Updated version number to v0.4.0 and added
+	a warning to configure. Applied generic-login.patch.
+	[408cc4b15640]
+
+2012-01-28  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-managesieve/Makefile.am, src/lib-managesieve/managesieve-
+	arg.c, src/lib-managesieve/managesieve-arg.h, src/lib-managesieve
+	/managesieve-parser.c, src/lib-managesieve/managesieve-parser.h, src
+	/managesieve-login/client-authenticate.c, src/managesieve-login
+	/client-authenticate.h, src/managesieve-login/client.c, src
+	/managesieve-login/managesieve-proxy.c, src/managesieve/cmd-
+	havespace.c, src/managesieve/cmd-noop.c, src/managesieve/cmd-
+	putscript.c, src/managesieve/managesieve-client.c, src/managesieve
+	/managesieve-client.h:
+	ManageSieve: cleaned up parser and updated it to match newer
+	structure of imap parser.
+	[b2a456e15ed5]
+
+2012-01-27  Stephan Bosch  <stephan@rename-it.nl>
 
 	* src/managesieve-login/managesieve-proxy.c:
-	managesieve-login: matched auth_verbose changes in Dovecot.
-	[58fc2f01c432] [tip]
+	managesieve-login: matched proxy and auth_verbose changes in
+	Dovecot.
+	[968410a02493]
+
+	* src/testsuite/cmd-test-message.c:
+	testsuite: fixed compile warning.
+	[a130a50f82e1]
+
+2012-01-23  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve/cmd-putscript.c:
+	ManageSieve: fixed quota problem in previous change.
+	[bc5acd9e957e]
+
+2012-01-22  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-managesieve/managesieve-parser.c, src/lib-managesieve
+	/managesieve-parser.h, src/lib-sievestorage/sieve-storage-quota.c,
+	src/lib-sievestorage/sieve-storage-quota.h, src/managesieve-login
+	/client-authenticate.c, src/managesieve-login/client.c, src
+	/managesieve-login/client.h, src/managesieve-login/managesieve-
+	proxy.c, src/managesieve/cmd-putscript.c, src/managesieve
+	/managesieve-client.c, src/managesieve/managesieve-quota.c,
+	src/managesieve/managesieve-quota.h:
+	ManageSieve: added support for reading quoted and literal strings as
+	a stream. Fixes support for handing large SASL responses. Also
+	resolves long-standing FIXME regarding the second parameter of
+	PUTSCRIPT: it can now be a quoted string. Includes a few small
+	changes in the login daemon that were done in the dovecot
+	equivalents before.
+	[ae857042882b]
+
+2012-01-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve/main.c:
+	managesieve: Added -t parameter to specify post-login script timeout
+	(Dovecot change).
+	[66c9a4a82428]
+
+2012-01-12  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/managesieve-login/client-authenticate.c:
+	managesieve-login: Include hostname and timestamp in "temporary auth
+	failure" message.
+	[523eae0118b1]
 
 2012-01-07  Stephan Bosch  <stephan@rename-it.nl>
 
@@ -16,9 +2055,10 @@
 	sieve/cmd-if.c, src/lib-sieve/cmd-keep.c, src/lib-sieve/cmd-
 	redirect.c, src/lib-sieve/cmd-require.c, src/lib-sieve/cmd-stop.c,
 	src/lib-sieve/cmp-i-ascii-casemap.c, src/lib-sieve/cmp-i-octet.c,
-	src/lib-sieve/ext-encoded-character.c, src/lib-sieve/ext-envelope.c,
-	src/lib-sieve/ext-fileinto.c, src/lib-sieve/ext-reject.c, src/lib-
-	sieve/mcht-contains.c, src/lib-sieve/mcht-is.c, src/lib-sieve/mcht-
+	src/lib-sieve/edit-mail.c, src/lib-sieve/edit-mail.h, src/lib-sieve
+	/ext-encoded-character.c, src/lib-sieve/ext-envelope.c, src/lib-
+	sieve/ext-fileinto.c, src/lib-sieve/ext-reject.c, src/lib-sieve
+	/mcht-contains.c, src/lib-sieve/mcht-is.c, src/lib-sieve/mcht-
 	matches.c, src/lib-sieve/plugins/body/ext-body-common.c, src/lib-
 	sieve/plugins/body/ext-body-common.h, src/lib-sieve/plugins/body
 	/ext-body.c, src/lib-sieve/plugins/body/tst-body.c, src/lib-
@@ -27,11 +2067,16 @@
 	/sieve-ext-copy.h, src/lib-sieve/plugins/date/ext-date-common.c, src
 	/lib-sieve/plugins/date/ext-date-common.h, src/lib-
 	sieve/plugins/date/ext-date.c, src/lib-sieve/plugins/date/tst-
-	date.c, src/lib-sieve/plugins/enotify/cmd-notify.c, src/lib-
-	sieve/plugins/enotify/ext-enotify-common.c, src/lib-
-	sieve/plugins/enotify/ext-enotify-common.h, src/lib-
-	sieve/plugins/enotify/ext-enotify-limits.h, src/lib-
-	sieve/plugins/enotify/ext-enotify.c, src/lib-
+	date.c, src/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.h, src/lib-
+	sieve/plugins/editheader/ext-editheader-limits.h, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-
+	sieve/plugins/enotify/cmd-notify.c, src/lib-sieve/plugins/enotify
+	/ext-enotify-common.c, src/lib-sieve/plugins/enotify/ext-enotify-
+	common.h, src/lib-sieve/plugins/enotify/ext-enotify-limits.h, src
+	/lib-sieve/plugins/enotify/ext-enotify.c, src/lib-
 	sieve/plugins/enotify/mailto/ntfy-mailto.c, src/lib-
 	sieve/plugins/enotify/mailto/uri-mailto.c, src/lib-
 	sieve/plugins/enotify/mailto/uri-mailto.h, src/lib-
@@ -204,13 +2249,72 @@
 	result-execute.c, src/testsuite/tst-test-script-compile.c,
 	src/testsuite/tst-test-script-run.c:
 	Updated copyright notices to include year 2012.
-	[8715c044a7ee]
+	[c2e3b2c93c8c]
 
-	* doc/example-config/conf.d/20-managesieve.conf, doc/example-
-	config/conf.d/90-sieve.conf, doc/include.txt, doc/spamtest-
+	* INSTALL, README, doc/example-config/conf.d/90-sieve.conf,
+	src/plugins/lda-sieve/lda-sieve-plugin.c:
+	LDA Sieve plugin: renamed sieve_global_path setting to sieve_default
+	for clarity. Old name is now deprecated. Support for the even older
+	global_script_path name for this setting is dropped.
+	[bd5cffe2ed95]
+
+	* INSTALL, doc/example-config/conf.d/90-sieve.conf, src/lib-sieve/cmd-
+	redirect.c:
+	lib-sieve: added means to prohibit use of redirect action. Setting
+	sieve_max_redirects=0 now means that redirects are prohibited rather
+	than unlimited. Now there is always a limit, but it can be enormous
+	if the administrator wants to.
+	[83fc2f6edefa]
+
+2012-01-06  Stephan Bosch  <stephan@rename-it.nl>
+
+	* INSTALL, doc/editheader.txt, doc/include.txt, doc/spamtest-
 	virustest.txt, doc/vacation.txt:
-	Revised documentation.
-	[f7cee9f3c8a6]
+	Fixed indentation problems in documentation.
+	[8602aa5093be]
+
+	* doc/editheader.txt, doc/example-config/conf.d/20-managesieve.conf,
+	doc/example-config/conf.d/90-sieve.conf, doc/spamtest-virustest.txt,
+	doc/vacation.txt:
+	Updated documentation and example config.
+	[2e94c8350e36]
+
+2011-12-27  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/sieve-message.c:
+	lib-sieve: fixed bug in message snapshots. Message substitutions
+	would not always cause a proper snapshot.
+	[d17f4a699ad2]
+
+	* src/lib-sieve/sieve-message.c:
+	lib-sieve: fixed memory leak in previous change.
+	[c58e9eb1010d]
+
+	* src/lib-sieve/cmd-discard.c, src/lib-sieve/cmd-keep.c, src/lib-sieve
+	/cmd-redirect.c, src/lib-sieve/ext-reject.c, src/lib-
+	sieve/plugins/body/ext-body-common.c, src/lib-sieve/plugins/enotify
+	/cmd-notify.c, src/lib-sieve/plugins/notify/cmd-notify.c, src/lib-
+	sieve/plugins/vacation/cmd-vacation.c, src/lib-sieve/sieve-
+	actions.c, src/lib-sieve/sieve-message.c, src/lib-sieve/sieve-
+	message.h, src/lib-sieve/sieve-result.c, src/lib-sieve/sieve-
+	result.h, src/testsuite/testsuite-message.c:
+	lib-sieve: added support for substituting the entire message. This
+	is needed for the new extprograms plugin.
+	[4cc6444438f6]
+
+	* src/lib-sieve-tool/mail-raw.c:
+	lib-sieve-tool: mail_raw: started using mail_temp_dir setting.
+	[fc9923837fa0]
+
+2011-12-20  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/cmd-redirect.c, src/lib-sieve/ext-fileinto.c, src/lib-
+	sieve/plugins/date/tst-date.c, src/lib-sieve/plugins/editheader/cmd-
+	deleteheader.c, src/lib-sieve/plugins/imap4flags/tag-flags.c, src
+	/lib-sieve/sieve-code.c, src/lib-sieve/sieve-code.h:
+	lib-sieve: adjusted code fetch api for handling omitted operands
+	better. Removes quite a bit of duplicated source code.
+	[35639e4925a7]
 
 2011-12-17  Stephan Bosch  <stephan@rename-it.nl>
 
@@ -234,31 +2338,292 @@
 	definitions in a single locatio. IMPORTANT: this fixes a bug in the
 	include extension that implicitly mapped script names like
 	"name.sieve" to "name".
-	[cc6d38c3f87f]
+	[66b7b1636c8c]
+
+	* src/lib-sievestorage/sieve-storage-private.h, src/lib-sievestorage
+	/sieve-storage.c:
+	lib-managesieve-storage: added code to cleanup tmp directory every
+	once in a while. This is borrowed from Dovecot's lib-
+	storage/index/maildir.
+	[5834cc823e38]
+
+	* TODO, src/lib-sieve/plugins/include/cmd-include.c, src/lib-
+	sieve/plugins/include/ext-include-common.c, src/lib-
+	sieve/plugins/include/ext-include-common.h, src/lib-sieve/sieve-
+	commands.h, src/lib-sieve/sieve-generator.c, src/lib-sieve/sieve-
+	generator.h, src/lib-sieve/sieve-types.h, src/lib-sieve/sieve.c, src
+	/lib-sievestorage/sieve-storage-save.c, src/lib-sievestorage/sieve-
+	storage-save.h, src/lib-sievestorage/sieve-storage-script.c, src
+	/lib-sievestorage/sieve-storage-script.h, src/managesieve/cmd-
+	putscript.c, src/managesieve/cmd-setactive.c:
+	Fixed interaction of Sieve include extension with ManageSieve. Upon
+	upload, the include extension is more lenient towards circular
+	includes and missing scripts as required by RFC. The script is now
+	also verified upon SETACTIVE when it was not active before. However,
+	this new SETACTIVE behavior is not optimal for the situation where
+	the active script was updated with PUTSCRIPT and contains an
+	nonexistent include (ignored during upload). This can still cause
+	runtime errors, since an already active script is not verified again
+	during SETACTIVE.
+	[c67b7a0aec7b]
 
 	* src/lib-sieve/sieve-error.c:
 	lib-sieve: fixed copy-paste error in sieve_get_warnings() It
 	returned the number of errors in stead of the number of warnings.
-	[787832d0aa0a]
+	[f566e0fce176]
+
+	* doc/man/pigeonhole.7.in, doc/man/sieve-dump.1.in, doc/man/sieve-
+	filter.1.in, doc/man/sieve-test.1.in, doc/man/sievec.1.in:
+	Updated man pages.
+	[8632ccc7173f]
+
+2011-12-16  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c, src/lib-sieve/sieve-actions.c:
+	lib-sieve: made sure that modified messages are not stored in the
+	source mailbox when it was opened read-only. This is currently only
+	relevant for the sieve-filter tool to avoid duplicating messages in
+	the source folder. This can happen when the messages are modified
+	(e.g. by the editheader extension) and the source folder is opened
+	read-only, thus preventing deletion of the original message.
+	[a8780b39f887]
 
 2011-12-12  Stephan Bosch  <stephan@rename-it.nl>
 
+	* src/lib-sieve/sieve-actions.c:
+	lib-sieve: store action: copy flags and keywords from input mail,
+	also when imap4flags extension is not active. This is currently only
+	relevant for sieve-filter, which now properly preserves flags with
+	this change.
+	[a2d645ca6e32]
+
+	* doc/man/sieve-dump.1.in, doc/man/sieve-filter.1.in, doc/man/sieve-
+	test.1.in, doc/man/sievec.1.in:
+	Updated man pages with recent extension configuration changes.
+	[8fe82c5f0185]
+
+	* TODO:
+	Updated TODO.
+	[b5a2419f0dee]
+
+	* INSTALL, src/lib-sieve-tool/sieve-tool.c, src/lib-
+	sieve/plugins/ihave/ext-ihave-binary.c, src/lib-sieve/plugins/ihave
+	/tst-ihave.c, src/lib-sieve/plugins/include/ext-include-binary.c,
+	src/lib-sieve/plugins/include/ext-include-common.c, src/lib-sieve
+	/sieve-binary.c, src/lib-sieve/sieve-binary.h, src/lib-sieve/sieve-
+	common.h, src/lib-sieve/sieve-extensions.c, src/lib-sieve/sieve-
+	extensions.h, src/lib-sieve/sieve-interpreter.c, src/lib-sieve
+	/sieve-interpreter.h, src/lib-sieve/sieve-plugins.c, src/lib-sieve
+	/sieve-runtime.h, src/lib-sieve/sieve-types.h, src/lib-sieve/sieve-
+	validator.c, src/lib-sieve/sieve-validator.h, src/lib-sieve/sieve.c,
+	src/lib-sieve/sieve.h, src/managesieve/cmd-putscript.c, src/plugins
+	/lda-sieve/lda-sieve-plugin.c, src/sieve-tools/sieve-filter.c, src
+	/sieve-tools/sieve-test.c, src/testsuite/testsuite-script.c,
+	src/testsuite/testsuite.c:
+	lib-sieve: added support for restricting certain extensions to
+	(admin-controled) global scripts
+	- Added sieve_global_extensions setting.
+	[595ce12806d9]
+
 	* src/lib-sieve/sieve-error.c:
 	lib-sieve: made sure error locations never report `line 0'.
-	[5bbd8d148b7d]
-
-2011-12-17  Stephan Bosch  <stephan@rename-it.nl>
+	[d56a318174db]
 
 	* src/lib-sieve/sieve.c:
-	lib-sieve: fixed potential segfault occuring when interpreter
+	lib-sieve: fixed potention segfault occuring when interpreter
 	initialization fails.
-	[b2839569e943]
+	[a224cdad4aa3]
+
+2011-12-07  Stephan Bosch  <stephan@rename-it.nl>
+
+	* TODO, doc/man/Makefile.am, doc/man/sieve-filter.1.in, src/sieve-
+	tools/Makefile.am, src/sieve-tools/sieve-filter.c:
+	Completed sieve-filter tool to a useful state.
+	- Now compiles regularly without --with-unfinished-features
+	- Still experimental though, so be careful.
+	- Changed command structure a bit, removing the useless -M option.
+	[3eb7a7460fa3]
+
+2011-12-05  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c:
+	lib-sieve: fixed -Wunused-but-set-variable compiler warning in edit-
+	mail.c.
+	[5c6c99a303da]
+
+2011-11-29  Stephan Bosch  <stephan@rename-it.nl>
+
+	* INSTALL, TODO, doc/editheader.txt, src/lib-sieve/sieve-extensions.c:
+	lib-sieve: implementation of editheader extension completed
+	- Updated documentation.
+	- Made editheader extension disabled by default
+	[b3bff60a18da]
+
+	* TODO, src/lib-sieve/plugins/editheader/Makefile.am, src/lib-
+	sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.h, src/lib-
+	sieve/plugins/editheader/ext-editheader-limits.h,
+	tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/size-limit-runtime.sieve,
+	tests/extensions/editheader/errors/size-limit.sieve:
+	lib-sieve: editheader: implemented configurable length limit.
+	[00c5cd8ca1d2]
+
+	* tests/extensions/editheader/errors.svtest:
+	testsuite: editheader: fixed test name for command syntax checks.
+	[3cacf01fbbab]
+
+	* src/lib-sieve/plugins/vacation/cmd-vacation.c:
+	lib-sieve: vacation: made vacation action header checks use the
+	modified message (editheader).
+	[77a20a67153d]
+
+	* TODO, tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/command-syntax.sieve:
+	testsuite: editheader: added command syntax checks.
+	[3fc2c1bfb4ca]
+
+2011-11-28  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/lib-sieve/edit-mail.c,
+	tests/extensions/editheader/deleteheader.svtest:
+	lib-sieve: editheader: made deleteheader match ignore leading and
+	trailing whitespace.
+	[9a0b9ca3aca5]
+
+	* Makefile.am, TODO, src/lib-sieve/plugins/editheader/Makefile.am, src
+	/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.h, src/lib-
+	sieve/plugins/editheader/ext-editheader.c,
+	tests/extensions/editheader/protected.svtest:
+	lib-sieve: editheader: added simple configuration for protected
+	headers.
+	[8d0cfe6f66f0]
+
+	* src/lib-sieve/sieve-result.c,
+	tests/extensions/editheader/addheader.svtest,
+	tests/extensions/editheader/deleteheader.svtest:
+	lib-sieve: editheader: fixed normal implicit keep. This was broken
+	by previous change. It now properly uses the final version of the
+	message instead of the original.
+	[f13a2fc82fa0]
+
+	* TODO:
+	Updated TODO.
+	[6798ae05aa0a]
+
+	* src/lib-sieve/sieve-actions.c,
+	tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/runtime-error.sieve:
+	lib-sieve: editheader: fixed implicit keep after runtime error. It
+	did not use the original message in this case.
+	[9c2fa28f7123]
+
+2011-11-26  Stephan Bosch  <stephan@rename-it.nl>
+
+	* tests/extensions/editheader/addheader.svtest,
+	tests/extensions/editheader/deleteheader.svtest:
+	testsuite: editheader extension: added various tests for folded
+	headers.
+	[23fbd8454d98]
+
+	* src/lib-sieve/edit-mail.c:
+	lib-sieve: editheader extension: fixed handling of pre-folded header
+	values for added header fields.
+	[f7ec0ff8c3ba]
+
+	* src/lib-sieve/plugins/editheader/cmd-deleteheader.c:
+	lib-sieve: editheader extension: fixed compile warning caused by
+	spurious comma.
+	[3d01485cb539]
+
+	* src/testsuite/cmd-test-message.c, src/testsuite/ext-testsuite.c,
+	src/testsuite/testsuite-common.h:
+	testsuite: added test_message_print command to print the current
+	message content.
+	[8af074872b41]
+
+	* src/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/rfc2822.c, tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/field-value.sieve:
+	testsuite: editheader extension: added error tests for header value
+	verification.
+	[df95edf614c4]
+
+	* src/lib-sieve/rfc2822.c:
+	lib-sieve: fixed bug caused by last change to rfc2822 header
+	verification.
+	[1143c225b528]
+
+	* Makefile.am, tests/extensions/editheader/errors.svtest,
+	tests/extensions/editheader/errors/field-name-runtime.sieve,
+	tests/extensions/editheader/errors/field-name.sieve:
+	testsuite: editheader extension: added error tests for header field
+	name verification.
+	[258108f6eea5]
+
+	* src/lib-sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c:
+	lib-sieve: editheader extension: added runtime header field name
+	verification.
+	[a691c5c035f2]
+
+	* src/lib-sieve/plugins/enotify/mailto/uri-mailto.c, src/lib-
+	sieve/rfc2822.c, src/lib-sieve/rfc2822.h:
+	lib-sieve: updated rfc2822 header field body verification to exclude
+	non-printing characters (RFC5322).
+	[cdf52ef61f65]
+
+2011-11-24  Stephan Bosch  <stephan@rename-it.nl>
+
+	* tests/extensions/editheader/utf8.svtest:
+	lib-sieve: editheader extension: added utf8-decoding-related
+	testsuite item.
+	[6757a772b086]
+
+	* Makefile.am, README, TODO, configure.in,
+	doc/rfc/editheader.rfc5293.txt, src/lib-sieve/Makefile.am, src/lib-
+	sieve/cmd-keep.c, src/lib-sieve/cmd-redirect.c, src/lib-sieve/edit-
+	mail.c, src/lib-sieve/edit-mail.h, src/lib-sieve/ext-fileinto.c, src
+	/lib-sieve/plugins/Makefile.am, src/lib-
+	sieve/plugins/editheader/Makefile.am, src/lib-
+	sieve/plugins/editheader/cmd-addheader.c, src/lib-
+	sieve/plugins/editheader/cmd-deleteheader.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.c, src/lib-
+	sieve/plugins/editheader/ext-editheader-common.h, src/lib-
+	sieve/plugins/editheader/ext-editheader.c, src/lib-sieve/rfc2822.c,
+	src/lib-sieve/rfc2822.h, src/lib-sieve/sieve-actions.c, src/lib-
+	sieve/sieve-actions.h, src/lib-sieve/sieve-extensions.c, src/lib-
+	sieve/sieve-interpreter.c, src/lib-sieve/sieve-match-types.c, src
+	/lib-sieve/sieve-match-types.h, src/lib-sieve/sieve-message.c, src
+	/lib-sieve/sieve-message.h, src/lib-sieve/sieve-result.c, src/lib-
+	sieve/tst-exists.c, src/lib-sieve/tst-size.c, src/testsuite
+	/testsuite-message.c, tests/extensions/editheader/addheader.svtest,
+	tests/extensions/editheader/alternating.svtest,
+	tests/extensions/editheader/deleteheader.svtest,
+	tests/extensions/editheader/utf8.svtest:
+	Added editheader support.
+	[253a0672ad92]
 
 2011-11-19  Stephan Bosch  <stephan@rename-it.nl>
 
-	* TODO:
-	Moved active development to Dovecot v2.1; updated TODO.
-	[a0215970fab1]
+	* INSTALL, NEWS, README, TODO, configure.in, doc/man/pigeonhole.7.in,
+	doc/man/sieve-dump.1.in, doc/man/sieve-filter.1.in, doc/man/sieve-
+	test.1.in, doc/man/sievec.1.in:
+	Upgraded package version to 0.3.0 and updated documentation.
+	[c94b71745f38]
+
+	* src/lib-sieve-tool/mail-raw.c, src/lib-sieve-tool/mail-raw.h, src
+	/lib-sieve-tool/sieve-tool.c, src/lib-sieve/plugins/mailbox/tst-
+	mailboxexists.c, src/lib-sieve/sieve-actions.c, src/managesieve-
+	login/client.c, src/testsuite/testsuite-mailstore.c:
+	Upgraded to Dovecot v2.1.
+	[7de7d7d01d55]
 
 	* .hgsigs:
 	Added signature for changeset 873baa85e220
@@ -324,21 +2689,6 @@
 	* Merged concurrent changes.
 	[b4f0fe1f54c3]
 
-	* src/plugins/lda-sieve/lda-sieve-plugin.c:
-	Last change did not even compile.
-	[7cd2dce9ab6b]
-
-	* src/plugins/lda-sieve/lda-sieve-plugin.c:
-	lda-sieve: fall back to global recipient_delimiter setting if
-	plugin/recipient_delimiter is not set.
-	[296bb15850b4]
-
-2011-09-13  Stephan Bosch  <stephan@rename-it.nl>
-
-	* .hgsigs:
-	Added signature for changeset 0d071eaa6d5e
-	[9e0d1a75c546]
-
 2011-09-16  Stephan Bosch  <stephan@rename-it.nl>
 
 	* TODO:
@@ -356,7 +2706,22 @@
 	body extension: fixed handling of :content message/rfc822.
 	[f3a4ddd68bc8]
 
+2011-09-17  Stephan Bosch  <stephan@rename-it.nl>
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	Last change did not even compile.
+	[7cd2dce9ab6b]
+
+	* src/plugins/lda-sieve/lda-sieve-plugin.c:
+	lda-sieve: fall back to global recipient_delimiter setting if
+	plugin/recipient_delimiter is not set.
+	[296bb15850b4]
+
 2011-09-13  Stephan Bosch  <stephan@rename-it.nl>
+
+	* .hgsigs:
+	Added signature for changeset 0d071eaa6d5e
+	[9e0d1a75c546]
 
 	* .hgtags:
 	Added tag 0.2.4 for changeset 0d071eaa6d5e
@@ -487,13 +2852,13 @@
 	* Merged concurrent changes.
 	[e9bb226739cb]
 
-	* TODO:
-	Updated TODO.
-	[b69e1c556ad4]
-
 	* NEWS, README:
 	Updated documentation.
 	[278efc729dc3]
+
+	* TODO:
+	Updated TODO.
+	[b69e1c556ad4]
 
 2011-06-29  Stephan Bosch  <stephan@rename-it.nl>
 

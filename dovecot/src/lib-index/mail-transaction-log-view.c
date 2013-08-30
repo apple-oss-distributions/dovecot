@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -58,26 +58,16 @@ void mail_transaction_log_view_close(struct mail_transaction_log_view **_view)
 	i_free(view);
 }
 
-void mail_transaction_log_views_close(struct mail_transaction_log *log)
-{
-	struct mail_transaction_log_view *view;
-
-	for (view = log->views; view != NULL; view = view->next)
-		view->log = NULL;
-}
-
 int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 				  uint32_t min_file_seq, uoff_t min_file_offset,
 				  uint32_t max_file_seq, uoff_t max_file_offset,
 				  bool *reset_r)
 {
-	struct mail_transaction_log_file *file, *const *files, *tail;
+	struct mail_transaction_log_file *file, *const *files;
 	uoff_t start_offset, end_offset;
 	unsigned int i;
 	uint32_t seq;
 	int ret;
-
-	i_assert(min_file_seq <= max_file_seq);
 
 	*reset_r = FALSE;
 
@@ -87,35 +77,49 @@ int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 		return -1;
 	}
 
-	tail = view->log->files;
 	if (min_file_seq == 0) {
 		/* index file doesn't exist yet. this transaction log should
 		   start from the beginning */
-		if (tail->hdr.prev_file_seq != 0) {
+		if (view->log->files->hdr.prev_file_seq != 0) {
 			/* but it doesn't */
 			return 0;
 		}
 
-		min_file_seq = tail->hdr.file_seq;
+		min_file_seq = view->log->files->hdr.file_seq;
 		min_file_offset = 0;
 
 		if (max_file_seq == 0) {
 			max_file_seq = min_file_seq;
 			max_file_offset = min_file_offset;
 		}
-	} 
+	}
 
-	if (min_file_seq == tail->hdr.prev_file_seq &&
-	    min_file_offset == tail->hdr.prev_file_offset) {
-		/* we can skip this */
-		min_file_seq = tail->hdr.file_seq;
-		min_file_offset = 0;
+	for (file = view->log->files; file != NULL; file = file->next) {
+		if (file->hdr.prev_file_seq == min_file_seq)
+			break;
+	}
 
-		if (min_file_seq > max_file_seq) {
-			/* empty view */
-			max_file_seq = min_file_seq;
-			max_file_offset = min_file_offset;
-		}
+	if (file != NULL && min_file_offset == file->hdr.prev_file_offset) {
+		/* we can (and sometimes must) skip to the next file */
+		min_file_seq = file->hdr.file_seq;
+		min_file_offset = file->hdr.hdr_size;
+	}
+
+	for (file = view->log->files; file != NULL; file = file->next) {
+		if (file->hdr.prev_file_seq == max_file_seq)
+			break;
+	}
+	if (file != NULL && max_file_offset == file->hdr.prev_file_offset) {
+		/* we can skip to the next file. we've delayed checking for
+		   min_file_seq <= max_file_seq until now, because it's not
+		   really an error to specify the same position twice (even if
+		   in "wrong" order) */
+		i_assert(min_file_seq <= max_file_seq ||
+			 min_file_seq <= file->hdr.file_seq);
+		max_file_seq = file->hdr.file_seq;
+		max_file_offset = file->hdr.hdr_size;
+	} else {
+		i_assert(min_file_seq <= max_file_seq);
 	}
 
 	if (min_file_seq == max_file_seq && min_file_offset > max_file_offset) {
@@ -124,15 +128,6 @@ int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 			"file_seq=%u, min_file_offset (%"PRIuUOFF_T
 			") > max_file_offset (%"PRIuUOFF_T")",
 			min_file_seq, min_file_offset, max_file_offset);
-		return -1;
-	}
-
-	if (min_file_offset > 0 && min_file_offset < tail->hdr.hdr_size) {
-		/* log file offset is probably corrupted in the index file. */
-		mail_transaction_log_view_set_corrupted(view,
-			"file_seq=%u, min_file_offset (%"PRIuUOFF_T
-			") < hdr_size (%u)",
-			min_file_seq, min_file_offset, tail->hdr.hdr_size);
 		return -1;
 	}
 
@@ -200,7 +195,23 @@ int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 			max_file_offset = min_file_offset;
 		}
 	}
-	i_assert(min_file_offset >= view->tail->hdr.hdr_size);
+
+	if (min_file_offset < view->tail->hdr.hdr_size) {
+		/* log file offset is probably corrupted in the index file. */
+		mail_transaction_log_view_set_corrupted(view,
+			"file_seq=%u, min_file_offset (%"PRIuUOFF_T
+			") < hdr_size (%u)",
+			min_file_seq, min_file_offset, view->tail->hdr.hdr_size);
+		return -1;
+	}
+	if (max_file_offset < view->head->hdr.hdr_size) {
+		/* log file offset is probably corrupted in the index file. */
+		mail_transaction_log_view_set_corrupted(view,
+			"file_seq=%u, min_file_offset (%"PRIuUOFF_T
+			") < hdr_size (%u)",
+			max_file_seq, max_file_offset, view->head->hdr.hdr_size);
+		return -1;
+	}
 
 	/* we have all of them. update refcounts. */
 	mail_transaction_log_view_unref_all(view);
@@ -288,13 +299,59 @@ int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 	return 1;
 }
 
+int mail_transaction_log_view_set_all(struct mail_transaction_log_view *view)
+{
+	struct mail_transaction_log_file *file, *first;
+
+	/* make sure .log.2 file is opened */
+	(void)mail_transaction_log_find_file(view->log, 1, FALSE, &file);
+
+	first = view->log->files;
+	i_assert(first != NULL);
+
+	for (file = view->log->files; file != NULL; file = file->next) {
+		if (mail_transaction_log_file_map(file, file->hdr.hdr_size,
+						  (uoff_t)-1) < 0)
+			return -1;
+		if (file->hdr.prev_file_seq == 0) {
+			/* this file resets the index. skip the old ones. */
+			first = file;
+		}
+	}
+
+	mail_transaction_log_view_unref_all(view);
+	for (file = first; file != NULL; file = file->next) {
+		array_append(&view->file_refs, &file, 1);
+		file->refcount++;
+	}
+
+	view->tail = first;
+	view->cur = view->tail;
+	view->cur_offset = view->tail->hdr.hdr_size;
+
+	view->prev_file_seq = view->cur->hdr.file_seq;
+	view->prev_file_offset = view->cur_offset;
+
+	view->min_file_seq = view->cur->hdr.file_seq;
+	view->min_file_offset = view->cur_offset;
+	view->max_file_seq = view->head->hdr.file_seq;
+	view->max_file_offset = view->head->sync_offset;
+	view->broken = FALSE;
+
+	if (mail_transaction_log_file_get_highest_modseq_at(view->cur,
+				view->cur_offset, &view->prev_modseq) < 0)
+		return -1;
+	return 0;
+}
+
 void mail_transaction_log_view_clear(struct mail_transaction_log_view *view,
 				     uint32_t oldest_file_seq)
 {
 	struct mail_transaction_log_file *file;
 
 	mail_transaction_log_view_unref_all(view);
-	if (mail_transaction_log_find_file(view->log, oldest_file_seq, FALSE,
+	if (oldest_file_seq != 0 &&
+	    mail_transaction_log_find_file(view->log, oldest_file_seq, FALSE,
 					   &file) > 0) {
 		for (; file != NULL; file = file->next) {
 			array_append(&view->file_refs, &file, 1);
@@ -491,7 +548,7 @@ log_view_is_record_valid(struct mail_transaction_log_file *file,
 		}
 		break;
 	case MAIL_TRANSACTION_EXPUNGE:
-		buffer_create_const_data(&uid_buf, data, rec_size);
+		buffer_create_from_const_data(&uid_buf, data, rec_size);
 		array_create_from_buffer(&uids, &uid_buf,
 			sizeof(struct mail_transaction_expunge));
 		break;
@@ -515,7 +572,7 @@ log_view_is_record_valid(struct mail_transaction_log_file *file,
 		break;
 	}
 	case MAIL_TRANSACTION_FLAG_UPDATE:
-		buffer_create_const_data(&uid_buf, data, rec_size);
+		buffer_create_from_const_data(&uid_buf, data, rec_size);
 		array_create_from_buffer(&uids, &uid_buf,
 			sizeof(struct mail_transaction_flag_update));
 		break;
@@ -538,7 +595,7 @@ log_view_is_record_valid(struct mail_transaction_log_file *file,
 			return FALSE;
 		}
 
-		buffer_create_const_data(&uid_buf,
+		buffer_create_from_const_data(&uid_buf,
 					 CONST_PTR_OFFSET(data, seqset_offset),
 					 rec_size - seqset_offset);
 		array_create_from_buffer(&uids, &uid_buf,
@@ -546,10 +603,65 @@ log_view_is_record_valid(struct mail_transaction_log_file *file,
 		break;
 	}
 	case MAIL_TRANSACTION_KEYWORD_RESET:
-		buffer_create_const_data(&uid_buf, data, rec_size);
+		buffer_create_from_const_data(&uid_buf, data, rec_size);
 		array_create_from_buffer(&uids, &uid_buf,
 			sizeof(struct mail_transaction_keyword_reset));
 		break;
+	case MAIL_TRANSACTION_EXT_INTRO: {
+		const struct mail_transaction_ext_intro *rec;
+		unsigned int i;
+
+		for (i = 0; i < rec_size; ) {
+			if (i + sizeof(*rec) > rec_size) {
+				/* should be just extra padding */
+				break;
+			}
+
+			rec = CONST_PTR_OFFSET(data, i);
+			if (i + sizeof(*rec) + rec->name_size > rec_size) {
+				mail_transaction_log_file_set_corrupted(file,
+					"ext intro: name_size too large");
+				return FALSE;
+			}
+			i += sizeof(*rec) + rec->name_size;
+			if ((i % 4) != 0)
+				i += 4 - (i % 4);
+		}
+		break;
+	}
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE: {
+		const char *attr_changes = data;
+		unsigned int i;
+
+		for (i = 0; i+2 < rec_size && attr_changes[i] != '\0'; ) {
+			if (attr_changes[i] != '+' && attr_changes[i] != '-') {
+				mail_transaction_log_file_set_corrupted(file,
+					"attribute update: Invalid prefix 0x%02x",
+					attr_changes[i]);
+				return FALSE;
+			}
+			i++;
+			if (attr_changes[i] != 'p' && attr_changes[i] != 's') {
+				mail_transaction_log_file_set_corrupted(file,
+					"attribute update: Invalid type 0x%02x",
+					attr_changes[i]);
+				return FALSE;
+			}
+			i++;
+			if (attr_changes[i] == '\0') {
+				mail_transaction_log_file_set_corrupted(file,
+					"attribute update: Empty key");
+				return FALSE;
+			}
+			i += strlen(attr_changes+i) + 1;
+		}
+		if (i == 0 || (i < rec_size && attr_changes[i] != '\0')) {
+			mail_transaction_log_file_set_corrupted(file,
+				"attribute update doesn't end with NUL");
+			return FALSE;
+		}
+		break;
+	}
 	default:
 		break;
 	}

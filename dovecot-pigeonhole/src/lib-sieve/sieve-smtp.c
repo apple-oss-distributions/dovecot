@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 #include "lib.h"
 
@@ -14,13 +14,12 @@ bool sieve_smtp_available
 
 void *sieve_smtp_open
 (const struct sieve_script_env *senv, const char *destination,
-    const char *return_path, FILE **file_r)
+    const char *return_path, struct ostream **output_r)
 {
     if ( senv->smtp_open == NULL || senv->smtp_close == NULL )
         return NULL;
 
-    return senv->smtp_open
-        (senv->script_context, destination, return_path, file_r);
+    return senv->smtp_open(senv, destination, return_path, output_r);
 }
 
 bool sieve_smtp_close
@@ -29,6 +28,6 @@ bool sieve_smtp_close
     if ( senv->smtp_open == NULL || senv->smtp_close == NULL )
         return NULL;
 
-    return senv->smtp_close(senv->script_context, handle);
+    return senv->smtp_close(senv, handle);
 }
 

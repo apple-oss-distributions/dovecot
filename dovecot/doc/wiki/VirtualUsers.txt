@@ -90,7 +90,7 @@ The userdb can return the 'mail' <field> [UserDatabase.txt] to override the
 default 'mail_location' setting. Usually you shouldn't need this.
 
 Examples
-========
+--------
 
 Dynamic passwd-file locations
 -----------------------------
@@ -116,7 +116,7 @@ specify the domain. If you want the files to contain full user@domain names,
 you can use 'username_format=%u'.
 
 static userdb
-=============
+-------------
 
 Many people store only usernames and passwords in their database and don't want
 to deal with UIDs or GIDs. In that case the easiest way to get Dovecot running
@@ -146,4 +146,4 @@ Existing virtual user management software
    <Migration.Linuxconf.txt>
  * Also see the <HowTo.txt> page
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -71,6 +71,8 @@ static const struct setting_define pop3_setting_defines[] = {
 	DEF(SET_BOOL, pop3_fast_size_lookups),
 	DEF(SET_STR, pop3_client_workarounds),
 	DEF(SET_STR, pop3_logout_format),
+	DEF(SET_ENUM, pop3_uidl_duplicates),
+	DEF(SET_STR, pop3_deleted_flag),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -86,7 +88,9 @@ static const struct pop3_settings pop3_default_settings = {
 	.pop3_lock_session = FALSE,
 	.pop3_fast_size_lookups = FALSE,
 	.pop3_client_workarounds = "",
-	.pop3_logout_format = "top=%t/%p, retr=%r/%b, del=%d/%m, size=%s"
+	.pop3_logout_format = "top=%t/%p, retr=%r/%b, del=%d/%m, size=%s",
+	.pop3_uidl_duplicates = "allow:rename",
+	.pop3_deleted_flag = ""
 };
 
 static const struct setting_parser_info *pop3_setting_dependencies[] = {

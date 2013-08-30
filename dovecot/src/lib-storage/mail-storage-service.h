@@ -1,7 +1,7 @@
 #ifndef MAIL_STORAGE_SERVICE_H
 #define MAIL_STORAGE_SERVICE_H
 
-#include "network.h"
+#include "net.h"
 
 struct master_service;
 struct mail_user;
@@ -40,6 +40,7 @@ struct mail_storage_service_input {
 	const char *module;
 	const char *service;
 	const char *username;
+	const char *session_id;
 	struct ip_addr local_ip, remote_ip;
 	unsigned int local_port, remote_port;
 
@@ -58,7 +59,7 @@ extern struct module *mail_storage_service_modules;
 struct mail_storage_service_ctx *
 mail_storage_service_init(struct master_service *service,
 			  const struct setting_parser_info *set_roots[],
-			  enum mail_storage_service_flags flags);
+			  enum mail_storage_service_flags flags) ATTR_NULL(2);
 struct auth_master_connection *
 mail_storage_service_get_auth_conn(struct mail_storage_service_ctx *ctx);
 int mail_storage_service_read_settings(struct mail_storage_service_ctx *ctx,
@@ -66,12 +67,13 @@ int mail_storage_service_read_settings(struct mail_storage_service_ctx *ctx,
 				       pool_t pool,
 				       const struct setting_parser_info **user_info_r,
 				       const struct setting_parser_context **parser_r,
-				       const char **error_r);
+				       const char **error_r) ATTR_NULL(2);
 /* Read settings and initialize context to use them. Do nothing if service is
    already initialized. This is mainly necessary when calling _get_auth_conn()
    or _all_init(). */
 void mail_storage_service_init_settings(struct mail_storage_service_ctx *ctx,
-					const struct mail_storage_service_input *input);
+					const struct mail_storage_service_input *input)
+	ATTR_NULL(2);
 /* Returns 1 if ok, 0 if user wasn't found, -1 if fatal error,
    -2 if error is user-specific (e.g. invalid settings).
    Error can be safely shown to untrusted users. */
@@ -79,6 +81,10 @@ int mail_storage_service_lookup(struct mail_storage_service_ctx *ctx,
 				const struct mail_storage_service_input *input,
 				struct mail_storage_service_user **user_r,
 				const char **error_r);
+/* The next mail_storage_service_lookup() will save the userdb fields into the
+   given pointer, allocated from the given pool. */
+void mail_storage_service_save_userdb_fields(struct mail_storage_service_ctx *ctx,
+					     pool_t pool, const char *const **userdb_fields_r);
 /* Returns 0 if ok, -1 if fatal error, -2 if error is user-specific. */
 int mail_storage_service_next(struct mail_storage_service_ctx *ctx,
 			      struct mail_storage_service_user *user,
@@ -92,9 +98,8 @@ int mail_storage_service_lookup_next(struct mail_storage_service_ctx *ctx,
 				     struct mail_user **mail_user_r,
 				     const char **error_r);
 void mail_storage_service_user_free(struct mail_storage_service_user **user);
-/* Initialize iterating through all users. Return the number of users. */
-unsigned int
-mail_storage_service_all_init(struct mail_storage_service_ctx *ctx);
+/* Initialize iterating through all users. */
+void mail_storage_service_all_init(struct mail_storage_service_ctx *ctx);
 /* Iterate through all usernames. Returns 1 if username was returned, 0 if
    there are no more users, -1 if error. */
 int mail_storage_service_all_next(struct mail_storage_service_ctx *ctx,
@@ -104,11 +109,16 @@ void mail_storage_service_deinit(struct mail_storage_service_ctx **ctx);
 /* Return the settings pointed to by set_root parameter in _init().
    The settings contain all the changes done by userdb lookups. */
 void **mail_storage_service_user_get_set(struct mail_storage_service_user *user);
+const struct mail_storage_settings *
+mail_storage_service_user_get_mail_set(struct mail_storage_service_user *user);
 const struct mail_storage_service_input *
 mail_storage_service_user_get_input(struct mail_storage_service_user *user);
 struct setting_parser_context *
 mail_storage_service_user_get_settings_parser(struct mail_storage_service_user *user);
 
+const struct var_expand_table *
+mail_storage_service_get_var_expand_table(struct mail_storage_service_ctx *ctx,
+					  struct mail_storage_service_input *input);
 /* Return the settings pointed to by set_root parameter in _init() */
 void *mail_storage_service_get_settings(struct master_service *service);
 

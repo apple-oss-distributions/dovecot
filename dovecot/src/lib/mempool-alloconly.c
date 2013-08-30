@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 #include "lib.h"
@@ -143,7 +143,8 @@ pool_t pool_alloconly_create(const char *name ATTR_UNUSED, size_t size)
 	new_apool = p_new(&apool.pool, struct alloconly_pool, 1);
 	*new_apool = apool;
 #ifdef DEBUG
-	if (strncmp(name, MEMPOOL_GROWING, strlen(MEMPOOL_GROWING)) == 0) {
+	if (strncmp(name, MEMPOOL_GROWING, strlen(MEMPOOL_GROWING)) == 0 ||
+	    getenv("DEBUG_SILENT") != NULL) {
 		name += strlen(MEMPOOL_GROWING);
 		new_apool->disable_warning = TRUE;
 	}

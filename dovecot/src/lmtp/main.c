@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -25,7 +25,7 @@
 #define IS_STANDALONE() \
         (getenv(MASTER_IS_PARENT_ENV) == NULL)
 
-const char *dns_client_socket_path;
+const char *dns_client_socket_path, *base_dir;
 struct mail_storage_service_ctx *storage_service;
 
 static void client_connected(struct master_service_connection *conn)
@@ -107,8 +107,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (t_get_current_dir(&base_dir) < 0)
+		i_fatal("getcwd() failed: %m");
 	drop_privileges();
-	master_service_init_finish(master_service);
 	master_service_init_log(master_service,
 				t_strdup_printf("lmtp(%s): ", my_pid));
 
@@ -117,6 +118,7 @@ int main(int argc, char *argv[])
 	restrict_access_allow_coredumps(TRUE);
 
 	main_init();
+	master_service_init_finish(master_service);
 	master_service_run(master_service, client_connected);
 
 	main_deinit();

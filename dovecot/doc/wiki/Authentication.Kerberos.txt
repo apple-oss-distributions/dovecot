@@ -20,11 +20,13 @@ correctly at your site, and that each host in your realm also has a host
 For Dovecot, you will need to install the appropriate /service/ keys on your
 server.  By default, Dovecot will look for these in the host's keytab file,
 typically '/etc/krb5.keytab', but you can specify an alternate path using the
-'auth_krb5_keytab' configuration entry in dovecot.conf.  If you wish to provide
-an IMAP service, you will need to install a service ticket of the form
-'imap/hostname@REALM'.  For POP3, you will need a service ticket of the form
-'pop/hostname@REALM'.  When using Dovecot's <SASL> [Sasl.txt] with MTA, you
-will need to install service ticket of the form 'smtp/hostname@REALM'.
+'auth_krb5_keytab' configuration entry in dovecot.conf.  Anyway specified
+keytab file should be readable by user "dovecot" (or whatever user the auth
+process is running as). If you wish to provide an IMAP service, you will need
+to install a service ticket of the form 'imap/hostname@REALM'.  For POP3, you
+will need a service ticket of the form 'pop/hostname@REALM'.  When using
+Dovecot's <SASL> [Sasl.txt] with MTA, you will need to install service ticket
+of the form 'smtp/hostname@REALM'.
 
 Example dovecot.conf configurations
 -----------------------------------
@@ -83,6 +85,20 @@ Check '/var/log/auth.log' if you have any problems logging in. The problem
 could be that PAM is still trying to use pam_unix.so rather than pam_krb5.so.
 Make sure pam_krb5.so is the first module for account or just change
 pam_unix.so to sufficient.
+
+Cross-realm authentication
+--------------------------
+
+This seems to have all kinds of trouble. Search Dovecot mailing list for
+previous threads about it. Some points about it:
+
+ * krb5_kuserok() is used to check if access is allowed. It may try to do the
+   check by reading ~user/.k5login (good!) or ~dovecot/.k5login (bad!)
+ * v2.2+ has "k5credentials" <passdb extra field>
+   [PasswordDatabase.ExtraFields.txt], which is a comma separated list of
+   usernames that are allowed to log in. If it's set, it bypasses the
+   krb5_kuserok() check.
+ * Solaris uses _gss_userok() instead of krb5_kuserok()
 
 Client support
 --------------
@@ -154,4 +170,4 @@ The test:
     * run command klist (list all kerberos keys) should show imap/HOSTNAME
  * /etc/hosts has to be set properly so that kerberos can find server.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

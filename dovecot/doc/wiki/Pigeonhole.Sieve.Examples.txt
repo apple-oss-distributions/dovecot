@@ -22,7 +22,9 @@ Contents
 
      6. Include scripts
 
-     7. Translation from Procmail
+     7. Archiving a Mailinglist by Date
+
+     8. Translation from Procmail
 
 Below are some simple Sieve code examples, more can be found from
 http://libsieve.sourceforge.net/script1.php and
@@ -220,14 +222,48 @@ if virustest :value "eq" :comparator "i;ascii-numeric" "0" {
 Plus Addressed mail filtering
 -----------------------------
 
-This is useful when you don't want just any +tag to create a directory, but you
-want to use tagged addresses such as with amavisd-new.  This example would
-place email addressed to user+spam@example.com into user's Spam folder.
+Using the subaddress [http://tools.ietf.org/html/rfc5233/] extension, it is
+possible to match against the 'detail' part of an e-mail address, e.g. a
+''+tag'' suffix to the local part of the address. This is for example useful
+when you don't want just any +tag to create a directory, but you want to use
+tagged addresses such as with amavisd-new.  This example would place email
+addressed to user+spam@example.com into user's Spam folder.
 
 ---%<-------------------------------------------------------------------------
 require ["fileinto", "envelope", "subaddress"];
 if envelope :detail "to" "spam"{
   fileinto "Spam";
+}
+---%<-------------------------------------------------------------------------
+
+The following more advanced example uses the subaddress
+[http://tools.ietf.org/html/rfc5233/] extension to handle recipient addresses
+structured as 'sales+<name>@company.com' in a special way. The '<name>' part is
+extracted from the address using variables
+[http://tools.ietf.org/html/rfc5229/] extension, transformed into a format with
+the first letter in upper case and subsequently used to create the folder name
+where the message is stored. The folder name is structured as 'users/<name>'.
+If the '+<name>' detail is omitted from the recipient address, the message is
+filed in the 'sales' folder.
+
+---%<-------------------------------------------------------------------------
+require ["variables", "envelope", "fileinto", "subaddress"];
+
+if envelope :is :user "to" "sales" {
+  if envelope :matches :detail "to" "*" {
+    /* Save name in ${name} in all lowercase except for the first letter.
+     * Joe, joe, jOe thus all become 'Joe'.
+     */
+    set :lower :upperfirst "name" "${1}";
+  }
+
+  if string :is "${name}" "" {
+    /* Default case if no detail is specified */
+    fileinto "sales";
+  } else {
+    /* For sales+joe@ this will become users/Joe */
+    fileinto "users/${name}";
+  }
 }
 ---%<-------------------------------------------------------------------------
 
@@ -248,6 +284,10 @@ mailbox_command = /usr/lib/dovecot/dovecot-lda -a "$RECIPIENT"
 
 Vacation auto-reply
 -------------------
+
+Auto-responder functionality is implemented using the vacation
+[http://tools.ietf.org/html/rfc5230/] extension. The following script sends
+out-of-office replies when the message is not spam:
 
 ---%<-------------------------------------------------------------------------
 require ["fileinto", "vacation"];
@@ -272,8 +312,8 @@ Best regards
 John Doe";
 ---%<-------------------------------------------------------------------------
 
-It's also possible to include the original subject via the *variables*
-extension:
+It's also possible to include the original subject using the variables
+[http://tools.ietf.org/html/rfc5229/] extension:
 
 ---%<-------------------------------------------------------------------------
 require ["variables", "vacation"];
@@ -324,6 +364,35 @@ character in the script name always fails the include. This is just an extra
 check to avoid potential problems with including scripts within mail
 directories.
 
+Archiving a Mailinglist by Date
+-------------------------------
+
+You can archive messages from mailing lists in a date-structured folder tree as
+follows:
+
+---%<-------------------------------------------------------------------------
+require ["variables","date","fileinto","mailbox"];
+
+# Extract date info
+if currentdate :matches "year" "*" { set "year" "${1}"; }
+if currentdate :matches "month" "*" { set "month" "${1}"; }
+
+# Archive Dovecot mailing list items by year and month.
+# Create folder when it does not exist.
+if header :is "list-id" "dovecot.dovecot.org" {
+  fileinto :create "INBOX.Lists.${year}.${month}.dovecot";
+}
+---%<-------------------------------------------------------------------------
+
+For example, in March 2013 this puts messages from the Dovecot mailing list in
+a folder called 'INBOX.Lists.2013.03.dovecot'. It combines the date
+[http://tools.ietf.org/html/rfc5260#section-4] and variables
+[http://tools.ietf.org/html/rfc5229/] extensions to extract the required date
+strings. Using the ':create' argument for the 'fileinto' command, the indicated
+folder is created automatically if it doesn't exist. The ':create' argument is
+provided by the mailbox [http://tools.ietf.org/html/rfc5490#section-3]
+extension.
+
 Translation from Procmail
 -------------------------
 
@@ -334,4 +403,4 @@ Sieve rules:http://www.earth.ox.ac.uk/~steve/sieve/procmail2sieve.pl
 Here's the original post announcing it:
 http://dovecot.org/list/dovecot/2007-March/020895.html
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

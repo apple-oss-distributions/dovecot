@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -18,7 +18,7 @@
 
 bool _testsuite_log_stdout = FALSE;
 
-/* 
+/*
  * Testsuite log error handlers
  */
 
@@ -31,11 +31,28 @@ struct _testsuite_log_message {
 };
 
 static pool_t _testsuite_logmsg_pool = NULL;
-ARRAY_DEFINE(_testsuite_log_errors, struct _testsuite_log_message);
-ARRAY_DEFINE(_testsuite_log_warnings, struct _testsuite_log_message);
-ARRAY_DEFINE(_testsuite_log_messages, struct _testsuite_log_message);
+ARRAY(struct _testsuite_log_message) _testsuite_log_errors;
+ARRAY(struct _testsuite_log_message) _testsuite_log_warnings;
+ARRAY(struct _testsuite_log_message) _testsuite_log_messages;
 
-static void _testsuite_log_verror
+static inline void ATTR_FORMAT(3, 0) _testsuite_stdout_vlog
+(const char *prefix, const char *location, const char *fmt,
+	va_list args)
+{
+	if ( _testsuite_log_stdout ) {
+		va_list args_copy;
+		VA_COPY(args_copy, args);
+
+		if ( location == NULL || *location == '\0' )
+			fprintf(stdout,
+				"LOG: %s: %s\n", prefix, t_strdup_vprintf(fmt, args_copy));
+		else
+			fprintf(stdout,
+				"LOG: %s: %s: %s\n", prefix, location, t_strdup_vprintf(fmt, args_copy));
+	}
+}
+
+static void ATTR_FORMAT(4, 0) _testsuite_log_verror
 (struct sieve_error_handler *ehandler ATTR_UNUSED,
 	unsigned int flags ATTR_UNUSED, const char *location, const char *fmt,
 	va_list args)
@@ -43,38 +60,28 @@ static void _testsuite_log_verror
 	pool_t pool = _testsuite_logmsg_pool;
 	struct _testsuite_log_message msg;
 
-	if ( _testsuite_log_stdout ) {
-		va_list args_copy;
-		VA_COPY(args_copy, args);
-
-		if ( location == NULL || *location == '\0' )
-			fprintf(stdout,
-				"LOG: error: %s\n", t_strdup_vprintf(fmt, args_copy));
-		else
-			fprintf(stdout,
-				"LOG: error: %s: %s\n", location, t_strdup_vprintf(fmt, args_copy));
-	}
+	_testsuite_stdout_vlog("error", location, fmt, args);
 
 	msg.location = p_strdup(pool, location);
 	msg.message = p_strdup_vprintf(pool, fmt, args);
 
-	array_append(&_testsuite_log_errors, &msg, 1);	
+	array_append(&_testsuite_log_errors, &msg, 1);
 }
 
-static void _testsuite_log_main_verror
+static void ATTR_FORMAT(4, 0) _testsuite_log_main_verror
 (struct sieve_error_handler *ehandler ATTR_UNUSED,
 	unsigned int flags ATTR_UNUSED, const char *location, const char *fmt,
 	va_list args)
 {
 	if ( location == NULL || *location == '\0' )
-		fprintf(stderr, 
+		fprintf(stderr,
 			"error: %s\n", t_strdup_vprintf(fmt, args));
 	else
-		fprintf(stderr, 
+		fprintf(stderr,
 			"%s: error: %s\n", location, t_strdup_vprintf(fmt, args));
 }
 
-static void _testsuite_log_vwarning
+static void ATTR_FORMAT(4, 0) _testsuite_log_vwarning
 (struct sieve_error_handler *ehandler ATTR_UNUSED,
 	unsigned int flags ATTR_UNUSED, const char *location, const char *fmt,
 	va_list args)
@@ -82,17 +89,7 @@ static void _testsuite_log_vwarning
 	pool_t pool = _testsuite_logmsg_pool;
 	struct _testsuite_log_message msg;
 
-	if ( _testsuite_log_stdout ) {
-		va_list args_copy;
-		VA_COPY(args_copy, args);
-
-		if ( location == NULL || *location == '\0' )
-			fprintf(stdout,
-				"LOG: warning: %s\n", t_strdup_vprintf(fmt, args_copy));
-		else
-			fprintf(stdout,
-				"LOG: warning: %s: %s\n", location, t_strdup_vprintf(fmt, args_copy));
-	}
+	_testsuite_stdout_vlog("warning", location, fmt, args);
 
 	msg.location = p_strdup(pool, location);
 	msg.message = p_strdup_vprintf(pool, fmt, args);
@@ -100,7 +97,7 @@ static void _testsuite_log_vwarning
 	array_append(&_testsuite_log_warnings, &msg, 1);
 }
 
-static void _testsuite_log_vinfo
+static void ATTR_FORMAT(4, 0) _testsuite_log_vinfo
 (struct sieve_error_handler *ehandler ATTR_UNUSED,
 	unsigned int flags ATTR_UNUSED, const char *location, const char *fmt,
 	va_list args)
@@ -108,22 +105,21 @@ static void _testsuite_log_vinfo
 	pool_t pool = _testsuite_logmsg_pool;
 	struct _testsuite_log_message msg;
 
-	if ( _testsuite_log_stdout ) {
-		va_list args_copy;
-		VA_COPY(args_copy, args);
-
-		if ( location == NULL || *location == '\0' )
-			fprintf(stdout,
-				"LOG: info: %s\n", t_strdup_vprintf(fmt, args_copy));
-		else
-			fprintf(stdout,
-				"LOG: info: %s: %s\n", location, t_strdup_vprintf(fmt, args_copy));
-	}
+	_testsuite_stdout_vlog("info", location, fmt, args);
 
 	msg.location = p_strdup(pool, location);
 	msg.message = p_strdup_vprintf(pool, fmt, args);
 
 	array_append(&_testsuite_log_messages, &msg, 1);
+}
+
+
+static void ATTR_FORMAT(4, 0) _testsuite_log_vdebug
+(struct sieve_error_handler *ehandler ATTR_UNUSED,
+	unsigned int flags ATTR_UNUSED, const char *location, const char *fmt,
+	va_list args)
+{
+	_testsuite_stdout_vlog("debug", location, fmt, args);
 }
 
 static struct sieve_error_handler *_testsuite_log_ehandler_create(void)
@@ -139,6 +135,7 @@ static struct sieve_error_handler *_testsuite_log_ehandler_create(void)
 	ehandler->verror = _testsuite_log_verror;
 	ehandler->vwarning = _testsuite_log_vwarning;
 	ehandler->vinfo = _testsuite_log_vinfo;
+	ehandler->vdebug = _testsuite_log_vdebug;
 
 	return ehandler;
 }
@@ -156,6 +153,7 @@ static struct sieve_error_handler *_testsuite_log_main_ehandler_create(void)
 	ehandler->verror = _testsuite_log_main_verror;
 	ehandler->vwarning = _testsuite_log_vwarning;
 	ehandler->vinfo = _testsuite_log_vinfo;
+	ehandler->vdebug = _testsuite_log_vdebug;
 
 	return ehandler;
 }
@@ -190,11 +188,13 @@ void testsuite_log_init(bool log_stdout)
 {
 	_testsuite_log_stdout = log_stdout;
 
-	testsuite_log_ehandler = _testsuite_log_ehandler_create(); 
+	testsuite_log_ehandler = _testsuite_log_ehandler_create();
 	sieve_error_handler_accept_infolog(testsuite_log_ehandler, TRUE);
+	sieve_error_handler_accept_debuglog(testsuite_log_ehandler, TRUE);
 
-	testsuite_log_main_ehandler = _testsuite_log_main_ehandler_create(); 
+	testsuite_log_main_ehandler = _testsuite_log_main_ehandler_create();
 	sieve_error_handler_accept_infolog(testsuite_log_main_ehandler, TRUE);
+	sieve_error_handler_accept_debuglog(testsuite_log_main_ehandler, TRUE);
 
 	sieve_system_ehandler_set(testsuite_log_ehandler);
 
@@ -232,7 +232,7 @@ struct sieve_stringlist *testsuite_log_stringlist_create
 (const struct sieve_runtime_env *renv, int index)
 {
 	struct testsuite_log_stringlist *strlist;
-	    
+
 	strlist = t_new(struct testsuite_log_stringlist, 1);
 	strlist->strlist.runenv = renv;
 	strlist->strlist.exec_status = SIEVE_EXEC_OK;
@@ -241,14 +241,14 @@ struct sieve_stringlist *testsuite_log_stringlist_create
 
  	strlist->index = index;
 	strlist->pos = 0;
- 
+
 	return &strlist->strlist;
 }
 
 static int testsuite_log_stringlist_next_item
 (struct sieve_stringlist *_strlist, string_t **str_r)
 {
-	struct testsuite_log_stringlist *strlist = 
+	struct testsuite_log_stringlist *strlist =
 		(struct testsuite_log_stringlist *) _strlist;
 	const struct _testsuite_log_message *msg;
 	int pos;
@@ -261,7 +261,7 @@ static int testsuite_log_stringlist_next_item
 	if ( strlist->index > 0 ) {
 		pos = strlist->index - 1;
 		strlist->pos = -1;
-	} else { 
+	} else {
 		pos = strlist->pos++;
 	}
 
@@ -279,7 +279,7 @@ static int testsuite_log_stringlist_next_item
 static void testsuite_log_stringlist_reset
 (struct sieve_stringlist *_strlist)
 {
-	struct testsuite_log_stringlist *strlist = 
+	struct testsuite_log_stringlist *strlist =
 		(struct testsuite_log_stringlist *) _strlist;
 
 	strlist->pos = 0;

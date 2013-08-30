@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -12,12 +12,31 @@
 
 #include <stdlib.h>
 
+static struct mail_namespace_settings prefixless_ns_unexpanded_set = {
+	.name = "",
+	.type = "private",
+	.separator = "",
+	.prefix = "0",
+	.location = "0fail::LAYOUT=none",
+	.alias_for = NULL,
+
+	.inbox = FALSE,
+	.hidden = TRUE,
+	.list = "no",
+	.subscriptions = FALSE,
+	.ignore_on_failure = FALSE,
+	.disabled = FALSE,
+
+	.mailboxes = ARRAY_INIT
+};
+static struct mail_namespace_settings prefixless_ns_set;
+
 void mail_namespace_add_storage(struct mail_namespace *ns,
 				struct mail_storage *storage)
 {
-	/* currently we support only a single storage */
-	i_assert(ns->storage == NULL);
-	ns->storage = storage;
+	if (ns->storage == NULL)
+		ns->storage = storage;
+	array_append(&ns->all_storages, &storage, 1);
 
 	if (storage->v.add_list != NULL)
 		storage->v.add_list(storage, ns->list);
@@ -28,28 +47,16 @@ void mail_namespace_finish_list_init(struct mail_namespace *ns,
 				     struct mailbox_list *list)
 {
 	ns->list = list;
-
-	/* allow plugins to override real_sep */
-	if (ns->real_sep == '\0')
-		ns->real_sep = list->hierarchy_sep;
 	ns->prefix_len = strlen(ns->prefix);
-
-	if (ns->set->separator != NULL)
-		ns->sep = *ns->set->separator;
-	if (ns->sep == '\0')
-                ns->sep = ns->real_sep;
-	if (ns->sep == '"' || ns->sep == '\\') {
-		ns->sep_str[0] = '\\';
-		ns->sep_str[1] = ns->sep;
-	} else {
-		ns->sep_str[0] = ns->sep;
-	}
 }
 
 static void mail_namespace_free(struct mail_namespace *ns)
 {
-	if (ns->storage != NULL)
-		mail_storage_unref(&ns->storage);
+	struct mail_storage **storagep;
+
+	array_foreach_modifiable(&ns->all_storages, storagep)
+		mail_storage_unref(storagep);
+	array_free(&ns->all_storages);
 	if (ns->list != NULL)
 		mailbox_list_destroy(&ns->list);
 
@@ -57,6 +64,21 @@ static void mail_namespace_free(struct mail_namespace *ns)
 		mail_user_unref(&ns->owner);
 	i_free(ns->prefix);
 	i_free(ns);
+}
+
+static bool
+namespace_has_special_use_mailboxes(struct mail_namespace_settings *ns_set)
+{
+	struct mailbox_settings *const *box_set;
+
+	if (!array_is_created(&ns_set->mailboxes))
+		return FALSE;
+
+	array_foreach(&ns_set->mailboxes, box_set) {
+		if ((*box_set)->special_use[0] != '\0')
+			return TRUE;
+	}
+	return FALSE;
 }
 
 static int
@@ -74,11 +96,11 @@ namespace_add(struct mail_user *user,
 	ns->user = user;
 	if (strncmp(ns_set->type, "private", 7) == 0) {
 		ns->owner = user;
-		ns->type = NAMESPACE_PRIVATE;
+		ns->type = MAIL_NAMESPACE_TYPE_PRIVATE;
 	} else if (strncmp(ns_set->type, "shared", 6) == 0)
-		ns->type = NAMESPACE_SHARED;
+		ns->type = MAIL_NAMESPACE_TYPE_SHARED;
 	else if (strncmp(ns_set->type, "public", 6) == 0)
-		ns->type = NAMESPACE_PUBLIC;
+		ns->type = MAIL_NAMESPACE_TYPE_PUBLIC;
 	else {
 		*error_r = t_strdup_printf("Unknown namespace type: %s",
 					   ns_set->type);
@@ -105,6 +127,11 @@ namespace_add(struct mail_user *user,
 		ns->flags |= NAMESPACE_FLAG_HIDDEN;
 	if (ns_set->subscriptions)
 		ns->flags |= NAMESPACE_FLAG_SUBSCRIPTIONS;
+	if (ns_set == &prefixless_ns_set) {
+		/* autocreated prefix="" namespace */
+		ns->flags |= NAMESPACE_FLAG_UNUSABLE |
+			NAMESPACE_FLAG_AUTOCREATED;
+	}
 
 	if (*ns_set->location == '\0')
 		ns_set->location = mail_set->mail_location;
@@ -125,8 +152,10 @@ namespace_add(struct mail_user *user,
 	ns->unexpanded_set = unexpanded_ns_set;
 	ns->mail_set = mail_set;
 	ns->prefix = i_strdup(ns_set->prefix);
+	ns->special_use_mailboxes = namespace_has_special_use_mailboxes(ns_set);
+	i_array_init(&ns->all_storages, 2);
 
-	if (ns->type == NAMESPACE_SHARED &&
+	if (ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (strchr(ns->prefix, '%') != NULL ||
 	     strchr(ns->set->location, '%') != NULL)) {
 		/* dynamic shared namespace. the above check catches wrong
@@ -193,6 +222,11 @@ namespace_set_alias_for(struct mail_namespace *ns,
 		if (!namespace_is_valid_alias_storage(ns, error_r))
 			return -1;
 
+		if ((ns->alias_for->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
+			/* copy inbox=yes */
+			ns->flags |= NAMESPACE_FLAG_INBOX_USER;
+		}
+
 		ns->alias_chain_next = ns->alias_for->alias_chain_next;
 		ns->alias_for->alias_chain_next = ns;
 	}
@@ -204,17 +238,20 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 {
 	struct mail_namespace *ns, *inbox_ns = NULL;
 	unsigned int subscriptions_count = 0;
-	char list_sep = '\0';
+	bool visible_namespaces = FALSE;
+	char ns_sep, list_sep = '\0';
 
 	for (ns = namespaces; ns != NULL; ns = ns->next) {
+		ns_sep = mail_namespace_get_sep(ns);
 		if (mail_namespace_find_prefix(ns->next, ns->prefix) != NULL) {
 			*error_r = t_strdup_printf(
 				"Duplicate namespace prefix: \"%s\"",
 				ns->prefix);
 			return FALSE;
 		}
-		if (namespace_set_alias_for(ns, namespaces, error_r) < 0)
-			return FALSE;
+		if ((ns->flags & NAMESPACE_FLAG_HIDDEN) == 0)
+			visible_namespaces = TRUE;
+		/* check the inbox=yes status before alias_for changes it */
 		if ((ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
 			if (inbox_ns != NULL) {
 				*error_r = "There can be only one namespace with "
@@ -223,10 +260,13 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 			}
 			inbox_ns = ns;
 		}
+		if (namespace_set_alias_for(ns, namespaces, error_r) < 0)
+			return FALSE;
+
 		if (*ns->prefix != '\0' &&
 		    (ns->flags & (NAMESPACE_FLAG_LIST_PREFIX |
 				  NAMESPACE_FLAG_LIST_CHILDREN)) != 0 &&
-		    ns->prefix[strlen(ns->prefix)-1] != ns->sep) {
+		    ns->prefix[strlen(ns->prefix)-1] != ns_sep) {
 			*error_r = t_strdup_printf(
 				"list=yes requires prefix=%s "
 				"to end with separator", ns->prefix);
@@ -235,7 +275,7 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 		if (*ns->prefix != '\0' &&
 		    (ns->flags & (NAMESPACE_FLAG_LIST_PREFIX |
 				  NAMESPACE_FLAG_LIST_CHILDREN)) != 0 &&
-		    ns->prefix[0] == ns->sep) {
+		    ns->prefix[0] == ns_sep) {
 			*error_r = t_strdup_printf(
 				"list=yes requires prefix=%s "
 				"not to start with separator", ns->prefix);
@@ -244,8 +284,8 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 		if ((ns->flags & (NAMESPACE_FLAG_LIST_PREFIX |
 				  NAMESPACE_FLAG_LIST_CHILDREN)) != 0) {
 			if (list_sep == '\0')
-				list_sep = ns->sep;
-			else if (list_sep != ns->sep) {
+				list_sep = ns_sep;
+			else if (list_sep != ns_sep) {
 				*error_r = "All list=yes namespaces must use "
 					"the same separator";
 				return FALSE;
@@ -260,11 +300,15 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 		return FALSE;
 	}
 	if (list_sep == '\0') {
-		*error_r = "no list=yes namespaces";
+		*error_r = "list=yes namespace missing";
+		return FALSE;
+	}
+	if (!visible_namespaces) {
+		*error_r = "hidden=no namespace missing";
 		return FALSE;
 	}
 	if (subscriptions_count == 0) {
-		*error_r = "no subscriptions=yes namespaces";
+		*error_r = "subscriptions=yes namespace missing";
 		return FALSE;
 	}
 	return TRUE;
@@ -277,6 +321,7 @@ int mail_namespaces_init(struct mail_user *user, const char **error_r)
 	struct mail_namespace_settings *const *unexpanded_ns_set;
 	struct mail_namespace *namespaces, *ns, **ns_p;
 	unsigned int i, count, count2;
+	bool prefixless_found = FALSE;
 
 	i_assert(user->initialized);
 
@@ -293,13 +338,37 @@ int mail_namespaces_init(struct mail_user *user, const char **error_r)
 		count = 0;
 	}
 	for (i = 0; i < count; i++) {
+		if (ns_set[i]->disabled)
+			continue;
+
 		if (namespace_add(user, ns_set[i], unexpanded_ns_set[i],
-				  mail_set, ns_p, error_r) < 0)
-			return -1;
-		ns_p = &(*ns_p)->next;
+				  mail_set, ns_p, error_r) < 0) {
+			if (!ns_set[i]->ignore_on_failure)
+				return -1;
+			if (mail_set->mail_debug) {
+				i_debug("Skipping namespace %s: %s",
+					ns_set[i]->prefix, *error_r);
+			}
+		} else {
+			if ((*ns_p)->prefix_len == 0)
+				prefixless_found = TRUE;
+			ns_p = &(*ns_p)->next;
+		}
 	}
 
 	if (namespaces != NULL) {
+		if (!prefixless_found) {
+			prefixless_ns_set = prefixless_ns_unexpanded_set;
+			/* a pretty evil way to expand the values */
+			prefixless_ns_set.prefix++;
+			prefixless_ns_set.location++;
+
+			if (namespace_add(user, &prefixless_ns_set,
+					  &prefixless_ns_unexpanded_set,
+					  mail_set, ns_p,
+					  error_r) < 0)
+				i_unreached();
+		}
 		if (!namespaces_check(namespaces, error_r)) {
 			*error_r = t_strconcat("namespace configuration error: ",
 					       *error_r, NULL);
@@ -327,17 +396,19 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 {
 	struct mail_namespace_settings *inbox_set, *unexpanded_inbox_set;
 	struct mail_namespace *ns;
-	const struct mail_storage_settings *mail_set, *unexpanded_mail_set;
+	const struct mail_storage_settings *mail_set;
 	const char *error, *driver, *location_source;
+	bool default_location = FALSE;
 
 	i_assert(location == NULL || *location != '\0');
 
 	ns = i_new(struct mail_namespace, 1);
 	ns->refcount = 1;
-	ns->type = NAMESPACE_PRIVATE;
+	ns->type = MAIL_NAMESPACE_TYPE_PRIVATE;
 	ns->flags = NAMESPACE_FLAG_INBOX_USER | NAMESPACE_FLAG_INBOX_ANY |
 		NAMESPACE_FLAG_LIST_PREFIX | NAMESPACE_FLAG_SUBSCRIPTIONS;
 	ns->owner = user;
+	i_array_init(&ns->all_storages, 2);
 
 	inbox_set = p_new(user->pool, struct mail_namespace_settings, 1);
 	*inbox_set = mail_namespace_default_settings;
@@ -352,14 +423,9 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 		inbox_set->location = p_strdup(user->pool, location);
 		location_source = "mail_location parameter";
 	} else if (*mail_set->mail_location != '\0') {
-		unexpanded_mail_set = mail_user_set_get_driver_settings(
-			user->set_info, user->unexpanded_set,
-			MAIL_STORAGE_SET_DRIVER_NAME);
-
-		inbox_set->location = mail_set->mail_location;
-		unexpanded_inbox_set->location =
-			unexpanded_mail_set->mail_location;
 		location_source = "mail_location setting";
+		inbox_set->location = mail_set->mail_location;
+		default_location = TRUE;
 	} else {
 		location_source = "environment MAIL";
 		inbox_set->location = getenv("MAIL");
@@ -374,7 +440,12 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 			location_source = "environment MAILDIR";
 		}
 	}
-	if (*unexpanded_inbox_set->location == '\0') {
+	if (default_location) {
+		/* treat this the same as if a namespace was created with
+		   default settings. dsync relies on finding a namespace
+		   without explicit location setting. */
+		unexpanded_inbox_set->location = SETTING_STRVAR_UNEXPANDED;
+	} else {
 		unexpanded_inbox_set->location =
 			p_strconcat(user->pool, SETTING_STRVAR_EXPANDED,
 				    inbox_set->location, NULL);
@@ -383,7 +454,7 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 	ns->set = inbox_set;
 	ns->unexpanded_set = unexpanded_inbox_set;
 	ns->mail_set = mail_set;
-	ns->prefix = i_strdup(ns->set->prefix);
+	ns->prefix = i_strdup("");
 	ns->user = user;
 
 	if (mail_storage_create(ns, driver, 0, &error) < 0) {
@@ -401,6 +472,7 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 	user->namespaces = ns;
 
 	T_BEGIN {
+		hook_mail_namespaces_added(ns);
 		hook_mail_namespaces_created(ns);
 	} T_END;
 	return 0;
@@ -418,6 +490,7 @@ struct mail_namespace *mail_namespaces_init_empty(struct mail_user *user)
 	ns->flags = NAMESPACE_FLAG_INBOX_USER | NAMESPACE_FLAG_INBOX_ANY |
 		NAMESPACE_FLAG_LIST_PREFIX | NAMESPACE_FLAG_SUBSCRIPTIONS;
 	ns->mail_set = mail_user_set_get_storage_set(user);
+	i_array_init(&ns->all_storages, 2);
 	user->namespaces = ns;
 	return ns;
 }
@@ -443,9 +516,12 @@ void mail_namespaces_set_storage_callbacks(struct mail_namespace *namespaces,
 					   void *context)
 {
 	struct mail_namespace *ns;
+	struct mail_storage *const *storagep;
 
-	for (ns = namespaces; ns != NULL; ns = ns->next)
-		mail_storage_set_callbacks(ns->storage, callbacks, context);
+	for (ns = namespaces; ns != NULL; ns = ns->next) {
+		array_foreach(&ns->all_storages, storagep)
+			mail_storage_set_callbacks(*storagep, callbacks, context);
+	}
 }
 
 void mail_namespace_ref(struct mail_namespace *ns)
@@ -488,72 +564,23 @@ void mail_namespace_destroy(struct mail_namespace *ns)
 	mail_namespace_unref(&ns);
 }
 
-const char *mail_namespace_fix_sep(struct mail_namespace *ns, const char *name)
-{
-	char *ret, *p;
-
-	if (ns->sep == ns->real_sep)
-		return name;
-	if (ns->type == NAMESPACE_SHARED &&
-	    (ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
-		/* shared namespace root. the backend storage's hierarchy
-		   separator isn't known yet, so do nothing. */
-		return name;
-	}
-
-	ret = p_strdup(unsafe_data_stack_pool, name);
-	for (p = ret; *p != '\0'; p++) {
-		if (*p == ns->sep)
-			*p = ns->real_sep;
-	}
-	return ret;
-}
-
-const char *mail_namespace_get_storage_name(struct mail_namespace *ns,
-					    const char *name)
-{
-	unsigned int len = strlen(ns->prefix);
-
-	if (len > 0) {
-		if (strncmp(ns->prefix, name, len) == 0)
-			name += len;
-		else {
-			i_assert(strcasecmp(name, "INBOX") == 0);
-		}
-	}
-	return mail_namespace_fix_sep(ns, name);
-}
-
-const char *mail_namespace_get_vname(struct mail_namespace *ns, string_t *dest,
-				     const char *name)
-{
-	str_truncate(dest, 0);
-	if ((ns->flags & NAMESPACE_FLAG_INBOX_USER) == 0 ||
-	    strcasecmp(name, "INBOX") != 0 ||
-	    ns->user != ns->owner)
-		str_append(dest, ns->prefix);
-
-	for (; *name != '\0'; name++) {
-		if (*name == ns->real_sep)
-			str_append_c(dest, ns->sep);
-		else
-			str_append_c(dest, *name);
-	}
-	return str_c(dest);
-}
-
 struct mail_storage *
 mail_namespace_get_default_storage(struct mail_namespace *ns)
 {
-	/* currently we don't support more than one storage per namespace */
 	return ns->storage;
 }
 
-char mail_namespaces_get_root_sep(const struct mail_namespace *namespaces)
+char mail_namespace_get_sep(struct mail_namespace *ns)
+{
+	return *ns->set->separator != '\0' ? *ns->set->separator :
+		mailbox_list_get_hierarchy_sep(ns->list);
+}
+
+char mail_namespaces_get_root_sep(struct mail_namespace *namespaces)
 {
 	while ((namespaces->flags & NAMESPACE_FLAG_LIST_PREFIX) == 0)
 		namespaces = namespaces->next;
-	return namespaces->sep;
+	return mail_namespace_get_sep(namespaces);
 }
 
 static bool mail_namespace_is_usable_prefix(struct mail_namespace *ns,
@@ -574,7 +601,7 @@ static bool mail_namespace_is_usable_prefix(struct mail_namespace *ns,
 
 	if (strncmp(ns->prefix, mailbox, ns->prefix_len-1) == 0 &&
 	    mailbox[ns->prefix_len-1] == '\0' &&
-	    ns->prefix[ns->prefix_len-1] == ns->sep) {
+	    ns->prefix[ns->prefix_len-1] == mail_namespace_get_sep(ns)) {
 		/* we're trying to access the namespace prefix itself */
 		return TRUE;
 	}
@@ -582,21 +609,18 @@ static bool mail_namespace_is_usable_prefix(struct mail_namespace *ns,
 }
 
 static struct mail_namespace *
-mail_namespace_find_mask(struct mail_namespace *namespaces,
-			 const char **mailbox,
+mail_namespace_find_mask(struct mail_namespace *namespaces, const char *box,
 			 enum namespace_flags flags,
 			 enum namespace_flags mask)
 {
         struct mail_namespace *ns = namespaces;
-	const char *box = *mailbox;
 	struct mail_namespace *best = NULL;
-	unsigned int len, best_len = 0;
+	unsigned int best_len = 0;
 	bool inbox;
 
 	inbox = strncasecmp(box, "INBOX", 5) == 0;
 	if (inbox && box[5] == '\0') {
 		/* find the INBOX namespace */
-		*mailbox = "INBOX";
 		while (ns != NULL) {
 			if ((ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0 &&
 			    (ns->flags & mask) == flags)
@@ -615,21 +639,11 @@ mail_namespace_find_mask(struct mail_namespace *namespaces,
 			best_len = ns->prefix_len;
 		}
 	}
-
-	if (best != NULL) {
-		if (best_len > 0) {
-			len = strlen(*mailbox);
-			*mailbox += I_MIN(len, best_len);
-		} else if (inbox && (box[5] == best->sep || box[5] == '\0'))
-			*mailbox = t_strconcat("INBOX", box+5, NULL);
-
-		*mailbox = mail_namespace_fix_sep(best, *mailbox);
-	}
 	return best;
 }
 
 static struct mail_namespace *
-mail_namespace_find_shared(struct mail_namespace *ns, const char **mailbox)
+mail_namespace_find_shared(struct mail_namespace *ns, const char *mailbox)
 {
 	struct mailbox_list *list = ns->list;
 	struct mail_storage *storage;
@@ -641,23 +655,42 @@ mail_namespace_find_shared(struct mail_namespace *ns, const char **mailbox)
 }
 
 struct mail_namespace *
-mail_namespace_find(struct mail_namespace *namespaces, const char **mailbox)
+mail_namespace_find(struct mail_namespace *namespaces, const char *mailbox)
 {
 	struct mail_namespace *ns;
 
 	ns = mail_namespace_find_mask(namespaces, mailbox, 0, 0);
-	if (ns != NULL && ns->type == NAMESPACE_SHARED &&
+	i_assert(ns != NULL);
+
+	if (ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
 		/* see if we need to autocreate a namespace for shared user */
-		if (strchr(*mailbox, ns->sep) != NULL)
+		if (strchr(mailbox, mail_namespace_get_sep(ns)) != NULL)
 			return mail_namespace_find_shared(ns, mailbox);
 	}
 	return ns;
 }
 
 struct mail_namespace *
-mail_namespace_find_visible(struct mail_namespace *namespaces,
+mail_namespace_find_unalias(struct mail_namespace *namespaces,
 			    const char **mailbox)
+{
+	struct mail_namespace *ns;
+	const char *storage_name;
+
+	ns = mail_namespace_find(namespaces, *mailbox);
+	if (ns->alias_for != NULL) {
+		storage_name =
+			mailbox_list_get_storage_name(ns->list, *mailbox);
+		ns = ns->alias_for;
+		*mailbox = mailbox_list_get_vname(ns->list, storage_name);
+	}
+	return ns;
+}
+
+struct mail_namespace *
+mail_namespace_find_visible(struct mail_namespace *namespaces,
+			    const char *mailbox)
 {
 	return mail_namespace_find_mask(namespaces, mailbox, 0,
 					NAMESPACE_FLAG_HIDDEN);
@@ -665,7 +698,7 @@ mail_namespace_find_visible(struct mail_namespace *namespaces,
 
 struct mail_namespace *
 mail_namespace_find_subscribable(struct mail_namespace *namespaces,
-				 const char **mailbox)
+				 const char *mailbox)
 {
 	return mail_namespace_find_mask(namespaces, mailbox,
 					NAMESPACE_FLAG_SUBSCRIPTIONS,
@@ -674,7 +707,7 @@ mail_namespace_find_subscribable(struct mail_namespace *namespaces,
 
 struct mail_namespace *
 mail_namespace_find_unsubscribable(struct mail_namespace *namespaces,
-				   const char **mailbox)
+				   const char *mailbox)
 {
 	return mail_namespace_find_mask(namespaces, mailbox,
 					0, NAMESPACE_FLAG_SUBSCRIPTIONS);
@@ -686,16 +719,6 @@ mail_namespace_find_inbox(struct mail_namespace *namespaces)
 	while ((namespaces->flags & NAMESPACE_FLAG_INBOX_USER) == 0)
 		namespaces = namespaces->next;
 	return namespaces;
-}
-
-bool mail_namespace_update_name(const struct mail_namespace *ns,
-				const char **mailbox)
-{
-	struct mail_namespace tmp_ns = *ns;
-
-	/* FIXME: a bit kludgy.. */
-	tmp_ns.next = NULL;
-	return mail_namespace_find_mask(&tmp_ns, mailbox, 0, 0) != NULL;
 }
 
 struct mail_namespace *
@@ -723,7 +746,7 @@ mail_namespace_find_prefix_nosep(struct mail_namespace *namespaces,
 	for (ns = namespaces; ns != NULL; ns = ns->next) {
 		if (ns->prefix_len == len + 1 &&
 		    strncmp(ns->prefix, prefix, len) == 0 &&
-		    ns->prefix[len] == ns->sep)
+		    ns->prefix[len] == mail_namespace_get_sep(ns))
 			return ns;
 	}
 	return NULL;

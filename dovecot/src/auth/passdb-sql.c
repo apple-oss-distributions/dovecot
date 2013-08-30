@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "passdb.h"
@@ -45,7 +45,11 @@ static void sql_query_save_results(struct sql_result *result,
 		name = sql_result_get_field_name(result, i);
 		value = sql_result_get_field_value(result, i);
 
-		if (*name != '\0' && value != NULL) {
+		if (*name == '\0')
+			;
+		else if (value == NULL)
+			auth_request_set_null_field(auth_request, name);
+		else {
 			auth_request_set_field(auth_request, name, value,
 				module->conn->set.default_pass_scheme);
 		}
@@ -66,6 +70,8 @@ static void sql_query_callback(struct sql_result *result,
 	password = NULL;
 
 	ret = sql_result_next_row(result);
+	if (ret >= 0)
+		db_sql_success(module->conn);
 	if (ret < 0) {
 		if (!module->conn->default_password_query) {
 			auth_request_log_error(auth_request, "sql",
@@ -97,7 +103,7 @@ static void sql_query_callback(struct sql_result *result,
 			auth_request_log_error(auth_request, "sql",
 				"Password query returned multiple matches");
 		} else if (auth_request->passdb_password == NULL &&
-			   !auth_request->no_password) {
+			   !auth_fields_exists(auth_request->extra_fields, "nopassword")) {
 			auth_request_log_info(auth_request, "sql",
 				"Empty password returned without nopassword");
 			passdb_result = PASSDB_RESULT_PASSWORD_MISMATCH;
@@ -251,7 +257,7 @@ passdb_sql_preinit(pool_t pool, const char *args)
 	struct sql_connection *conn;
 
 	module = p_new(pool, struct sql_passdb_module, 1);
-	module->conn = conn = db_sql_init(args);
+	module->conn = conn = db_sql_init(args, FALSE);
 
 	module->module.cache_key =
 		auth_cache_parse_key(pool, conn->set.password_query);
@@ -269,7 +275,8 @@ static void passdb_sql_init(struct passdb_module *_module)
 	module->module.blocking = (flags & SQL_DB_FLAG_BLOCKING) != 0;
 
 	if (!module->module.blocking || worker)
-                sql_connect(module->conn->db);
+		db_sql_connect(module->conn);
+	db_sql_check_userdb_warning(module->conn);
 }
 
 static void passdb_sql_deinit(struct passdb_module *_module)

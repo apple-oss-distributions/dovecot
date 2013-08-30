@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -11,6 +11,24 @@
 #include "index/shared/shared-storage.h"
 
 #define SHARED_NS_RETRY_SECS (60*60)
+
+static bool acl_ns_prefix_exists(struct mail_namespace *ns)
+{
+	struct mailbox *box;
+	const char *vname;
+	enum mailbox_existence existence;
+	bool ret;
+
+	if (ns->list->mail_set->mail_shared_explicit_inbox)
+		return FALSE;
+
+	vname = t_strndup(ns->prefix, ns->prefix_len-1);
+	box = mailbox_alloc(ns->list, vname, 0);
+	ret = mailbox_exists(box, FALSE, &existence) == 0 &&
+		existence == MAILBOX_EXISTENCE_SELECT;
+	mailbox_free(&box);
+	return ret;
+}
 
 static void
 acl_shared_namespace_add(struct mail_namespace *ns,
@@ -56,7 +74,7 @@ acl_shared_namespace_add(struct mail_namespace *ns,
 		break;
 	(void)mailbox_list_iter_deinit(&iter);
 
-	if (info == NULL) {
+	if (info == NULL && !acl_ns_prefix_exists(new_ns)) {
 		/* no visible mailboxes, remove the namespace */
 		mail_namespace_destroy(new_ns);
 	}
@@ -65,18 +83,19 @@ acl_shared_namespace_add(struct mail_namespace *ns,
 int acl_shared_namespaces_add(struct mail_namespace *ns)
 {
 	struct acl_user *auser = ACL_USER_CONTEXT(ns->user);
-	struct mail_storage *storage = ns->storage;
+	struct acl_mailbox_list *alist = ACL_LIST_CONTEXT(ns->list);
+	struct mail_storage *storage = mail_namespace_get_default_storage(ns);
 	struct acl_lookup_dict_iter *iter;
 	const char *name;
 
-	i_assert(ns->type == NAMESPACE_SHARED);
+	i_assert(ns->type == MAIL_NAMESPACE_TYPE_SHARED);
 	i_assert(strcmp(storage->name, SHARED_STORAGE_NAME) == 0);
 
-	if (ioloop_time < auser->last_shared_add_check + SHARED_NS_RETRY_SECS) {
+	if (ioloop_time < alist->last_shared_add_check + SHARED_NS_RETRY_SECS) {
 		/* already added, don't bother rechecking */
 		return 0;
 	}
-	auser->last_shared_add_check = ioloop_time;
+	alist->last_shared_add_check = ioloop_time;
 
 	iter = acl_lookup_dict_iterate_visible_init(auser->acl_lookup_dict);
 	while ((name = acl_lookup_dict_iterate_visible_next(iter)) != NULL) {

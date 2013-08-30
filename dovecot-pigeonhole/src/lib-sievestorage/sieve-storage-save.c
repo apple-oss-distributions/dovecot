@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -9,8 +9,10 @@
 #include "ostream.h"
 #include "str.h"
 #include "eacces-error.h"
+#include "safe-mkstemp.h"
 
 #include "sieve-script.h"
+#include "sieve-script-file.h"
 
 #include "sieve-storage-private.h"
 #include "sieve-storage-script.h"
@@ -34,6 +36,8 @@ struct sieve_save_context {
 	struct ostream *output;
 	int fd;
 	const char *tmp_path;
+
+	time_t mtime;
 
 	unsigned int failed:1;
 	unsigned int moving:1;
@@ -75,7 +79,7 @@ static int sieve_storage_create_tmp
 	string_t *path;
 	int fd;
 
-	path = t_str_new(256);	
+	path = t_str_new(256);
 	str_append(path, storage->dir);
 	str_append(path, "/tmp/");
 	prefix_len = str_len(path);
@@ -89,7 +93,7 @@ static int sieve_storage_create_tmp
 		   possibility of that happening is if time had moved
 		   backwards, but even then it's highly unlikely. */
 		if (stat(str_c(path), &st) == 0) {
-			/* try another file name */	
+			/* try another file name */
 		} else if (errno != ENOENT) {
 			sieve_storage_set_critical(storage,
 				"stat(%s) failed: %m", str_c(path));
@@ -117,7 +121,7 @@ static int sieve_storage_create_tmp
 			sieve_storage_set_critical(storage,
 				"open(%s) failed: %m", str_c(path));
 		}
-	} 
+	}
 
 	return fd;
 }
@@ -170,13 +174,13 @@ sieve_storage_save_init(struct sieve_storage *storage,
 	if ( scriptname != NULL ) {
 		/* Validate script name */
 		if ( !sieve_script_name_is_valid(scriptname) ) {
-			sieve_storage_set_error(storage, 
+			sieve_storage_set_error(storage,
 				SIEVE_ERROR_BAD_PARAMS,
 				"Invalid script name '%s'.", scriptname);
 			return NULL;
 		}
 
-		/* Prevent overwriting the active script link when it resides in the 
+		/* Prevent overwriting the active script link when it resides in the
 		 * sieve storage directory.
 		 */
 		if ( *(storage->link_path) == '\0' ) {
@@ -186,12 +190,12 @@ sieve_storage_save_init(struct sieve_storage *storage,
 			svext = strrchr(storage->active_fname, '.');
 			namelen = svext - storage->active_fname;
 			if ( svext != NULL && strncmp(svext+1, "sieve", 5) == 0 &&
-				strlen(scriptname) == namelen && 
-				strncmp(scriptname, storage->active_fname, namelen) == 0 ) 
+				strlen(scriptname) == namelen &&
+				strncmp(scriptname, storage->active_fname, namelen) == 0 )
 			{
 				sieve_storage_set_error(
-					storage, SIEVE_ERROR_BAD_PARAMS, 
-					"Script name '%s' is reserved for internal use.", scriptname); 
+					storage, SIEVE_ERROR_BAD_PARAMS,
+					"Script name '%s' is reserved for internal use.", scriptname);
 				return NULL;
 			}
 		}
@@ -201,8 +205,9 @@ sieve_storage_save_init(struct sieve_storage *storage,
 	ctx = p_new(pool, struct sieve_save_context, 1);
 	ctx->pool = pool;
 	ctx->storage = storage;
-	ctx->scriptname = scriptname;
+	ctx->scriptname = p_strdup(pool, scriptname);
 	ctx->scriptobject = NULL;
+	ctx->mtime = (time_t)-1;
 
 	T_BEGIN {
 		ctx->fd = sieve_storage_create_tmp(storage, scriptname, &path);
@@ -260,7 +265,7 @@ int sieve_storage_save_finish(struct sieve_save_context *ctx)
 
 		if ( ctx->failed ) {
 			/* delete the tmp file */
-			if (unlink(ctx->tmp_path) < 0 && errno != ENOENT) 
+			if (unlink(ctx->tmp_path) < 0 && errno != ENOENT)
 				i_warning("sieve-storage: Unlink(%s) failed: %m", ctx->tmp_path);
 
 			errno = output_errno;
@@ -277,6 +282,12 @@ int sieve_storage_save_finish(struct sieve_save_context *ctx)
 	return ( ctx->failed ? -1 : 0 );
 }
 
+void sieve_storage_save_set_mtime
+(struct sieve_save_context *ctx, time_t mtime)
+{
+	ctx->mtime = mtime;
+}
+
 static void sieve_storage_save_destroy(struct sieve_save_context **ctx)
 {
 	if ((*ctx)->scriptobject != NULL)
@@ -289,23 +300,23 @@ static void sieve_storage_save_destroy(struct sieve_save_context **ctx)
 struct sieve_script *sieve_storage_save_get_tempscript
 (struct sieve_save_context *ctx)
 {
-	const char *scriptname = 
-		( ctx->scriptname == NULL ? "" : ctx->scriptname ); 
+	const char *scriptname =
+		( ctx->scriptname == NULL ? "" : ctx->scriptname );
 
-	if (ctx->failed) 
+	if (ctx->failed)
 		return NULL;
 
 	if ( ctx->scriptobject != NULL )
 		return ctx->scriptobject;
 
 	ctx->scriptobject = sieve_storage_script_init_from_path
-		(ctx->storage, ctx->tmp_path, scriptname);	
+		(ctx->storage, ctx->tmp_path, scriptname);
 
 	if ( ctx->scriptobject == NULL ) {
 		if ( ctx->storage->error_code == SIEVE_ERROR_NOT_FOUND ) {
-			sieve_storage_set_critical(ctx->storage, 
-				"save: Temporary script file with name '%s' got lost, "
-				"which should not happen (possibly deleted externally).", 
+			sieve_storage_set_critical(ctx->storage,
+				"save: Temporary script file '%s' got lost, "
+				"which should not happen (possibly deleted externally).",
 				ctx->tmp_path);
 		}
 		return NULL;
@@ -314,23 +325,67 @@ struct sieve_script *sieve_storage_save_get_tempscript
 	return ctx->scriptobject;
 }
 
-int sieve_storage_save_commit(struct sieve_save_context **ctx)
+bool sieve_storage_save_will_activate
+(struct sieve_save_context *ctx)
 {
+	bool result = FALSE;
+
+	if ( ctx->scriptname != NULL ) T_BEGIN {
+		const char *scriptname;
+		int ret;
+
+		ret = sieve_storage_active_script_get_name(ctx->storage, &scriptname);
+		if ( ret > 0 ) {
+		 	/* Is the requested script active? */
+			result = ( strcmp(ctx->scriptname, scriptname) == 0 );
+		}
+	} T_END;
+
+	return result;
+}
+
+static void sieve_storage_update_mtime(const char *path, time_t mtime)
+{
+	struct utimbuf times = { .actime = mtime, .modtime = mtime };
+
+	if ( utime(path, &times) < 0 ) {
+		switch ( errno ) {	
+		case ENOENT:
+			break;
+		case EACCES:
+			i_error("sieve-storage: %s", eacces_error_get("utime", path));
+			break;
+		default:
+			i_error("sieve-storage: utime(%s) failed: %m", path);
+		}
+	}
+}
+
+int sieve_storage_save_commit(struct sieve_save_context **_ctx)
+{
+	struct sieve_save_context *ctx = *_ctx;
+	struct sieve_storage *storage = ctx->storage;
 	const char *dest_path;
 	bool failed = FALSE;
 
-	i_assert((*ctx)->output == NULL);
-	i_assert((*ctx)->finished);
-	i_assert((*ctx)->scriptname != NULL);
+	i_assert(ctx->output == NULL);
+	i_assert(ctx->finished);
+	i_assert(ctx->scriptname != NULL);
 
 	T_BEGIN {
-		dest_path = t_strconcat((*ctx)->storage->dir, "/", 
-			sieve_scriptfile_from_name((*ctx)->scriptname), NULL);
+		dest_path = t_strconcat(storage->dir, "/",
+			sieve_scriptfile_from_name(ctx->scriptname), NULL);
 
-		failed = !sieve_storage_script_move((*ctx), dest_path);
+		failed = !sieve_storage_script_move(ctx, dest_path);
+		if ( ctx->mtime != (time_t)-1 )
+			sieve_storage_update_mtime(dest_path, ctx->mtime);
 	} T_END;
 
-	sieve_storage_save_destroy(ctx);
+	/* set INBOX mailbox attribute */
+	if ( !failed )
+		sieve_storage_inbox_script_attribute_set(storage, ctx->scriptname);
+
+	sieve_storage_save_destroy(_ctx);
 
 	return ( failed ? -1 : 0 );
 }
@@ -339,7 +394,7 @@ void sieve_storage_save_cancel(struct sieve_save_context **ctx)
 {
 	(*ctx)->failed = TRUE;
 
-	if (!(*ctx)->finished) 
+	if (!(*ctx)->finished)
 		(void)sieve_storage_save_finish(*ctx);
 	else
 		(void)unlink((*ctx)->tmp_path);
@@ -347,4 +402,58 @@ void sieve_storage_save_cancel(struct sieve_save_context **ctx)
 	i_assert((*ctx)->output == NULL);
 
 	sieve_storage_save_destroy(ctx);
+}
+
+int sieve_storage_save_as_active_script(struct sieve_storage *storage,
+	struct istream *input, time_t mtime)
+{
+	int fd;
+	string_t *temp_path;
+	struct ostream *output;
+
+	temp_path = t_str_new(256);
+	str_append(temp_path, storage->active_path);
+	str_append_c(temp_path, '.');
+	fd = safe_mkstemp_hostpid
+		(temp_path, storage->file_create_mode, (uid_t)-1, (gid_t)-1);
+	if ( fd < 0 ) {
+		if ( errno == EACCES ) {
+			sieve_storage_set_critical(storage,
+				"failed to create temporary file: %s",
+				eacces_error_get_creating("open", str_c(temp_path)));
+		} else {
+			sieve_storage_set_critical(storage,
+				"failed to create temporary file: open(%s) failed: %m",
+				str_c(temp_path));
+		}
+		return -1;
+	}
+
+	output = o_stream_create_fd(fd, 0, FALSE);
+	if (o_stream_send_istream(output, input) < 0) {
+		sieve_storage_set_critical(storage,
+			"o_stream_send_istream(%s) failed: %m", str_c(temp_path));
+		o_stream_destroy(&output);
+		(void)unlink(str_c(temp_path));
+		return -1;
+	}
+	o_stream_destroy(&output);
+
+	if (rename(str_c(temp_path), storage->active_path) < 0) {
+		if ( ENOSPACE(errno) ) {
+			sieve_storage_set_error(storage,
+				SIEVE_ERROR_NO_SPACE, "Not enough disk space");
+		} else if ( errno == EACCES ) {
+			sieve_storage_set_critical(storage,
+				"%s", eacces_error_get("rename", storage->active_path));
+		} else {
+			sieve_storage_set_critical(storage,
+				"rename(%s, %s) failed: %m", str_c(temp_path), storage->active_path);
+		}
+	} else {
+		sieve_storage_update_mtime(storage->active_path, mtime);
+	}
+
+	(void)unlink(str_c(temp_path));
+	return 0;
 }

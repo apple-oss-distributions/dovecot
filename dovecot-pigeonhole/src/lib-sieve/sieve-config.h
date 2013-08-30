@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file 
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_CONFIG_H
@@ -10,5 +10,7 @@
 
 #define SIEVE_SCRIPT_FILEEXT "sieve"
 #define SIEVE_BINARY_FILEEXT "svbin"
+
+#define DEFAULT_ENVELOPE_SENDER "MAILER-DAEMON"
 
 #endif

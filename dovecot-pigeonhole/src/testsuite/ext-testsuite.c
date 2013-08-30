@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension testsuite
@@ -45,14 +45,15 @@
 #include "sieve-result.h"
 
 #include "testsuite-common.h"
+#include "testsuite-variables.h"
 #include "testsuite-arguments.h"
 
-/* 
- * Operations 
+/*
+ * Operations
  */
 
-const struct sieve_operation_def *testsuite_operations[] = { 
-	&test_operation, 
+const struct sieve_operation_def *testsuite_operations[] = {
+	&test_operation,
 	&test_finish_operation,
 	&test_fail_operation,
 	&test_config_set_operation,
@@ -69,22 +70,24 @@ const struct sieve_operation_def *testsuite_operations[] = {
 	&test_result_print_operation,
 	&test_message_smtp_operation,
 	&test_message_mailbox_operation,
+	&test_message_print_operation,
 	&test_mailbox_create_operation,
 	&test_mailbox_delete_operation,
 	&test_binary_load_operation,
 	&test_binary_save_operation
 };
 
-/* 
- * Operands 
+/*
+ * Operands
  */
 
-const struct sieve_operand_def *testsuite_operands[] = { 
+const struct sieve_operand_def *testsuite_operands[] = {
 	&testsuite_object_operand,
-	&testsuite_substitution_operand
+	&testsuite_substitution_operand,
+	&testsuite_namespace_operand
 };
-    
-/* 
+
+/*
  * Extension
  */
 
@@ -94,19 +97,20 @@ static bool ext_testsuite_validator_load
 	(const struct sieve_extension *ext, struct sieve_validator *valdtr);
 static bool ext_testsuite_generator_load
 	(const struct sieve_extension *ext, const struct sieve_codegen_env *cgenv);
+static bool ext_testsuite_interpreter_load
+	(const struct sieve_extension *ext, const struct sieve_runtime_env *renv,
+		sieve_size_t *address);
 static bool ext_testsuite_binary_load
 	(const struct sieve_extension *ext, struct sieve_binary *sbin);
 
 /* Extension object */
 
-const struct sieve_extension_def testsuite_extension = { 
-	"vnd.dovecot.testsuite", 
-	NULL, NULL,
-	ext_testsuite_validator_load,
-	ext_testsuite_generator_load,
-	NULL,
-	ext_testsuite_binary_load, 
-	NULL, NULL,
+const struct sieve_extension_def testsuite_extension = {
+	.name = "vnd.dovecot.testsuite",
+	.validator_load = ext_testsuite_validator_load,
+	.generator_load = ext_testsuite_generator_load,
+	.interpreter_load = ext_testsuite_interpreter_load,
+	.binary_load = ext_testsuite_binary_load,
 	SIEVE_EXT_DEFINE_OPERATIONS(testsuite_operations),
 	SIEVE_EXT_DEFINE_OPERANDS(testsuite_operands)
 };
@@ -125,6 +129,7 @@ static bool ext_testsuite_validator_load
 	sieve_validator_register_command(valdtr, ext, &cmd_test_result_print);
 	sieve_validator_register_command(valdtr, ext, &cmd_test_result_reset);
 	sieve_validator_register_command(valdtr, ext, &cmd_test_message);
+	sieve_validator_register_command(valdtr, ext, &cmd_test_message_print);
 	sieve_validator_register_command(valdtr, ext, &cmd_test_mailbox_create);
 	sieve_validator_register_command(valdtr, ext, &cmd_test_mailbox_delete);
 	sieve_validator_register_command(valdtr, ext, &cmd_test_binary_load);
@@ -140,6 +145,8 @@ static bool ext_testsuite_validator_load
 /*	sieve_validator_argument_override(valdtr, SAT_VAR_STRING, ext,
 		&testsuite_string_argument);*/
 
+	testsuite_variables_init(ext, valdtr);
+
 	return testsuite_validator_context_initialize(valdtr);
 }
 
@@ -149,9 +156,15 @@ static bool ext_testsuite_generator_load
 	return testsuite_generator_context_initialize(cgenv->gentr, ext);
 }
 
+static bool ext_testsuite_interpreter_load
+(const struct sieve_extension *ext, const struct sieve_runtime_env *renv,
+	sieve_size_t *address ATTR_UNUSED)
+{
+	return testsuite_interpreter_context_initialize(renv->interp, ext);
+}
+
 static bool ext_testsuite_binary_load
-(const struct sieve_extension *ext ATTR_UNUSED, 
-	struct sieve_binary *sbin ATTR_UNUSED)
+(const struct sieve_extension *ext ATTR_UNUSED, struct sieve_binary *sbin ATTR_UNUSED)
 {
 	return TRUE;
 }

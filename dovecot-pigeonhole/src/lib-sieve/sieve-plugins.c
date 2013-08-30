@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file 
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -22,7 +22,7 @@ typedef void (*sieve_plugin_unload_func_t)
 
 struct sieve_plugin {
 	struct module *module;
-	
+
 	void *context;
 
 	struct sieve_plugin *next;
@@ -40,25 +40,25 @@ static struct module *sieve_plugin_module_find(const char *name)
 	struct module *module;
 
 	module = sieve_modules;
-    while ( module != NULL ) {
+	while ( module != NULL ) {
 		const char *mod_name;
-		
-		/* Strip module names */
 
+		/* Strip module names */
 		mod_name = module_get_plugin_name(module);
-		
+
 		if ( strcmp(mod_name, name) == 0 )
 			return module;
 
 		module = module->next;
-    }
+	}
 
-    return NULL;
+	return NULL;
 }
 
-void sieve_plugins_load(struct sieve_instance *svinst, const char *path, const char *plugins)
+void sieve_plugins_load
+(struct sieve_instance *svinst, const char *path, const char *plugins)
 {
-	struct module *new_modules, *module;
+	struct module *module;
 	struct module_dir_load_settings mod_set;
 	const char **module_names;
 	unsigned int i;
@@ -72,32 +72,19 @@ void sieve_plugins_load(struct sieve_instance *svinst, const char *path, const c
 
 	if ( plugins == NULL || *plugins == '\0' )
 		return;
-	
+
 	if ( path == NULL || *path == '\0' )
 		path = MODULEDIR"/sieve";
 
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = PIGEONHOLE_VERSION;
+	mod_set.abi_version = PIGEONHOLE_VERSION;
 	mod_set.require_init_funcs = TRUE;
 	mod_set.debug = FALSE;
 
 	/* Load missing plugin modules */
 
-	new_modules = module_dir_load_missing
+	sieve_modules = module_dir_load_missing
 		(sieve_modules, path, plugins, &mod_set);
-
-	if ( sieve_modules == NULL ) {
-		/* No modules loaded yet */
-		sieve_modules = new_modules;
-	} else {
-		/* Find the end of the list */
-		module = sieve_modules;
-		while ( module != NULL && module->next != NULL )
-			module = module->next;
-
-		/* Add newly loaded modules */
-		module->next = new_modules;
-	}
 
 	/* Call plugin load functions for this Sieve instance */
 
@@ -136,7 +123,7 @@ void sieve_plugins_load(struct sieve_instance *svinst, const char *path, const c
 		/* Create plugin list item */
 		plugin = p_new(svinst->pool, struct sieve_plugin, 1);
 		plugin->module = module;
-	
+
 		/* Call load function */
 		load_func = (sieve_plugin_load_func_t) module_get_symbol
 			(module, t_strdup_printf("%s_load", module->name));
@@ -165,7 +152,7 @@ void sieve_plugins_unload(struct sieve_instance *svinst)
 
 	if ( svinst->plugins == NULL )
 		return;
-	
+
 	/* Call plugin unload functions for this instance */
 
 	plugin = svinst->plugins;
@@ -187,7 +174,7 @@ void sieve_plugins_unload(struct sieve_instance *svinst)
 	i_assert(sieve_modules_refcount > 0);
 
 	if ( --sieve_modules_refcount != 0 )
-        return;
+		return;
 
 	module_dir_unload(&sieve_modules);
 }

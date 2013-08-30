@@ -16,17 +16,17 @@ The home is optional. You can also return other <extra fields>
 [UserDatabase.ExtraFields.txt]. You can use the standard <variables>
 [Variables.txt] everywhere.
 
-Deliver
--------
+LDA and passdb lookup for user verification
+-------------------------------------------
 
-Unless your MTA already verifies that the user exists before calling deliver,
-you'll most likely want deliver itself to verify the user's existence. Since
-deliver looks up the user only from the userdb, it of course doesn't work with
-static userdb because there is no list of users. Normally static userdb handles
-this by doing a passdb lookup instead. This works with most passdbs, with <PAM>
-[PasswordDatabase.PAM.txt] being the most notable exception. If you want to
-avoid this user verification, you can add 'allow_all_users=yes' to the args in
-which case the passdb lookup is skipped.
+Unless your MTA already verifies that the user exists before calling
+dovecot-lda, you'll most likely want dovecot-lda itself to verify the user's
+existence. Since dovecot-lda looks up the user only from the userdb, it of
+course doesn't work with static userdb because there is no list of users.
+Normally static userdb handles this by doing a passdb lookup instead. This
+works with most passdbs, with <PAM> [PasswordDatabase.PAM.txt] being the most
+notable exception. If you want to avoid this user verification, you can add
+'allow_all_users=yes' to the args in which case the passdb lookup is skipped.
 
 Example
 -------
@@ -38,4 +38,4 @@ userdb {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

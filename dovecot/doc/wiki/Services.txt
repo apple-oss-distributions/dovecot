@@ -440,4 +440,4 @@ Mail process statistics tracking. Its behavior is very similar to the anvil
 process, but anvil's data is of higher importance and lower traffic than stats,
 so stats are tracked in a separate process.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

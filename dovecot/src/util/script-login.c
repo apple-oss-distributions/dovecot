@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "env-util.h"
@@ -79,10 +79,12 @@ static void client_connected(struct master_service_connection *conn)
 	if (fd == -1)
 		i_fatal("client fd not received");
 
+	alarm(0);
+
 	/* put everything to environment */
 	env_clean();
 	keys = t_str_new(256);
-	args = t_strsplit(data_line, "\t");
+	args = t_strsplit_tab(data_line);
 
 	if (str_array_length(args) < 3)
 		i_fatal("Missing input fields");
@@ -168,19 +170,26 @@ static void script_execute_finish(void)
 		value = getenv(t_str_ucase(*keys));
 		if (value != NULL) {
 			str_append_c(reply, '\t');
-			str_tabescape_write(reply,
+			str_append_tabescaped(reply,
 					    t_strconcat(t_str_lcase(*keys), "=",
 							value, NULL));
 		}
 	}
 	str_append_c(reply, '\n');
 
+	/* finish by sending the fd to the mail process */
 	ret = fd_send(SCRIPT_COMM_FD, STDOUT_FILENO,
 		      str_data(reply), str_len(reply));
-	if (ret < 0)
-		i_fatal("fd_send() failed: %m");
-	else if (ret != (ssize_t)str_len(reply))
-		i_fatal("fd_send() sent partial output");
+	if (ret == (ssize_t)str_len(reply)) {
+		/* success */
+	} else {
+		if (ret < 0)
+			i_error("fd_send() failed: %m");
+		else
+			i_error("fd_send() sent partial output");
+		/* exit with 0 even though we failed. non-0 exit just makes
+		   master log an unnecessary error. */
+	}
 }
 
 int main(int argc, char *argv[])

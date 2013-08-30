@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "restrict-access.h"
@@ -17,6 +17,7 @@ const struct doveadm_print_vfuncs *doveadm_print_vfuncs_all[] = {
 };
 
 struct client_connection *doveadm_client;
+int doveadm_exit_code = 0;
 
 static void doveadm_die(void)
 {
@@ -31,7 +32,8 @@ static void client_connected(struct master_service_connection *conn)
 	}
 
 	master_service_client_connection_accept(conn);
-	doveadm_client = client_connection_create(conn->fd, conn->listen_fd);
+	doveadm_client = client_connection_create(conn->fd, conn->listen_fd,
+						  conn->ssl);
 }
 
 static void main_preinit(void)
@@ -59,6 +61,7 @@ static void main_deinit(void)
 		client_connection_destroy(&doveadm_client);
 	doveadm_mail_deinit();
 	doveadm_unload_modules();
+	doveadm_print_deinit();
 }
 
 int main(int argc, char *argv[])
@@ -67,9 +70,12 @@ int main(int argc, char *argv[])
 		&doveadm_setting_parser_info,
 		NULL
 	};
+	enum master_service_flags service_flags =
+		MASTER_SERVICE_FLAG_KEEP_CONFIG_OPEN;
 	const char *error;
 
-	master_service = master_service_init("doveadm", 0, &argc, &argv, NULL);
+	master_service = master_service_init("doveadm", service_flags,
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 
@@ -79,10 +85,10 @@ int main(int argc, char *argv[])
 
 	master_service_init_log(master_service, "doveadm: ");
 	main_preinit();
-	master_service_init_finish(master_service);
 	master_service_set_die_callback(master_service, doveadm_die);
 
 	main_init();
+	master_service_init_finish(master_service);
 	master_service_run(master_service, client_connected);
 
 	main_deinit();

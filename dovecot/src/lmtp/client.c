@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -8,11 +8,15 @@
 #include "istream.h"
 #include "ostream.h"
 #include "hostpid.h"
+#include "process-title.h"
+#include "var-expand.h"
+#include "settings-parser.h"
 #include "master-service.h"
 #include "master-service-settings.h"
 #include "mail-namespace.h"
 #include "mail-storage.h"
 #include "mail-storage-service.h"
+#include "raw-storage.h"
 #include "main.h"
 #include "lda-settings.h"
 #include "lmtp-settings.h"
@@ -27,6 +31,20 @@
 
 static struct client *clients = NULL;
 unsigned int clients_count = 0;
+
+void client_state_set(struct client *client, const char *name)
+{
+	client->state.name = name;
+
+	if (!client->service_set->verbose_proctitle)
+		return;
+	if (clients_count == 0)
+		process_title_set("[idling]");
+	else if (clients_count > 1)
+		process_title_set(t_strdup_printf("[%u clients]", clients_count));
+	else
+		process_title_set(t_strdup_printf("[%s]", client->state.name));
+}
 
 static void client_idle_timeout(struct client *client)
 {
@@ -65,6 +83,8 @@ static int client_input_line(struct client *client, const char *line)
 		return cmd_rset(client, args);
 	if (strcmp(cmd, "NOOP") == 0)
 		return cmd_noop(client, args);
+	if (strcmp(cmd, "XCLIENT") == 0)
+		return cmd_xclient(client, args);
 
 	client_send_line(client, "502 5.5.2 Unknown command");
 	return 0;
@@ -123,39 +143,26 @@ static void client_input(struct client *client)
 
 static void client_raw_user_create(struct client *client)
 {
-	struct mail_namespace *raw_ns;
-	struct mail_namespace_settings raw_ns_set;
-	const char *error;
 	void **sets;
 
 	sets = master_service_settings_get_others(master_service);
-
-	client->raw_mail_user = mail_user_alloc("raw user",
-						client->user_set_info, sets[0]);
-	mail_user_set_home(client->raw_mail_user, "/");
-	if (mail_user_init(client->raw_mail_user, &error) < 0)
-		i_fatal("Raw user initialization failed: %s", error);
-
-	memset(&raw_ns_set, 0, sizeof(raw_ns_set));
-	raw_ns_set.location = ":LAYOUT=none";
-
-	raw_ns = mail_namespaces_init_empty(client->raw_mail_user);
-	raw_ns->flags |= NAMESPACE_FLAG_NOQUOTA | NAMESPACE_FLAG_NOACL;
-	raw_ns->set = &raw_ns_set;
-	if (mail_storage_create(raw_ns, "raw", 0, &error) < 0)
-		i_fatal("Couldn't create internal raw storage: %s", error);
+	client->raw_mail_user =
+		raw_storage_create_from_set(client->user_set_info, sets[0]);
 }
 
 static void client_read_settings(struct client *client)
 {
 	struct mail_storage_service_input input;
 	const struct setting_parser_context *set_parser;
+	struct lmtp_settings *lmtp_set;
+	struct lda_settings *lda_set;
 	const char *error;
 
 	memset(&input, 0, sizeof(input));
 	input.module = input.service = "lmtp";
 	input.local_ip = client->local_ip;
 	input.remote_ip = client->remote_ip;
+	input.username = "";
 
 	if (mail_storage_service_read_settings(storage_service, &input,
 					       client->pool,
@@ -163,23 +170,27 @@ static void client_read_settings(struct client *client)
 					       &set_parser, &error) < 0)
 		i_fatal("%s", error);
 
-	lmtp_settings_dup(set_parser, client->pool,
-			  &client->lmtp_set, &client->set);
+	lmtp_settings_dup(set_parser, client->pool, &lmtp_set, &lda_set);
+	settings_var_expand(&lmtp_setting_parser_info, lmtp_set, client->pool,
+		mail_storage_service_get_var_expand_table(storage_service, &input));
+	client->service_set = master_service_settings_get(master_service);
+	client->lmtp_set = lmtp_set;
+	client->set = lda_set;
 }
 
 static void client_generate_session_id(struct client *client)
 {
-	uint8_t guid[MAIL_GUID_128_SIZE];
+	guid_128_t guid;
 	string_t *id = t_str_new(30);
 
-	mail_generate_guid_128(guid);
+	guid_128_generate(guid);
 	base64_encode(guid, sizeof(guid), id);
 	i_assert(str_c(id)[str_len(id)-2] == '=');
 	str_truncate(id, str_len(id)-2); /* drop trailing "==" */
 	client->state.session_id = p_strdup(client->state_pool, str_c(id));
 }
 
-static const char *client_remote_id(struct client *client)
+const char *client_remote_id(struct client *client)
 {
 	const char *addr;
 
@@ -222,22 +233,24 @@ struct client *client_create(int fd_in, int fd_out,
 
 	client->input = i_stream_create_fd(fd_in, CLIENT_MAX_INPUT_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 
 	client_io_reset(client);
 	client->state_pool = pool_alloconly_create("client state", 4096);
 	client->state.mail_data_fd = -1;
-	client->state.name = "banner";
 	client_read_settings(client);
 	client_raw_user_create(client);
 	client_generate_session_id(client);
 	client->my_domain = client->set->hostname;
 	client->lhlo = i_strdup("missing");
+	client->proxy_ttl = LMTP_PROXY_DEFAULT_TTL;
 
 	DLLIST_PREPEND(&clients, client);
 	clients_count++;
 
-	client_send_line(client, "220 %s Dovecot LMTP ready",
-			 client->my_domain);
+	client_state_set(client, "banner");
+	client_send_line(client, "220 %s %s", client->my_domain,
+			 client->lmtp_set->login_greeting);
 	i_info("Connect from %s", client_remote_id(client));
 	return client;
 }
@@ -249,6 +262,8 @@ void client_destroy(struct client *client, const char *prefix,
 
 	clients_count--;
 	DLLIST_REMOVE(&clients, client);
+
+	client_state_set(client, "destroyed");
 
 	if (client->raw_mail_user != NULL)
 		mail_user_unref(&client->raw_mail_user);
@@ -301,17 +316,23 @@ void client_state_reset(struct client *client)
 {
 	struct mail_recipient *rcpt;
 
+	if (client->proxy != NULL)
+		lmtp_proxy_deinit(&client->proxy);
+
 	if (array_is_created(&client->state.rcpt_to)) {
 		array_foreach_modifiable(&client->state.rcpt_to, rcpt)
 			mail_storage_service_user_free(&rcpt->service_user);
 	}
 
-	if (client->state.raw_mail != NULL)
+	if (client->state.raw_mail != NULL) {
+		struct mailbox_transaction_context *raw_trans =
+			client->state.raw_mail->transaction;
+		struct mailbox *raw_box = client->state.raw_mail->box;
+
 		mail_free(&client->state.raw_mail);
-	if (client->state.raw_trans != NULL)
-		mailbox_transaction_rollback(&client->state.raw_trans);
-	if (client->state.raw_box != NULL)
-		mailbox_free(&client->state.raw_box);
+		mailbox_transaction_rollback(&raw_trans);
+		mailbox_free(&raw_box);
+	}
 
 	if (client->state.mail_data != NULL)
 		buffer_free(&client->state.mail_data);
@@ -327,7 +348,7 @@ void client_state_reset(struct client *client)
 	client->state.mail_data_fd = -1;
 
 	client_generate_session_id(client);
-	client->state.name = "reset";
+	client_state_set(client, "reset");
 }
 
 void client_send_line(struct client *client, const char *fmt, ...)
@@ -341,9 +362,32 @@ void client_send_line(struct client *client, const char *fmt, ...)
 		str = t_str_new(256);
 		str_vprintfa(str, fmt, args);
 		str_append(str, "\r\n");
-		o_stream_send(client->output, str_data(str), str_len(str));
+		o_stream_nsend(client->output, str_data(str), str_len(str));
 	} T_END;
 	va_end(args);
+}
+
+bool client_is_trusted(struct client *client)
+{
+	const char *const *net;
+	struct ip_addr net_ip;
+	unsigned int bits;
+
+	if (client->lmtp_set->login_trusted_networks == NULL)
+		return FALSE;
+
+	net = t_strsplit_spaces(client->lmtp_set->login_trusted_networks, ", ");
+	for (; *net != NULL; net++) {
+		if (net_parse_range(*net, &net_ip, &bits) < 0) {
+			i_error("login_trusted_networks: "
+				"Invalid network '%s'", *net);
+			break;
+		}
+
+		if (net_is_in_network(&client->remote_ip, &net_ip, bits))
+			return TRUE;
+	}
+	return FALSE;
 }
 
 void clients_destroy(void)

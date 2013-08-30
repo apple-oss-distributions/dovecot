@@ -1,7 +1,7 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
-#include "istream-internal.h"
+#include "istream-private.h"
 
 static ssize_t i_stream_data_read(struct istream_private *stream)
 {
@@ -23,6 +23,7 @@ struct istream *i_stream_create_from_data(const void *data, size_t size)
 	stream = i_new(struct istream_private, 1);
 	stream->buffer = data;
 	stream->pos = size;
+	stream->max_buffer_size = (size_t)-1;
 
 	stream->read = i_stream_data_read;
 	stream->seek = i_stream_data_seek;
@@ -30,7 +31,8 @@ struct istream *i_stream_create_from_data(const void *data, size_t size)
 	stream->istream.readable_fd = FALSE;
 	stream->istream.blocking = TRUE;
 	stream->istream.seekable = TRUE;
-	(void)i_stream_create(stream, NULL, -1);
+	i_stream_create(stream, NULL, -1);
 	stream->statbuf.st_size = size;
+	i_stream_set_name(&stream->istream, "(buffer)");
 	return &stream->istream;
 }

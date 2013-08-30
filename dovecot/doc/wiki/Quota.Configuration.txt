@@ -24,9 +24,11 @@ Contents
 
      3. Quota for public namespaces
 
-     4. Custom Quota Exceeded Message
+     4. Quota for private namespaces
 
-     5. Quota warnings
+     5. Custom Quota Exceeded Message
+
+     6. Quota warnings
 
 The configuration is split into multiple settings:
 
@@ -249,6 +251,40 @@ plugin {
 }
 ---%<-------------------------------------------------------------------------
 
+Quota for private namespaces
+----------------------------
+
+You can create a separate namespace-specific quota for a folder hierarchie.
+This is done by adding another namespace and the ':ns=<namespace prefix>'
+parameter to quota setting. For example you could have something like:
+
+---%<-------------------------------------------------------------------------
+namespace {
+  type = private
+  prefix = Archive/
+  #location = ..
+}
+
+plugin {
+  # Maildir quota
+  quota = maildir:User quota:ns=
+  quota2 = maildir:Archive quota:ns=Archive/
+
+  # Dict quota
+  #quota = dict:User quota:%u.default:ns=:proxy::quota
+  #quota2 = dict:Archive quota:%u.archive:ns=Archive/:proxy::quota
+
+  #quota_rules and quota2_rules..
+}
+---%<-------------------------------------------------------------------------
+
+Note: If you're using dict quota, you need to make sure that the quota of the
+'Archive' namespace is calculated for another "user" than the default
+namespace. Either track different namespaces in different backends or make sure
+the users differs.'%u.archive' defines '<username>.archive' as key to track
+quota for the 'Archive' namespace, the '%u.default' tracks the quota of other
+folders. See <Variables.txt> for further help on variables.
+
 Custom Quota Exceeded Message
 -----------------------------
 
@@ -259,6 +295,14 @@ exceeded message. You could have something like:
 plugin {
    quota_exceeded_message = Quota exceeded, please go to
 http://www.example.com/over_quota_help for instructions on how to fix this.
+}
+---%<-------------------------------------------------------------------------
+
+Dovecot can also read the quota exceeded message from a file:
+
+---%<-------------------------------------------------------------------------
+plugin {
+   quota_exceeded_message = </path/to/quota_exceeded_message.txt
 }
 ---%<-------------------------------------------------------------------------
 
@@ -278,10 +322,12 @@ quota_warning = <limit configuration> <quota-warning socket name> <parameters>
 #quota_warning3 = ..etc..
 ---%<-------------------------------------------------------------------------
 
-Limit configuration is the exact same as for rules. Usually you want to use
-percents instead of absolute limits. Only the command for the first exceeded
-limit is executed, so configure the highest limit first. The actual commands
-that are run need to be created as services.
+Limit configuration is almost exactly same as for rules, with the exception of
+adding "-" before the value for "reverse" warnings where the script is called
+when quota drops below the value. Usually you want to use percents instead of
+absolute limits. Only the command for the first exceeded limit is executed, so
+configure the highest limit first. The actual commands that are run need to be
+created as services.
 
 An example configuration:
 
@@ -289,6 +335,8 @@ An example configuration:
 plugin {
   quota_warning = storage=95%% quota-warning 95 %u
   quota_warning2 = storage=80%% quota-warning 80 %u
+  quota_warning3 = -storage=100%% quota-warning below %u # user is no longer
+over quota
 }
 
 service quota-warning {
@@ -328,4 +376,4 @@ just insert ":noenforcing" to proper location in it. For example with dict
 quota, you can use something like:'-o "plugin/quota=dict:User
 quota::noenforcing:proxy::quota"'
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

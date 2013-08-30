@@ -18,7 +18,7 @@ component. However, if you really want to run everything under a single user,
 <it's possible> [HowTo.Rootless.txt].
 
 Dovenull user
-=============
+-------------
 
 /dovenull/ user is used internally for processing users' logins. It shouldn't
 have access to any files, authentication databases or anything else either. It
@@ -30,7 +30,7 @@ You can change the default /dovenull/ user to something else from
 'default_login_user' setting.
 
 Dovecot user
-============
+------------
 
 /dovecot/ user is used internally for unprivileged Dovecot processes. It should
 belong to its own private /dovecot/ group. Mail files are not accessed as
@@ -40,7 +40,7 @@ You can change the default /dovecot/ user to something else from
 'default_internal_user' setting.
 
 Mail users
-==========
+----------
 
 You can use one or more system users for accessing users' mails. Most
 configurations can be placed to two categories:
@@ -113,7 +113,7 @@ It's also possible to give all the users access to extra groups with
 'mail_access_groups' setting.
 
 Authentication process user
-===========================
+---------------------------
 
 Depending on passdb and userdb configuration, the lookups are done either by
 auth process or auth worker process. They have different default users:
@@ -144,4 +144,4 @@ service auth-worker {
 }
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

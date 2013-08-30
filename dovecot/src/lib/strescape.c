@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -77,7 +77,7 @@ char *str_unescape(char *str)
 	return start;
 }
 
-void str_tabescape_write(string_t *dest, const char *src)
+void str_append_tabescaped(string_t *dest, const char *src)
 {
 	for (; *src != '\0'; src++) {
 		switch (*src) {
@@ -113,7 +113,7 @@ const char *str_tabescape(const char *str)
 		if (*p <= '\r') {
 			tmp = t_str_new(128);
 			str_append_n(tmp, str, p-str);
-			str_tabescape_write(tmp, p);
+			str_append_tabescaped(tmp, p);
 			return str_c(tmp);
 		}
 	}
@@ -200,4 +200,20 @@ char *str_tabunescape(char *str)
 
 	*dest = '\0';
 	return start;
+}
+
+char **p_strsplit_tabescaped(pool_t pool, const char *str)
+{
+	char **args;
+	unsigned int i;
+
+	args = p_strsplit(pool, str, "\t");
+	for (i = 0; args[i] != NULL; i++)
+		args[i] = str_tabunescape(args[i]);
+	return args;
+}
+
+const char *const *t_strsplit_tabescaped(const char *str)
+{
+	return (void *)p_strsplit_tabescaped(pool_datastack_create(), str);
 }

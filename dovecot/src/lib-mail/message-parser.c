@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -54,6 +54,8 @@ static int parse_next_body_to_boundary(struct message_parser_ctx *ctx,
 				       struct message_block *block_r);
 static int parse_next_body_to_eof(struct message_parser_ctx *ctx,
 				  struct message_block *block_r);
+static int preparsed_parse_epilogue_init(struct message_parser_ctx *ctx,
+					 struct message_block *block_r);
 static int preparsed_parse_next_header_init(struct message_parser_ctx *ctx,
 					    struct message_block *block_r);
 
@@ -151,7 +153,10 @@ static int message_parser_read_more(struct message_parser_ctx *ctx,
 		}
 	}
 
-	ctx->want_count = 1;
+	if (!*full_r) {
+		/* reset number of wanted characters if we actually got them */
+		ctx->want_count = 1;
+	}
 	return 1;
 }
 
@@ -264,16 +269,30 @@ static int parse_next_body_skip_boundary_line(struct message_parser_ctx *ctx,
 	ptr = memchr(block_r->data, '\n', block_r->size);
 	if (ptr == NULL) {
 		parse_body_add_block(ctx, block_r);
-		return 1;
+		if (block_r->size > 0 &&
+		    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_BOUNDARIES) != 0)
+			return 1;
+		return 0;
 	}
 
 	/* found the LF */
 	block_r->size = (ptr - block_r->data) + 1;
 	parse_body_add_block(ctx, block_r);
 
-	/* a new MIME part begins */
-	ctx->parse_next_block = parse_next_mime_header_init;
-	return 1;
+	if (ctx->boundaries == NULL || ctx->boundaries->part != ctx->part) {
+		/* epilogue */
+		if (ctx->boundaries != NULL)
+			ctx->parse_next_block = parse_next_body_to_boundary;
+		else
+			ctx->parse_next_block = parse_next_body_to_eof;
+	} else {
+		/* a new MIME part begins */
+		ctx->parse_next_block = parse_next_mime_header_init;
+	}
+	if (block_r->size > 0 &&
+	    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_BOUNDARIES) != 0)
+		return 1;
+	return ctx->parse_next_block(ctx, block_r);
 }
 
 static int parse_part_finish(struct message_parser_ctx *ctx,
@@ -281,6 +300,7 @@ static int parse_part_finish(struct message_parser_ctx *ctx,
 			     struct message_block *block_r, bool first_line)
 {
 	struct message_part *part;
+	size_t line_size;
 
 	/* get back to parent MIME part, summing the child MIME part sizes
 	   into parent's body sizes */
@@ -293,28 +313,35 @@ static int parse_part_finish(struct message_parser_ctx *ctx,
 	if (boundary->epilogue_found) {
 		/* this boundary isn't needed anymore */
 		ctx->boundaries = boundary->next;
-
-		if (ctx->boundaries != NULL)
-			ctx->parse_next_block = parse_next_body_to_boundary;
-		else
-			ctx->parse_next_block = parse_next_body_to_eof;
-		return ctx->parse_next_block(ctx, block_r);
+	} else {
+		/* forget about the boundaries we possibly skipped */
+		ctx->boundaries = boundary;
 	}
-
-	/* forget about the boundaries we possibly skipped */
-	ctx->boundaries = boundary;
 
 	/* the boundary itself should already be in buffer. add that. */
 	block_r->data = i_stream_get_data(ctx->input, &block_r->size);
-	i_assert(block_r->size >= ctx->skip + 2 + boundary->len +
-		 (first_line ? 0 : 1));
+	i_assert(block_r->size >= ctx->skip);
 	block_r->data += ctx->skip;
-	/* [\n]--<boundary> */
-	block_r->size = (first_line ? 0 : 1) + 2 + boundary->len;
+	/* [[\r]\n]--<boundary>[--] */
+	if (first_line)
+		line_size = 0;
+	else if (block_r->data[0] == '\r') {
+		i_assert(block_r->data[1] == '\n');
+		line_size = 2;
+	} else {
+		i_assert(block_r->data[0] == '\n');
+		line_size = 1;
+	}
+	line_size += 2 + boundary->len + (boundary->epilogue_found ? 2 : 0);
+	i_assert(block_r->size >= ctx->skip + line_size);
+	block_r->size = line_size;
 	parse_body_add_block(ctx, block_r);
 
 	ctx->parse_next_block = parse_next_body_skip_boundary_line;
-	return 1;
+
+	if ((ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_BOUNDARIES) != 0)
+		return 1;
+	return ctx->parse_next_block(ctx, block_r);
 }
 
 static int parse_next_body_to_boundary(struct message_parser_ctx *ctx,
@@ -376,6 +403,10 @@ static int parse_next_body_to_boundary(struct message_parser_ctx *ctx,
 	} else if (boundary_start == 0) {
 		/* no linefeeds in this block. we can just skip it. */
 		ret = 0;
+		if (block_r->data[block_r->size-1] == '\r') {
+			/* this may be the beginning of the \r\n--boundary */
+			block_r->size--;
+		}
 		boundary_start = block_r->size;
 	} else {
 		/* the boundary wasn't found from this data block,
@@ -392,6 +423,11 @@ static int parse_next_body_to_boundary(struct message_parser_ctx *ctx,
 	}
 	if (block_r->size != 0) {
 		parse_body_add_block(ctx, block_r);
+
+		if ((ctx->part->flags & MESSAGE_PART_FLAG_MULTIPART) != 0 &&
+		    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_MULTIPART_BLOCKS) == 0)
+			return 0;
+
 		return 1;
 	}
 	return ret <= 0 ? ret :
@@ -408,6 +444,11 @@ static int parse_next_body_to_eof(struct message_parser_ctx *ctx,
 		return ret;
 
 	parse_body_add_block(ctx, block_r);
+
+	if ((ctx->part->flags & MESSAGE_PART_FLAG_MULTIPART) != 0 &&
+	    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_MULTIPART_BLOCKS) == 0)
+		return 0;
+
 	return 1;
 }
 
@@ -423,7 +464,7 @@ static void parse_content_type(struct message_parser_ctx *ctx,
 	ctx->part_seen_content_type = TRUE;
 
 	rfc822_parser_init(&parser, hdr->full_value, hdr->full_value_len, NULL);
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 
 	content_type = t_str_new(64);
 	if (rfc822_parse_content_type(&parser, content_type) < 0)
@@ -446,7 +487,7 @@ static void parse_content_type(struct message_parser_ctx *ctx,
 	    ctx->last_boundary != NULL)
 		return;
 
-	(void)rfc2231_parse(&parser, &results);
+	rfc2231_parse(&parser, &results);
 	for (; *results != NULL; results += 2) {
 		if (strcasecmp(results[0], "boundary") == 0) {
 			ctx->last_boundary =
@@ -464,7 +505,6 @@ static int parse_next_header(struct message_parser_ctx *ctx,
 {
 	struct message_part *part = ctx->part;
 	struct message_header_line *hdr;
-	size_t size;
 	int ret;
 
 	if (ctx->skip > 0) {
@@ -474,8 +514,7 @@ static int parse_next_header(struct message_parser_ctx *ctx,
 
 	ret = message_parse_header_next(ctx->hdr_parser_ctx, &hdr);
 	if (ret == 0 || (ret < 0 && ctx->input->stream_errno != 0)) {
-		(void)i_stream_get_data(ctx->input, &size);
-		ctx->want_count = size + 1;
+		ctx->want_count = i_stream_get_data_size(ctx->input) + 1;
 		return ret;
 	}
 
@@ -583,6 +622,24 @@ static void preparsed_skip_to_next(struct message_parser_ctx *ctx)
 			ctx->part = ctx->part->next;
 			break;
 		}
+
+		/* parse epilogue of multipart parent if requested */
+		if (ctx->part->parent != NULL &&
+		    (ctx->part->parent->flags & MESSAGE_PART_FLAG_MULTIPART) != 0 &&
+		    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_MULTIPART_BLOCKS) != 0) {
+			/* check for presence of epilogue */
+			uoff_t part_end = ctx->part->physical_pos +
+				ctx->part->header_size.physical_size +
+				ctx->part->body_size.physical_size;
+			uoff_t parent_end = ctx->part->parent->physical_pos +
+				ctx->part->parent->header_size.physical_size +
+				ctx->part->parent->body_size.physical_size;
+
+			if (parent_end > part_end) {
+				ctx->parse_next_block = preparsed_parse_epilogue_init;
+				break;
+			}
+		}
 		ctx->part = ctx->part->parent;
 	}
 	if (ctx->part == NULL)
@@ -596,6 +653,17 @@ static int preparsed_parse_body_finish(struct message_parser_ctx *ctx,
 	ctx->skip = 0;
 
 	preparsed_skip_to_next(ctx);
+	return ctx->parse_next_block(ctx, block_r);
+}
+
+static int preparsed_parse_prologue_finish(struct message_parser_ctx *ctx,
+					   struct message_block *block_r)
+{
+	i_stream_skip(ctx->input, ctx->skip);
+	ctx->skip = 0;
+
+	ctx->parse_next_block = preparsed_parse_next_header_init;
+	ctx->part = ctx->part->children;
 	return ctx->parse_next_block(ctx, block_r);
 }
 
@@ -619,6 +687,145 @@ static int preparsed_parse_body_more(struct message_parser_ctx *ctx,
 	return 1;
 }
 
+static int preparsed_parse_prologue_more(struct message_parser_ctx *ctx,
+					 struct message_block *block_r)
+{
+	uoff_t boundary_min_start, end_offset;
+	const unsigned char *cur;
+	bool full;
+	int ret;
+
+	i_assert(ctx->part->children != NULL);
+	end_offset = ctx->part->children->physical_pos;
+
+	if ((ret = message_parser_read_more(ctx, block_r, &full)) <= 0)
+		return ret;
+
+	if (ctx->input->v_offset + block_r->size >= end_offset) {
+		/* we've got the full prologue: clip off the initial boundary */
+		block_r->size = end_offset - ctx->input->v_offset;
+		cur = block_r->data + block_r->size - 1;
+
+		/* [\r]\n--boundary[\r]\n */ 
+		if (block_r->size < 5 || *cur != '\n') {
+			ctx->broken = TRUE;
+			return -1;
+		}
+		
+		cur--;
+		if (*cur == '\r') cur--;
+
+		/* find newline just before boundary */
+		for (; cur >= block_r->data; cur--) {
+			if (*cur == '\n') break;
+		}
+
+		if (cur[0] != '\n' || cur[1] != '-' || cur[2] != '-') {
+			ctx->broken = TRUE;
+			return -1;
+		}
+
+		if (cur != block_r->data && cur[-1] == '\r') cur--;
+
+		/* clip boundary */
+		block_r->size = cur - block_r->data;			
+
+		ctx->parse_next_block = preparsed_parse_prologue_finish;
+		ctx->skip = block_r->size;
+		return 1;
+	}
+		
+	/* retain enough data in the stream buffer to contain initial boundary */
+	if (end_offset > BOUNDARY_END_MAX_LEN)
+		boundary_min_start = end_offset - BOUNDARY_END_MAX_LEN;
+	else
+		boundary_min_start = 0;
+
+	if (ctx->input->v_offset + block_r->size >= boundary_min_start) {
+		if (boundary_min_start <= ctx->input->v_offset)
+			return 0;
+		block_r->size = boundary_min_start - ctx->input->v_offset;
+	}
+	ctx->skip = block_r->size;
+	return 1;
+}
+
+static int preparsed_parse_epilogue_more(struct message_parser_ctx *ctx,
+					 struct message_block *block_r)
+{
+	uoff_t end_offset = ctx->part->physical_pos +
+		ctx->part->header_size.physical_size +
+		ctx->part->body_size.physical_size;
+	bool full;
+	int ret;
+
+	if ((ret = message_parser_read_more(ctx, block_r, &full)) <= 0)
+		return ret;
+
+	if (ctx->input->v_offset + block_r->size >= end_offset) {
+		block_r->size = end_offset - ctx->input->v_offset;
+		ctx->parse_next_block = preparsed_parse_body_finish;
+	}
+	ctx->skip = block_r->size;
+	return 1;
+}
+
+static int preparsed_parse_epilogue_boundary(struct message_parser_ctx *ctx,
+					     struct message_block *block_r)
+{
+	uoff_t end_offset = ctx->part->physical_pos +
+		ctx->part->header_size.physical_size +
+		ctx->part->body_size.physical_size;
+	const unsigned char *data, *cur;
+	size_t size;
+	bool full;
+	int ret;
+
+	if (end_offset - ctx->input->v_offset < 7) {
+		ctx->broken = TRUE;
+		return -1;
+	}
+
+	if ((ret = message_parser_read_more(ctx, block_r, &full)) <= 0)
+		return ret;
+
+	/* [\r]\n--boundary--[\r]\n */
+	if (block_r->size < 7) {
+		ctx->want_count = 7;
+		return 0;
+	}
+
+	data = block_r->data;
+	size = block_r->size;
+	cur = data;
+
+	if (*cur == '\r') cur++;
+
+	if (cur[0] != '\n' || cur[1] != '-' || data[2] != '-') {
+		ctx->broken = TRUE;
+		return -1;
+	}
+
+	/* find the end of the line */
+	cur += 3;
+	if ((cur = memchr(cur, '\n', size - (cur-data))) == NULL) {
+		if (end_offset < ctx->input->v_offset + size) {
+			ctx->broken = TRUE;
+			return -1;
+		} else if (ctx->input->v_offset + size < end_offset &&
+			   size < BOUNDARY_END_MAX_LEN &&
+			   !ctx->input->eof && !full) {
+			ctx->want_count = BOUNDARY_END_MAX_LEN;
+			return 0;
+		}
+	}
+
+	block_r->size = 0;
+	ctx->parse_next_block = preparsed_parse_epilogue_more;
+	ctx->skip = cur - data + 1;
+	return 0;
+}
+
 static int preparsed_parse_body_init(struct message_parser_ctx *ctx,
 				     struct message_block *block_r)
 {
@@ -632,16 +839,48 @@ static int preparsed_parse_body_init(struct message_parser_ctx *ctx,
 	}
 	i_stream_skip(ctx->input, offset - ctx->input->v_offset);
 
-	ctx->parse_next_block = preparsed_parse_body_more;
-	return preparsed_parse_body_more(ctx, block_r);
+	/* multipart messages may begin with --boundary--, which makes them
+	   not have any children. */
+	if ((ctx->part->flags & MESSAGE_PART_FLAG_MULTIPART) == 0 ||
+	    ctx->part->children == NULL)
+		ctx->parse_next_block = preparsed_parse_body_more;
+	else
+		ctx->parse_next_block = preparsed_parse_prologue_more;
+	return ctx->parse_next_block(ctx, block_r);
+}
+
+static int preparsed_parse_epilogue_init(struct message_parser_ctx *ctx,
+					 struct message_block *block_r)
+{
+	uoff_t offset = ctx->part->physical_pos +
+		ctx->part->header_size.physical_size +
+		ctx->part->body_size.physical_size;
+
+	ctx->part = ctx->part->parent;
+
+	if (offset < ctx->input->v_offset) {
+		/* last child was actually larger than the cached size
+		   suggested */
+		ctx->broken = TRUE;
+		return -1;
+	}
+	i_stream_skip(ctx->input, offset - ctx->input->v_offset);
+
+	ctx->parse_next_block = preparsed_parse_epilogue_boundary;
+	return ctx->parse_next_block(ctx, block_r);
 }
 
 static int preparsed_parse_finish_header(struct message_parser_ctx *ctx,
 					 struct message_block *block_r)
 {
 	if (ctx->part->children != NULL) {
-		ctx->parse_next_block = preparsed_parse_next_header_init;
-		ctx->part = ctx->part->children;
+		if ((ctx->part->flags & MESSAGE_PART_FLAG_MULTIPART) != 0 &&
+		    (ctx->flags & MESSAGE_PARSER_FLAG_INCLUDE_MULTIPART_BLOCKS) != 0)
+			ctx->parse_next_block = preparsed_parse_body_init;
+		else {
+			ctx->parse_next_block = preparsed_parse_next_header_init;
+			ctx->part = ctx->part->children;
+		}
 	} else if ((ctx->flags & MESSAGE_PARSER_FLAG_SKIP_BODY_BLOCK) == 0) {
 		ctx->parse_next_block = preparsed_parse_body_init;
 	} else {
@@ -654,13 +893,11 @@ static int preparsed_parse_next_header(struct message_parser_ctx *ctx,
 				       struct message_block *block_r)
 {
 	struct message_header_line *hdr;
-	size_t size;
 	int ret;
 
 	ret = message_parse_header_next(ctx->hdr_parser_ctx, &hdr);
 	if (ret == 0 || (ret < 0 && ctx->input->stream_errno != 0)) {
-		(void)i_stream_get_data(ctx->input, &size);
-		ctx->want_count = size + 1;
+		ctx->want_count = i_stream_get_data_size(ctx->input) + 1;
 		return ret;
 	}
 
@@ -702,10 +939,10 @@ static int preparsed_parse_next_header_init(struct message_parser_ctx *ctx,
 	return preparsed_parse_next_header(ctx, block_r);
 }
 
-struct message_parser_ctx *
-message_parser_init(pool_t part_pool, struct istream *input,
-		    enum message_header_parser_flags hdr_flags,
-		    enum message_parser_flags flags)
+static struct message_parser_ctx *
+message_parser_init_int(struct istream *input,
+			enum message_header_parser_flags hdr_flags,
+			enum message_parser_flags flags)
 {
 	struct message_parser_ctx *ctx;
 	pool_t pool;
@@ -713,14 +950,24 @@ message_parser_init(pool_t part_pool, struct istream *input,
 	pool = pool_alloconly_create("Message Parser", 1024);
 	ctx = p_new(pool, struct message_parser_ctx, 1);
 	ctx->parser_pool = pool;
-	ctx->part_pool = part_pool;
 	ctx->hdr_flags = hdr_flags;
 	ctx->flags = flags;
 	ctx->input = input;
-	ctx->parts = ctx->part = part_pool == NULL ? NULL :
-		p_new(part_pool, struct message_part, 1);
-	ctx->parse_next_block = parse_next_header_init;
 	i_stream_ref(input);
+	return ctx;
+}
+
+struct message_parser_ctx *
+message_parser_init(pool_t part_pool, struct istream *input,
+		    enum message_header_parser_flags hdr_flags,
+		    enum message_parser_flags flags)
+{
+	struct message_parser_ctx *ctx;
+
+	ctx = message_parser_init_int(input, hdr_flags, flags);
+	ctx->part_pool = part_pool;
+	ctx->parts = ctx->part = p_new(part_pool, struct message_part, 1);
+	ctx->parse_next_block = parse_next_header_init;
 	return ctx;
 }
 
@@ -732,7 +979,7 @@ message_parser_init_from_parts(struct message_part *parts,
 {
 	struct message_parser_ctx *ctx;
 
-	ctx = message_parser_init(NULL, input, hdr_flags, flags);
+	ctx = message_parser_init_int(input, hdr_flags, flags);
 	ctx->parts = ctx->part = parts;
 	ctx->parse_next_block = preparsed_parse_next_header_init;
 	return ctx;
@@ -806,6 +1053,7 @@ void message_parser_parse_header(struct message_parser_ctx *ctx,
 			break;
 	}
 	i_assert(ret != 0);
+	i_assert(ctx->part != NULL);
 
 	if (ret < 0) {
 		/* well, can't return error so fake end of headers */

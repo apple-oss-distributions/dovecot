@@ -4,8 +4,10 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
 	-I$(top_srcdir)/src/lib-settings \
 	-I$(top_srcdir)/src/lib-auth \
-	-I$(top_srcdir)/src/lib-dns \
+	-I$(top_srcdir)/src/lib-sasl \
 	-I$(top_srcdir)/src/lib-master \
+	-I$(top_srcdir)/src/lib-ssl-iostream \
+	-I$(top_srcdir)/src/lib-mail \
 	-DPKG_STATEDIR=\""$(statedir)"\"
 
 liblogin_la_SOURCES = \
@@ -21,7 +23,12 @@ liblogin_la_SOURCES = \
 	ssl-proxy-gnutls.c \
 	ssl-proxy-openssl.c
 
+if BUILD_OPENSSL
+openssl_obj = ../lib-ssl-iostream/iostream-openssl-common.lo
+endif
+
 liblogin_la_LIBADD = \
+	$(openssl_obj) \
 	$(SSL_LIBS)
 
 headers = \
@@ -39,6 +46,6 @@ pkginc_lib_HEADERS = $(headers)
 
 pkglib_LTLIBRARIES = libdovecot-login.la
 libdovecot_login_la_SOURCES = 
-libdovecot_login_la_LIBADD = liblogin.la
+libdovecot_login_la_LIBADD = liblogin.la ../lib-ssl-iostream/libssl_iostream.la ../lib-dovecot/libdovecot.la $(SSL_LIBS)
 libdovecot_login_la_DEPENDENCIES = liblogin.la
 libdovecot_login_la_LDFLAGS = -export-dynamic

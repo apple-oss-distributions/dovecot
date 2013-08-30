@@ -92,4 +92,4 @@ the included maildirlock utility. The idea is to:
  6. Unlock the maildir by sending a TERM signal to the maildirlock process
     (killing the PID it wrote to stdout).
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

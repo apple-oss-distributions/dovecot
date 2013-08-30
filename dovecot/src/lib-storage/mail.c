@@ -1,8 +1,9 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "buffer.h"
+#include "hash.h"
 #include "hex-binary.h"
 #include "crc32.h"
 #include "sha1.h"
@@ -38,7 +39,14 @@ void mail_set_seq(struct mail *mail, uint32_t seq)
 {
 	struct mail_private *p = (struct mail_private *)mail;
 
-	p->v.set_seq(mail, seq);
+	p->v.set_seq(mail, seq, FALSE);
+}
+
+void mail_set_seq_saving(struct mail *mail, uint32_t seq)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+
+	p->v.set_seq(mail, seq, TRUE);
 }
 
 bool mail_set_uid(struct mail *mail, uint32_t uid)
@@ -46,6 +54,22 @@ bool mail_set_uid(struct mail *mail, uint32_t uid)
 	struct mail_private *p = (struct mail_private *)mail;
 
 	return p->v.set_uid(mail, uid);
+}
+
+bool mail_prefetch(struct mail *mail)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+
+	return p->v.prefetch(mail);
+}
+
+void mail_add_temp_wanted_fields(struct mail *mail,
+				 enum mail_fetch_field fields,
+				 struct mailbox_header_lookup_ctx *headers)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+
+	p->v.add_temp_wanted_fields(mail, fields, headers);
 }
 
 enum mail_flags mail_get_flags(struct mail *mail)
@@ -60,6 +84,13 @@ uint64_t mail_get_modseq(struct mail *mail)
 	struct mail_private *p = (struct mail_private *)mail;
 
 	return p->v.get_modseq(mail);
+}
+
+uint64_t mail_get_pvt_modseq(struct mail *mail)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+
+	return p->v.get_pvt_modseq(mail);
 }
 
 const char *const *mail_get_keywords(struct mail *mail)
@@ -86,10 +117,6 @@ int mail_get_parts(struct mail *mail, struct message_part **parts_r)
 int mail_get_date(struct mail *mail, time_t *date_r, int *timezone_r)
 {
 	struct mail_private *p = (struct mail_private *)mail;
-	int tz;
-
-	if (timezone_r == NULL)
-		timezone_r = &tz;
 
 	return p->v.get_date(mail, date_r, timezone_r);
 }
@@ -163,21 +190,75 @@ int mail_get_header_stream(struct mail *mail,
 	return p->v.get_header_stream(mail, headers, stream_r);
 }
 
-int mail_set_aborted(struct mail *mail)
+void mail_set_aborted(struct mail *mail)
 {
 	mail_storage_set_error(mail->box->storage, MAIL_ERROR_NOTPOSSIBLE,
 			       "Mail field not cached");
-	return -1;
 }
 
 int mail_get_stream(struct mail *mail, struct message_size *hdr_size,
 		    struct message_size *body_size, struct istream **stream_r)
 {
 	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
 
-	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER)
-		return mail_set_aborted(mail);
-	return p->v.get_stream(mail, hdr_size, body_size, stream_r);
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_stream(mail, TRUE, hdr_size, body_size, stream_r);
+	} T_END;
+	return ret;
+}
+
+int mail_get_hdr_stream(struct mail *mail, struct message_size *hdr_size,
+			struct istream **stream_r)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
+
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_stream(mail, FALSE, hdr_size, NULL, stream_r);
+	} T_END;
+	return ret;
+}
+
+int mail_get_binary_stream(struct mail *mail, const struct message_part *part,
+			   bool include_hdr, uoff_t *size_r,
+			   bool *binary_r, struct istream **stream_r)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
+
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_binary_stream(mail, part, include_hdr,
+					     size_r, NULL, binary_r, stream_r);
+	} T_END;
+	return ret;
+}
+
+int mail_get_binary_size(struct mail *mail, const struct message_part *part,
+			 bool include_hdr, uoff_t *size_r,
+			 unsigned int *lines_r)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+	bool binary;
+	int ret;
+
+	T_BEGIN {
+		ret = p->v.get_binary_stream(mail, part, include_hdr,
+					     size_r, lines_r, &binary, NULL);
+	} T_END;
+	return ret;
 }
 
 int mail_get_special(struct mail *mail, enum mail_fetch_field field,
@@ -185,7 +266,10 @@ int mail_get_special(struct mail *mail, enum mail_fetch_field field,
 {
 	struct mail_private *p = (struct mail_private *)mail;
 
-	return p->v.get_special(mail, field, value_r);
+	if (p->v.get_special(mail, field, value_r) < 0)
+		return -1;
+	i_assert(*value_r != NULL);
+	return 0;
 }
 
 struct mail *mail_get_real_mail(struct mail *mail)
@@ -218,6 +302,13 @@ void mail_update_modseq(struct mail *mail, uint64_t min_modseq)
 	p->v.update_modseq(mail, min_modseq);
 }
 
+void mail_update_pvt_modseq(struct mail *mail, uint64_t min_pvt_modseq)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+
+	p->v.update_pvt_modseq(mail, min_pvt_modseq);
+}
+
 void mail_update_pop3_uidl(struct mail *mail, const char *uidl)
 {
 	struct mail_private *p = (struct mail_private *)mail;
@@ -240,17 +331,11 @@ void mail_set_expunged(struct mail *mail)
 	mail->expunged = TRUE;
 }
 
-bool mail_is_cached(struct mail *mail)
-{
-	return mail_cache_field_exists_any(mail->transaction->cache_view,
-					   mail->seq);
-}
-
-void mail_parse(struct mail *mail, bool parse_body)
+void mail_precache(struct mail *mail)
 {
 	struct mail_private *p = (struct mail_private *)mail;
 
-	p->v.parse(mail, parse_body);
+	p->v.precache(mail);
 }
 
 void mail_set_cache_corrupted(struct mail *mail, enum mail_fetch_field field)
@@ -260,103 +345,21 @@ void mail_set_cache_corrupted(struct mail *mail, enum mail_fetch_field field)
 	p->v.set_cache_corrupted(mail, field);
 }
 
-const char *mail_generate_guid_string(void)
-{
-	static struct timespec ts = { 0, 0 };
-	static unsigned int pid = 0;
-
-	/* we'll use the current time in nanoseconds as the initial 64bit
-	   counter. */
-	if (ts.tv_sec == 0) {
-		if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
-			i_fatal("clock_gettime() failed: %m");
-		pid = getpid();
-	} else if ((uint32_t)ts.tv_nsec < (uint32_t)-1) {
-		ts.tv_nsec++;
-	} else {
-		ts.tv_sec++;
-		ts.tv_nsec = 0;
-	}
-	return t_strdup_printf("%04x%04lx%04x%s",
-			       (unsigned int)ts.tv_nsec,
-			       (unsigned long)ts.tv_sec,
-			       pid, my_hostname);
-}
-
-void mail_generate_guid_128(uint8_t guid[MAIL_GUID_128_SIZE])
-{
-	static struct timespec ts = { 0, 0 };
-	static uint8_t guid_static[8];
-	uint32_t pid, host_crc;
-
-	/* we'll use the current time in nanoseconds as the initial 64bit
-	   counter. */
-	if (ts.tv_sec == 0) {
-		if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
-			i_fatal("clock_gettime() failed: %m");
-		pid = getpid();
-		host_crc = crc32_str(my_hostname);
-
-		guid_static[0] = (pid & 0x000000ff);
-		guid_static[1] = (pid & 0x0000ff00) >> 8;
-		guid_static[2] = (pid & 0x00ff0000) >> 16;
-		guid_static[3] = (pid & 0xff000000) >> 24;
-		guid_static[4] = (host_crc & 0x000000ff);
-		guid_static[5] = (host_crc & 0x0000ff00) >> 8;
-		guid_static[6] = (host_crc & 0x00ff0000) >> 16;
-		guid_static[7] = (host_crc & 0xff000000) >> 24;
-	} else if ((uint32_t)ts.tv_nsec < (uint32_t)-1) {
-		ts.tv_nsec++;
-	} else {
-		ts.tv_sec++;
-		ts.tv_nsec = 0;
-	}
-
-	guid[0] = (ts.tv_nsec & 0x000000ff);
-	guid[1] = (ts.tv_nsec & 0x0000ff00) >> 8;
-	guid[2] = (ts.tv_nsec & 0x00ff0000) >> 16;
-	guid[3] = (ts.tv_nsec & 0xff000000) >> 24;
-	guid[4] = (ts.tv_sec & 0x000000ff);
-	guid[5] = (ts.tv_sec & 0x0000ff00) >> 8;
-	guid[6] = (ts.tv_sec & 0x00ff0000) >> 16;
-	guid[7] = (ts.tv_sec & 0xff000000) >> 24;
-	memcpy(guid + 8, guid_static, 8);
-}
-
-void mail_generate_guid_128_hash(const char *guid,
-				 uint8_t guid_128[MAIL_GUID_128_SIZE])
+void mail_generate_guid_128_hash(const char *guid, guid_128_t guid_128_r)
 {
 	unsigned char sha1_sum[SHA1_RESULTLEN];
 	buffer_t buf;
 
-	buffer_create_data(&buf, guid_128, MAIL_GUID_128_SIZE);
-	if (strlen(guid) != MAIL_GUID_128_SIZE*2 ||
-	    hex_to_binary(guid, &buf) < 0 ||
-	    buf.used != MAIL_GUID_128_SIZE) {
+	if (guid_128_from_string(guid, guid_128_r) < 0) {
 		/* not 128bit hex. use a hash of it instead. */
+		buffer_create_from_data(&buf, guid_128_r, GUID_128_SIZE);
 		buffer_set_used_size(&buf, 0);
 		sha1_get_digest(guid, strlen(guid), sha1_sum);
 #if SHA1_RESULTLEN < DBOX_GUID_BIN_LEN
 #  error not possible
 #endif
 		buffer_append(&buf,
-			      sha1_sum + SHA1_RESULTLEN - MAIL_GUID_128_SIZE,
-			      MAIL_GUID_128_SIZE);
+			      sha1_sum + SHA1_RESULTLEN - GUID_128_SIZE,
+			      GUID_128_SIZE);
 	}
-}
-
-bool mail_guid_128_is_empty(const uint8_t guid_128[MAIL_GUID_128_SIZE])
-{
-	unsigned int i;
-
-	for (i = 0; i < MAIL_GUID_128_SIZE; i++) {
-		if (guid_128[i] != 0)
-			return FALSE;
-	}
-	return TRUE;
-}
-
-const char *mail_guid_128_to_string(const uint8_t guid_128[MAIL_GUID_128_SIZE])
-{
-	return binary_to_hex(guid_128, MAIL_GUID_128_SIZE);
 }

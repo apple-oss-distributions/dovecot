@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -52,6 +52,8 @@ void mail_index_transaction_unref(struct mail_index_transaction **_t)
 
 	array_free(&t->module_contexts);
 	mail_index_view_transaction_unref(t->view);
+	if (t->latest_view != NULL)
+		mail_index_view_close(&t->latest_view);
 	mail_index_view_close(&t->view);
 	i_free(t);
 }
@@ -89,6 +91,27 @@ uint32_t mail_index_transaction_get_next_uid(struct mail_index_transaction *t)
 	return next_uid;
 }
 
+void mail_index_transaction_lookup_latest_keywords(struct mail_index_transaction *t,
+						   uint32_t seq,
+						   ARRAY_TYPE(keyword_indexes) *keywords)
+{
+	uint32_t uid, latest_seq;
+
+	/* seq points to the transaction's primary view */
+	mail_index_lookup_uid(t->view, seq, &uid);
+
+	/* get the latest keywords from the updated index, or fallback to the
+	   primary view if the message is already expunged */
+	if (t->latest_view == NULL) {
+		mail_index_refresh(t->view->index);
+		t->latest_view = mail_index_view_open(t->view->index);
+	}
+	if (mail_index_lookup_seq(t->latest_view, uid, &latest_seq))
+		mail_index_lookup_keywords(t->latest_view, latest_seq, keywords);
+	else
+		mail_index_lookup_keywords(t->view, seq, keywords);
+}
+
 static int
 mail_transaction_log_file_refresh(struct mail_index_transaction *t,
 				  struct mail_transaction_log_append_ctx *ctx)
@@ -123,19 +146,24 @@ mail_index_transaction_commit_real(struct mail_index_transaction *t,
 				   uoff_t *commit_size_r)
 {
 	struct mail_transaction_log *log = t->view->index->log;
-	bool external = (t->flags & MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL) != 0;
 	struct mail_transaction_log_append_ctx *ctx;
+	enum mail_transaction_type trans_flags = 0;
 	uint32_t log_seq1, log_seq2;
 	uoff_t log_offset1, log_offset2;
 	int ret;
 
-	if (mail_transaction_log_append_begin(log->index, external, &ctx) < 0)
+	if ((t->flags & MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL) != 0)
+		trans_flags |= MAIL_TRANSACTION_EXTERNAL;
+	if ((t->flags & MAIL_INDEX_TRANSACTION_FLAG_SYNC) != 0)
+		trans_flags |= MAIL_TRANSACTION_SYNC;
+
+	if (mail_transaction_log_append_begin(log->index, trans_flags, &ctx) < 0)
 		return -1;
 	ret = mail_transaction_log_file_refresh(t, ctx);
-	if (ret > 0) {
+	if (ret > 0) T_BEGIN {
 		mail_index_transaction_finish(t);
 		mail_index_transaction_export(t, ctx);
-	}
+	} T_END;
 
 	mail_transaction_log_get_head(log, &log_seq1, &log_offset1);
 	if (mail_transaction_log_append_commit(&ctx) < 0 || ret < 0)
@@ -188,7 +216,7 @@ static int mail_index_transaction_commit_v(struct mail_index_transaction *t,
 		   expunge handlers get run for the newly expunged messages
 		   (and sync handlers that require HANDLER_FILE as well). */
 		index->sync_commit_result = result_r;
-		(void)mail_index_refresh(index);
+		mail_index_refresh(index);
 		index->sync_commit_result = NULL;
 	}
 
@@ -219,7 +247,7 @@ int mail_index_transaction_commit_full(struct mail_index_transaction **_t,
 		mail_index_transaction_rollback(_t);
 		return -1;
 	}
-	if (!index_undeleted) {
+	if (!index_undeleted && !t->commit_deleted_index) {
 		if (t->view->index->index_deleted ||
 		    (t->view->index->index_delete_requested &&
 		     !t->view->index->syncing)) {

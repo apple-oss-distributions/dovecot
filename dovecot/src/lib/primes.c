@@ -1,3 +1,5 @@
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
+
 #include "lib.h"
 #include "primes.h"
 
@@ -41,7 +43,7 @@ unsigned int primes_closest(unsigned int num)
 	unsigned int i;
 
 	for (i = 31; i > PRIME_SKIP_COUNT; i--) {
-		if ((num & (1 << i)) != 0)
+		if ((num & (1U << i)) != 0)
 			return primes[i - PRIME_SKIP_COUNT];
 	}
 	return primes[0];

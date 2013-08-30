@@ -14,11 +14,6 @@ HOWTOs / Examples / Tutorials
  * <OpenLDAP> [HowTo.DovecotOpenLdap.txt] ( <Cheat sheet>
    [HowTo.DoveLdapCheatSheet.txt])
  * Postfix and Active Directory or OpenLDAP [http://www.linuxmail.info]
- * Samba LDAP PDC / Mail / DNS / DHCP server
-   [http://wiki.nutum.es/linux/samba/samba_ldap_mds/inicio], using Debian,
-   Samba, OpenLDAP, Postfix, Dovecot, Bind, Horde (fully integrated with Ingo
-   for Sieve scripts management) and MDS as administration interface (in
-   Spanish)
 
 <System users> [SystemUsers.txt] and/or <Virtual users> [VirtualUsers.txt] with
 <LDAP> [AuthDatabase.LDAP.txt]:
@@ -51,9 +46,11 @@ HOWTOs / Examples / Tutorials
     * Mailserver virtual configuration (Postfix, Dovecot, SMTP Auth, PostgreSQL
       backend) German
       [http://www.tuxj0b.de/HOWTO_Mailserver_mit_Postfix_Dovecot_Antispam_und_PostgreSQL_Backend]
-    * PostgreSQL, Postfix (Dovecot LDA and Dovecot SASL), Dovecot and vmm
-      (command line tool) [http://vmm.localdomain.org/] (also available in
-      German [http://de.vmm.localdomain.org/])
+    * PostgreSQL, Postfix (Dovecot LMTP and Dovecot SASL), Dovecot and vmm
+      (command line tool) [http://vmm.localdomain.org/]
+    * Installing a fully fledged, ready to use mailserver on Centos 6 with
+      Postfix, PostgreSQL, Amavis, ClamAV, Spamassassin and Dovecot
+      [http://shisaa.jp/postset/mailserver-1.html]
  * SQLite
     * Postfix+Dovecot with SQLite3 backend [http://rob0.nodns4.us/howto/] (also
       implements system users)
@@ -72,6 +69,7 @@ Others:
  * <POP-before-SMTP> [HowTo.PopBSMTPAndDovecot.txt]
     * <Pop Relay Compatibility> [HowTo.PopRelay.txt]
  * <Refiltering mail> [HowTo.RefilterMail.txt]
+ * <Triggering getmail on IMAP access> [HowTo.TriggerGetmailOnIMAPAccess.txt]
  * <Outlook calendar sharing using Bynari Connector (commercial software) with
    dovecot> [HowTo.BynariConnector.txt]
  * <Using fail2ban with Dovecot> [HowTo.Fail2Ban.txt]
@@ -83,5 +81,7 @@ Others:
    [http://discussions.apple.com/forum.jspa?forumID=1350]
  * <Postfix + Dspam + Dovecot via LTMP>
    [HowTo.Virtual+Postfix+Dspam+Dovecot.txt]
+ * Postfix + Dovecot2.0.13 + MySQL virtual_users as proxy to DBMail
+   [http://content.fens.org/index.php?q=admin-howto/mail/dovecot2dbmail-proxy]
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -1,5 +1,5 @@
 if BUILD_UNFINISHED
-UNFINISHED = 
+UNFINISHED =
 endif
 
 SUBDIRS = \
@@ -20,6 +20,7 @@ SUBDIRS = \
 	date \
 	spamvirustest \
 	ihave \
+	editheader \
 	vnd.dovecot \
 	$(UNFINISHED)
 

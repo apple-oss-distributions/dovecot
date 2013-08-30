@@ -68,4 +68,4 @@ socket that will be used when performing user lookups. There's a readme file
 (README.dovecotauth) together with patch with a little bit more information
 regarding the use of this extension.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

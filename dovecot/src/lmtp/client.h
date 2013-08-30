@@ -1,7 +1,7 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-#include "network.h"
+#include "net.h"
 
 #define CLIENT_MAIL_DATA_MAX_INMEMORY_SIZE (1024*128)
 
@@ -15,7 +15,7 @@ struct client_state {
 	const char *name;
 	const char *session_id;
 	const char *mail_from;
-	ARRAY_DEFINE(rcpt_to, struct mail_recipient);
+	ARRAY(struct mail_recipient) rcpt_to;
 	unsigned int rcpt_idx;
 
 	unsigned int data_end_idx;
@@ -27,8 +27,6 @@ struct client_state {
 	struct ostream *mail_data_output;
 	const char *added_headers;
 
-	struct mailbox *raw_box;
-	struct mailbox_transaction_context *raw_trans;
 	struct mail *raw_mail;
 
 	struct mail_user *dest_user;
@@ -45,6 +43,7 @@ struct client {
 	const struct setting_parser_info *user_set_info;
 	const struct lda_settings *set;
 	const struct lmtp_settings *lmtp_set;
+	const struct master_service_settings *service_set;
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
@@ -64,6 +63,8 @@ struct client {
 	struct client_state state;
 	struct istream *dot_input;
 	struct lmtp_proxy *proxy;
+	unsigned int proxy_ttl;
+	unsigned int proxy_timeout_secs;
 
 	unsigned int disconnected:1;
 };
@@ -73,17 +74,20 @@ extern unsigned int clients_count;
 struct client *client_create(int fd_in, int fd_out,
 			     const struct master_service_connection *conn);
 void client_destroy(struct client *client, const char *prefix,
-		    const char *reason);
+		    const char *reason) ATTR_NULL(2, 3);
 void client_disconnect(struct client *client, const char *prefix,
 		       const char *reason);
 void client_io_reset(struct client *client);
 void client_state_reset(struct client *client);
+void client_state_set(struct client *client, const char *name);
+const char *client_remote_id(struct client *client);
 
 void client_input_handle(struct client *client);
 int client_input_read(struct client *client);
 
 void client_send_line(struct client *client, const char *fmt, ...)
 	ATTR_FORMAT(2, 3);
+bool client_is_trusted(struct client *client);
 
 void clients_destroy(void);
 

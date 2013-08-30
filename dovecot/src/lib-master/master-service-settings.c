@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -11,6 +11,7 @@
 #include "execv-const.h"
 #include "settings-parser.h"
 #include "master-service-private.h"
+#include "master-service-ssl-settings.h"
 #include "master-service-settings.h"
 
 #include <stddef.h>
@@ -33,6 +34,8 @@ static bool
 master_service_settings_check(void *_set, pool_t pool, const char **error_r);
 
 static const struct setting_define master_service_setting_defines[] = {
+	DEF(SET_STR, base_dir),
+	DEF(SET_STR, state_dir),
 	DEF(SET_STR, log_path),
 	DEF(SET_STR, info_log_path),
 	DEF(SET_STR, debug_log_path),
@@ -47,6 +50,8 @@ static const struct setting_define master_service_setting_defines[] = {
 };
 
 static const struct master_service_settings master_service_default_settings = {
+	.base_dir = PKG_RUNDIR,
+	.state_dir = PKG_STATEDIR,
 	.log_path = "syslog",
 	.info_log_path = "",
 	.debug_log_path = "",
@@ -111,7 +116,7 @@ master_service_exec_config(struct master_service *service,
 
 	/* @UNSAFE */
 	i = 0;
-	argv_max_count = 9 + (service->argc + 1) + 1;
+	argv_max_count = 11 + (service->argc + 1) + 1;
 	conf_argv = t_new(const char *, argv_max_count);
 	conf_argv[i++] = DOVECOT_CONFIG_BIN_PATH;
 	conf_argv[i++] = "-f";
@@ -121,6 +126,10 @@ master_service_exec_config(struct master_service *service,
 	if (input->module != NULL) {
 		conf_argv[i++] = "-m";
 		conf_argv[i++] = input->module;
+		if (service->want_ssl_settings) {
+			conf_argv[i++] = "-m";
+			conf_argv[i++] = "ssl";
+		}
 	}
 	if (input->parse_full_config)
 		conf_argv[i++] = "-p";
@@ -141,6 +150,7 @@ config_exec_fallback(struct master_service *service,
 {
 	const char *path;
 	struct stat st;
+	int saved_errno = errno;
 
 	if (input->never_exec)
 		return;
@@ -152,6 +162,7 @@ config_exec_fallback(struct master_service *service,
 		/* it's a file, not a socket/pipe */
 		master_service_exec_config(service, input);
 	}
+	errno = saved_errno;
 }
 
 static int
@@ -211,12 +222,15 @@ master_service_open_config(struct master_service *service,
 }
 
 static void
-config_build_request(string_t *str,
+config_build_request(struct master_service *service, string_t *str,
 		     const struct master_service_settings_input *input)
 {
 	str_append(str, "REQ");
-	if (input->module != NULL)
+	if (input->module != NULL) {
 		str_printfa(str, "\tmodule=%s", input->module);
+		if (service->want_ssl_settings)
+			str_append(str, "\tmodule=ssl");
+	}
 	if (input->service != NULL)
 		str_printfa(str, "\tservice=%s", input->service);
 	if (input->username != NULL)
@@ -231,7 +245,8 @@ config_build_request(string_t *str,
 }
 
 static int
-config_send_request(const struct master_service_settings_input *input,
+config_send_request(struct master_service *service,
+		    const struct master_service_settings_input *input,
 		    int fd, const char *path, const char **error_r)
 {
 	int ret;
@@ -241,7 +256,7 @@ config_send_request(const struct master_service_settings_input *input,
 
 		str = t_str_new(128);
 		str_append(str, CONFIG_HANDSHAKE);
-		config_build_request(str, input);
+		config_build_request(service, str, input);
 		ret = write_full(fd, str_data(str), str_len(str));
 	} T_END;
 	if (ret < 0) {
@@ -297,7 +312,7 @@ config_read_reply_header(struct istream *istream, const char *path, pool_t pool,
 	}
 
 	T_BEGIN {
-		const char *const *arg = t_strsplit(line, "\t");
+		const char *const *arg = t_strsplit_tab(line);
 		ARRAY_TYPE(const_string) services;
 
 		p_array_init(&services, pool, 8);
@@ -316,11 +331,28 @@ config_read_reply_header(struct istream *istream, const char *path, pool_t pool,
 			 }
 		}
 		if (input->service == NULL) {
-			(void)array_append_space(&services);
+			array_append_zero(&services);
 			output_r->specific_services = array_idx(&services, 0);
 		}
 	} T_END;
 	return 0;
+}
+
+void master_service_config_socket_try_open(struct master_service *service)
+{
+	struct master_service_settings_input input;
+	const char *path, *error;
+	int fd;
+
+	if (getenv("DOVECONF_ENV") != NULL ||
+	    (service->flags & MASTER_SERVICE_FLAG_NO_CONFIG_SETTINGS) != 0)
+		return;
+
+	memset(&input, 0, sizeof(input));
+	input.never_exec = TRUE;
+	fd = master_service_open_config(service, &input, &path, &error);
+	if (fd != -1)
+		service->config_fd = fd;
 }
 
 int master_service_settings_read(struct master_service *service,
@@ -328,7 +360,7 @@ int master_service_settings_read(struct master_service *service,
 				 struct master_service_settings_output *output_r,
 				 const char **error_r)
 {
-	ARRAY_DEFINE(all_roots, const struct setting_parser_info *);
+	ARRAY(const struct setting_parser_info *) all_roots;
 	const struct setting_parser_info *tmp_root;
 	struct setting_parser_context *parser;
 	struct istream *istream;
@@ -337,19 +369,32 @@ int master_service_settings_read(struct master_service *service,
 	unsigned int i;
 	int ret, fd = -1;
 	time_t now, timeout;
+	bool use_environment, retry;
 
 	memset(output_r, 0, sizeof(*output_r));
 
 	if (getenv("DOVECONF_ENV") == NULL &&
 	    (service->flags & MASTER_SERVICE_FLAG_NO_CONFIG_SETTINGS) == 0) {
-		fd = master_service_open_config(service, input, &path, error_r);
-		if (fd == -1)
-			return -1;
+		retry = service->config_fd != -1;
+		for (;;) {
+			fd = master_service_open_config(service, input,
+							&path, error_r);
+			if (fd == -1) {
+				if (errno == EACCES)
+					output_r->permission_denied = TRUE;
+				return -1;
+			}
 
-		if (config_send_request(input, fd, path, error_r) < 0) {
-			(void)close(fd);
-			config_exec_fallback(service, input);
-			return -1;
+			if (config_send_request(service, input, fd,
+						path, error_r) == 0)
+				break;
+			if (!retry) {
+				i_close_fd(&fd);
+				config_exec_fallback(service, input);
+				return -1;
+			}
+			/* config process died, retry connecting */
+			retry = FALSE;
 		}
 	}
 
@@ -365,6 +410,10 @@ int master_service_settings_read(struct master_service *service,
 	p_array_init(&all_roots, service->set_pool, 8);
 	tmp_root = &master_service_setting_parser_info;
 	array_append(&all_roots, &tmp_root, 1);
+	if (service->want_ssl_settings) {
+		tmp_root = &master_service_ssl_setting_parser_info;
+		array_append(&all_roots, &tmp_root, 1);
+	}
 	if (input->roots != NULL) {
 		for (i = 0; input->roots[i] != NULL; i++)
 			array_append(&all_roots, &input->roots[i], 1);
@@ -405,7 +454,7 @@ int master_service_settings_read(struct master_service *service,
 				*error_r = t_strdup_printf(
 					"Timeout reading config from %s", path);
 			}
-			(void)close(fd);
+			i_close_fd(&fd);
 			config_exec_fallback(service, input);
 			return -1;
 		}
@@ -414,10 +463,13 @@ int master_service_settings_read(struct master_service *service,
 		    service->config_fd == -1 && input->config_path == NULL)
 			service->config_fd = fd;
 		else
-			(void)close(fd);
+			i_close_fd(&fd);
+		use_environment = FALSE;
+	} else {
+		use_environment = TRUE;
 	}
 
-	if (fd == -1 || service->keep_environment) {
+	if (use_environment || service->keep_environment) {
 		if (settings_parse_environ(parser) < 0) {
 			*error_r = settings_parser_get_error(parser);
 			return -1;
@@ -487,7 +539,15 @@ master_service_settings_get(struct master_service *service)
 
 void **master_service_settings_get_others(struct master_service *service)
 {
-	return settings_parser_get_list(service->set_parser) + 1;
+	return master_service_settings_parser_get_others(service,
+							 service->set_parser);
+}
+
+void **master_service_settings_parser_get_others(struct master_service *service,
+						 const struct setting_parser_context *set_parser)
+{
+	return settings_parser_get_list(set_parser) + 1 +
+		(service->want_ssl_settings ? 1 : 0);
 }
 
 struct setting_parser_context *

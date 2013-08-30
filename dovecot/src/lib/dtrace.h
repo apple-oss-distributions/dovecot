@@ -2,7 +2,7 @@
    defined in dtrace-dovecot.d. */
 
 /*
- * Copyright (c) 2008-2012 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  * 
  * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
  * computers and is subject to the terms and conditions of the Apple Software

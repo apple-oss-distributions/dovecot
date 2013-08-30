@@ -16,6 +16,7 @@ struct lda_settings {
 
 	bool quota_full_tempfail;
 	bool lda_mailbox_autocreate;
+	bool lda_mailbox_listid_autosave;	/* Apple */
 	bool lda_mailbox_autosubscribe;
 };
 

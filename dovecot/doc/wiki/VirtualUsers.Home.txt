@@ -7,8 +7,8 @@ files*.
  * Dovecot's home directories have nothing to do with system users' home
    directories.
  * It's irrelevant if it's under '/home/' or '/var/mail/' or wherever.
- * If you have trouble understanding this, mentally replace all mentions of
-   "home directory" to "mail user's private state directory".
+ * If you have trouble understanding this, mentally replace all occurrences of
+   "home directory" with "mail user's private state directory".
 
 And in particular:
 
@@ -34,6 +34,7 @@ that, but you might run into trouble with it sooner or later. Some problems
 with this are:
 
  * Non-mailbox files may show up as mailboxes.
+    * If you see this with Maildir, 'maildir_stat_dirs=yes' hides them.
  * Or user just might not be able to create mailbox with wanted name, because
    there already exists a conflicting file
     * e.g. with Maildir if you have '.dovecot.sieve' file, user can't create a
@@ -85,4 +86,4 @@ user_attrs = .., mailDirectory=home=/var/vmail/%$
 
 Then just use 'mail_location = maildir:~/Maildir'.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

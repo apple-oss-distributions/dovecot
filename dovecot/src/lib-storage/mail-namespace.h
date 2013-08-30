@@ -5,15 +5,19 @@
 
 struct mail_storage_callbacks;
 
-enum namespace_type {
-	NAMESPACE_PRIVATE	= 0x01,
-	NAMESPACE_SHARED	= 0x02,
-	NAMESPACE_PUBLIC	= 0x04
+enum mail_namespace_type {
+	MAIL_NAMESPACE_TYPE_PRIVATE	= 0x01,
+	MAIL_NAMESPACE_TYPE_SHARED	= 0x02,
+	MAIL_NAMESPACE_TYPE_PUBLIC	= 0x04
+#define MAIL_NAMESPACE_TYPE_MASK_ALL \
+	(MAIL_NAMESPACE_TYPE_PRIVATE | MAIL_NAMESPACE_TYPE_SHARED | \
+	 MAIL_NAMESPACE_TYPE_PUBLIC)
 };
 
 enum namespace_flags {
-	/* Namespace contains the user's INBOX mailbox (there can be only
-	   one) */
+	/* Namespace contains the user's INBOX mailbox. Normally only a single
+	   namespace has this flag set, but when using alias_for for the INBOX
+	   namespace the flag gets copied to the alias namespace as well */
 	NAMESPACE_FLAG_INBOX_USER	= 0x01,
 	/* Namespace contains someone's INBOX. This is set for both user's
 	   INBOX namespace and also for any other users' shared namespaces. */
@@ -45,8 +49,7 @@ struct mail_namespace {
 	struct mail_namespace *next;
 	int refcount;
 
-        enum namespace_type type;
-	char sep, real_sep, sep_str[3];
+        enum mail_namespace_type type;
 	enum namespace_flags flags;
 
 	char *prefix;
@@ -64,18 +67,19 @@ struct mail_namespace {
 
 	struct mail_user *user, *owner;
 	struct mailbox_list *list;
-	/* FIXME: we should support multiple storages in one namespace */
-	struct mail_storage *storage;
+	struct mail_storage *storage; /* default storage */
+	ARRAY(struct mail_storage *) all_storages;
 
 	const struct mail_namespace_settings *set, *unexpanded_set;
 	const struct mail_storage_settings *mail_set;
 
+	unsigned int special_use_mailboxes:1;
 	unsigned int destroyed:1;
 };
 
 int mail_namespaces_init(struct mail_user *user, const char **error_r);
 int mail_namespaces_init_location(struct mail_user *user, const char *location,
-				  const char **error_r);
+				  const char **error_r) ATTR_NULL(2);
 struct mail_namespace *mail_namespaces_init_empty(struct mail_user *user);
 /* Deinitialize all namespaces. mail_user_deinit() calls this automatically
    for user's namespaces. */
@@ -95,48 +99,44 @@ void mail_namespace_add_storage(struct mail_namespace *ns,
 /* Destroy a single namespace and remove it from user's namespaces list. */
 void mail_namespace_destroy(struct mail_namespace *ns);
 
-/* Update hierarchy separators in given name to real_sep characters. */
-const char *mail_namespace_fix_sep(struct mail_namespace *ns, const char *name);
-/* Skip namespace prefix and change hierarchy separators. */
-const char *mail_namespace_get_storage_name(struct mail_namespace *ns,
-					    const char *name);
-/* Write virtual mailbox name to dest and return it. Separators are changed to
-   virtual ones and namespace prefix is inserted except for INBOX. */
-const char *mail_namespace_get_vname(struct mail_namespace *ns, string_t *dest,
-				     const char *name);
 /* Returns the default storage to use for newly created mailboxes. */
 struct mail_storage *
 mail_namespace_get_default_storage(struct mail_namespace *ns);
 
+/* Return namespace's hierarchy separator. */
+char mail_namespace_get_sep(struct mail_namespace *ns);
 /* Returns the hierarchy separator for mailboxes that are listed at root. */
-char mail_namespaces_get_root_sep(const struct mail_namespace *namespaces)
+char mail_namespaces_get_root_sep(struct mail_namespace *namespaces)
 	ATTR_PURE;
 
-/* Returns namespace based on the mailbox name's prefix. Updates mailbox to
-   be a valid name inside the namespace (prefix is skipped, hierarchy separator
-   is changed to real_sep). If no namespaces were found, returns NULL. */
+/* Returns namespace based on the mailbox name's prefix. Note that there is
+   always a prefix="" namespace, so for this function NULL is never returned. */
 struct mail_namespace *
-mail_namespace_find(struct mail_namespace *namespaces, const char **mailbox);
-/* Like above, but ignore hidden namespaces. */
+mail_namespace_find(struct mail_namespace *namespaces, const char *mailbox);
+/* Same as mail_namespace_find(), but if the namespace has alias_for set,
+   return that namespace instead and change mailbox name to be a valid
+   inside it. */
+struct mail_namespace *
+mail_namespace_find_unalias(struct mail_namespace *namespaces,
+			    const char **mailbox);
+
+/* Like mail_namespace_find(), but ignore hidden namespaces. */
 struct mail_namespace *
 mail_namespace_find_visible(struct mail_namespace *namespaces,
-			    const char **mailbox);
-/* Like above, but find only from namespaces with subscriptions flag set. */
+			    const char *mailbox);
+/* Like mail_namespace_find(), but find only from namespaces with
+   subscriptions=yes. */
 struct mail_namespace *
 mail_namespace_find_subscribable(struct mail_namespace *namespaces,
-				 const char **mailbox);
-/* Like above, but find only from namespaces with subscriptions flag not set. */
+				 const char *mailbox);
+/* Like mail_namespace_find(), but find only from namespaces with
+   subscriptions=no. */
 struct mail_namespace *
 mail_namespace_find_unsubscribable(struct mail_namespace *namespaces,
-				   const char **mailbox);
-/* Returns the INBOX namespace */
+				   const char *mailbox);
+/* Returns the INBOX namespace, or NULL if there is no such  */
 struct mail_namespace *
 mail_namespace_find_inbox(struct mail_namespace *namespaces);
-/* Returns TRUE if the given namespace matches the mailbox's prefix.
-   Updates mailbox name to be a valid name inside the namespace. */
-bool mail_namespace_update_name(const struct mail_namespace *ns,
-				const char **mailbox);
-
 /* Find a namespace with given prefix. */
 struct mail_namespace *
 mail_namespace_find_prefix(struct mail_namespace *namespaces,

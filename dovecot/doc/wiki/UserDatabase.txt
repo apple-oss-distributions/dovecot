@@ -32,6 +32,8 @@ Currently supported user databases are:
  * <NSS> [UserDatabase.NSS.txt]: Name Service Switch
  * <LDAP> [AuthDatabase.LDAP.txt]: Lightweight Directory Access Protocol
  * <SQL> [AuthDatabase.SQL.txt]: SQL database (PostgreSQL, MySQL, SQLite)
+ * <Dict> [AuthDatabase.Dict.txt]: Dict key-value database (Redis, memcached,
+   etc.)
  * <Static> [UserDatabase.Static.txt]: Userdb information generated from a
    given template
  * <VPopMail> [AuthDatabase.VPopMail.txt]: External software used to handle
@@ -39,4 +41,4 @@ Currently supported user databases are:
  * <Prefetch> [UserDatabase.Prefetch.txt]: This assumes that the passdb already
    returned also all the required user database information
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

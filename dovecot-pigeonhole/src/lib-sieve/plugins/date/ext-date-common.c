@@ -1,9 +1,10 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
 #include "utc-offset.h"
 #include "str.h"
+#include "iso8601-date.h"
 #include "message-date.h"
 
 #include "sieve-common.h"
@@ -27,7 +28,7 @@ struct ext_date_context {
  */
 
 static void ext_date_runtime_init
-(const struct sieve_extension *ext, const struct sieve_runtime_env *renv, 
+(const struct sieve_extension *ext, const struct sieve_runtime_env *renv,
 	void *context ATTR_UNUSED)
 {
 	struct ext_date_context *dctx;
@@ -37,7 +38,7 @@ static void ext_date_runtime_init
 	int zone_offset;
 
 	/* Get current time at instance main script is started */
-	time(&current_date);	
+	time(&current_date);
 
 	tm = localtime(&current_date);
 	zone_offset = utc_offset(tm, current_date);
@@ -61,7 +62,7 @@ static struct sieve_interpreter_extension date_interpreter_extension = {
 bool ext_date_interpreter_load
 (const struct sieve_extension *ext, const struct sieve_runtime_env *renv,
 	sieve_size_t *address ATTR_UNUSED)
-{	
+{
 	/* Register runtime hook to obtain stript start timestamp */
 	if ( renv->msgctx == NULL ||
 		sieve_message_context_extension_get(renv->msgctx, ext) == NULL ) {
@@ -92,7 +93,7 @@ bool ext_date_parse_timezone
 		offset = ((str[1]-'0') * 10 + (str[2]-'0')) * 60  +
 			(str[3]-'0') * 10 + (str[4]-'0');
 
-		if ( zone_offset_r != NULL )		
+		if ( zone_offset_r != NULL )
 			*zone_offset_r = *str == '+' ? offset : -offset;
 
 		return TRUE;
@@ -107,14 +108,14 @@ bool ext_date_parse_timezone
 
 time_t ext_date_get_current_date
 (const struct sieve_runtime_env *renv, int *zone_offset_r)
-{	
+{
 	const struct sieve_extension *this_ext = renv->oprtn->ext;
-	struct ext_date_context *dctx = (struct ext_date_context *) 
+	struct ext_date_context *dctx = (struct ext_date_context *)
 		sieve_message_context_extension_get(renv->msgctx, this_ext);
 
 	if ( dctx == NULL ) {
 		ext_date_runtime_init(this_ext, renv, NULL);
-		dctx = (struct ext_date_context *) 
+		dctx = (struct ext_date_context *)
 			sieve_message_context_extension_get(renv->msgctx, this_ext);
 
 		i_assert(dctx != NULL);
@@ -128,11 +129,11 @@ time_t ext_date_get_current_date
 	return dctx->current_date;
 }
 
-/* 
- * Date parts 
+/*
+ * Date parts
  */
 
-/* "year"      => the year, "0000" .. "9999". 
+/* "year"      => the year, "0000" .. "9999".
  */
 
 static const char *ext_date_year_part_get(struct tm *tm, int zone_offset);
@@ -179,7 +180,7 @@ static const struct ext_date_part date_date_part = {
  *              Julian Day minus 2400000.5.  Sample routines to
  *              convert to and from modified Julian dates are
  *              given in Appendix A.
- */ 
+ */
 
 static const char *ext_date_julian_part_get(struct tm *tm, int zone_offset);
 
@@ -188,7 +189,7 @@ static const struct ext_date_part julian_date_part = {
 	ext_date_julian_part_get
 };
 
-/* "hour"      => the hour, "00" .. "23". 
+/* "hour"      => the hour, "00" .. "23".
  */
 static const char *ext_date_hour_part_get(struct tm *tm, int zone_offset);
 
@@ -258,7 +259,7 @@ static const struct ext_date_part zone_date_part = {
 	"zone",
 	ext_date_zone_part_get
 };
- 
+
 /* "weekday"   => the day of the week expressed as an integer between
  *                "0" and "6". "0" is Sunday, "1" is Monday, etc.
  */
@@ -276,27 +277,32 @@ static const struct ext_date_part weekday_date_part = {
 static const struct ext_date_part *date_parts[] = {
 	&year_date_part, &month_date_part, &day_date_part, &date_date_part,
 	&julian_date_part, &hour_date_part, &minute_date_part, &second_date_part,
-	&time_date_part, &iso8601_date_part, &std11_date_part, &zone_date_part, 
-	&weekday_date_part 
+	&time_date_part, &iso8601_date_part, &std11_date_part, &zone_date_part,
+	&weekday_date_part
 };
 
 unsigned int date_parts_count = N_ELEMENTS(date_parts);
 
-const char *ext_date_part_extract
-(const char *part, struct tm *tm, int zone_offset)
+const struct ext_date_part *ext_date_part_find(const char *part)
 {
 	unsigned int i;
 
 	for ( i = 0; i < date_parts_count; i++ ) {
 		if ( strcasecmp(date_parts[i]->identifier, part) == 0 ) {
-			if ( date_parts[i]->get_string != NULL )
-				return date_parts[i]->get_string(tm, zone_offset);
-
-			return NULL;
+			return date_parts[i];
 		}
 	}
-	
+
 	return NULL;
+}
+
+const char *ext_date_part_extract
+(const struct ext_date_part *dpart, struct tm *tm, int zone_offset)
+{
+	if ( dpart == NULL || dpart->get_string == NULL )
+		return NULL;
+
+	return dpart->get_string(tm, zone_offset);
 }
 
 /*
@@ -333,7 +339,7 @@ static const char *ext_date_day_part_get
 static const char *ext_date_date_part_get
 (struct tm *tm, int zone_offset ATTR_UNUSED)
 {
-	return t_strdup_printf("%04d-%02d-%02d", 
+	return t_strdup_printf("%04d-%02d-%02d",
 		tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
 }
 
@@ -344,8 +350,8 @@ static const char *ext_date_julian_part_get
 	int month = tm->tm_mon+1;
 	int day = tm->tm_mday;
 	int c, ya, jd;
-	
-	/* Modified from RFC 5260 Appendix A */	
+
+	/* Modified from RFC 5260 Appendix A (refer to Errata) */
 
 	if ( month > 2 )
 		month -= 3;
@@ -358,7 +364,7 @@ static const char *ext_date_julian_part_get
 	ya = year - c * 100;
 
 	jd = c * 146097 / 4 + ya * 1461 / 4 + (month * 153 + 2) / 5 + day + 1721119;
-	
+
 	return t_strdup_printf("%d", jd - 2400001);
 }
 
@@ -389,49 +395,17 @@ static const char *ext_date_time_part_get
 static const char *ext_date_iso8601_part_get
 (struct tm *tm, int zone_offset)
 {
-	const char *time_offset;
-
-	/* 
-	 * RFC 3339: 5.6. Internet Date/Time Format
-	 * 
-	 * The following profile of ISO 8601 [ISO8601] dates SHOULD be used in
-	 * new protocols on the Internet.  This is specified using the syntax
-	 * description notation defined in [ABNF].
-	 * 
-	 * date-fullyear   = 4DIGIT
-	 * date-month      = 2DIGIT  ; 01-12
-	 * date-mday       = 2DIGIT  ; 01-28, 01-29, 01-30, 01-31 based on
-	 * 		                     ; month/year
-	 * time-hour       = 2DIGIT  ; 00-23
-	 * time-minute     = 2DIGIT  ; 00-59
-	 * time-second     = 2DIGIT  ; 00-58, 00-59, 00-60 based on leap second
-	 * 		                     ; rules
-	 * time-secfrac    = "." 1*DIGIT
-	 * time-numoffset  = ("+" / "-") time-hour ":" time-minute
-	 * time-offset     = "Z" / time-numoffset
-	 * 
-	 * partial-time    = time-hour ":" time-minute ":" time-second
-	 * 		             [time-secfrac]
-	 * full-date       = date-fullyear "-" date-month "-" date-mday
-	 * full-time       = partial-time time-offset
-	 * 
-	 * date-time       = full-date "T" full-time
-	 * 
+	/* From RFC: `The restricted ISO 8601 format is specified by the date-time
+	 * ABNF production given in [RFC3339], Section 5.6, with the added
+   * restrictions that the letters "T" and "Z" MUST be in upper case, and
+	 * a time zone offset of zero MUST be represented by "Z" and not "+00:00".
 	 */
-
 	if ( zone_offset == 0 )
-		time_offset = "Z";
-	else {
-		int offset = zone_offset > 0 ? zone_offset : -zone_offset;
+		zone_offset = INT_MAX;
 
-		time_offset = t_strdup_printf
-			("%c%02d:%02d", (zone_offset > 0 ? '+' : '-'), offset / 60, offset % 60);
-	}
-
-	return t_strdup_printf("%04d-%02d-%02dT%02d:%02d:%02d%s",
-		tm->tm_year + 1900, tm->tm_mon+1, tm->tm_mday, tm->tm_hour, tm->tm_min, 
-		tm->tm_sec, time_offset); 
+	return iso8601_date_create_tm(tm, zone_offset);
 }
+
 
 static const char *ext_date_std11_part_get
 (struct tm *tm, int zone_offset)
@@ -441,7 +415,7 @@ static const char *ext_date_std11_part_get
 		tm->tm_mday,
 		month_names[tm->tm_mon],
 		tm->tm_year+1900,
-		tm->tm_hour, tm->tm_min, tm->tm_sec, 
+		tm->tm_hour, tm->tm_min, tm->tm_sec,
 		ext_date_zone_part_get(tm, zone_offset));
 }
 
@@ -484,9 +458,9 @@ static void ext_date_stringlist_reset
 struct ext_date_stringlist {
 	struct sieve_stringlist strlist;
 
-	struct sieve_stringlist *field_values;	
+	struct sieve_stringlist *field_values;
 	int time_zone;
-	const char *date_part;
+	const struct ext_date_part *date_part;
 
 	time_t local_time;
 	int local_zone;
@@ -496,10 +470,10 @@ struct ext_date_stringlist {
 
 struct sieve_stringlist *ext_date_stringlist_create
 (const struct sieve_runtime_env *renv, struct sieve_stringlist *field_values,
-	int time_zone, const char *date_part)
+	int time_zone, const struct ext_date_part *dpart)
 {
 	struct ext_date_stringlist *strlist;
-	    
+
 	strlist = t_new(struct ext_date_stringlist, 1);
 	strlist->strlist.runenv = renv;
 	strlist->strlist.exec_status = SIEVE_EXEC_OK;
@@ -507,8 +481,8 @@ struct sieve_stringlist *ext_date_stringlist_create
 	strlist->strlist.reset = ext_date_stringlist_reset;
 	strlist->field_values = field_values;
 	strlist->time_zone = time_zone;
-	strlist->date_part = date_part;
-  
+	strlist->date_part = dpart;
+
 	strlist->local_time = ext_date_get_current_date(renv, &strlist->local_zone);
 
 	return &strlist->strlist;
@@ -519,7 +493,7 @@ struct sieve_stringlist *ext_date_stringlist_create
 static int ext_date_stringlist_next_item
 (struct sieve_stringlist *_strlist, string_t **str_r)
 {
-	struct ext_date_stringlist *strlist = 
+	struct ext_date_stringlist *strlist =
 		(struct ext_date_stringlist *) _strlist;
 	bool got_date = FALSE;
 	time_t date_value;
@@ -551,7 +525,7 @@ static int ext_date_stringlist_next_item
 			date_string = header_value;
 		} else {
 			/* Delimited by ';', e.g. a Received: header */
-			date_string++; 
+			date_string++;
 		}
 
 		/* Parse the date value */
@@ -596,7 +570,7 @@ static int ext_date_stringlist_next_item
 
 	strlist->read = TRUE;
 
-	if ( part_value == NULL ) 
+	if ( part_value == NULL )
 		return 0;
 
 	*str_r = t_str_new_const(part_value, strlen(part_value));
@@ -606,7 +580,7 @@ static int ext_date_stringlist_next_item
 static void ext_date_stringlist_reset
 (struct sieve_stringlist *_strlist)
 {
-	struct ext_date_stringlist *strlist = 
+	struct ext_date_stringlist *strlist =
 		(struct ext_date_stringlist *) _strlist;
 
 	if ( strlist->field_values != NULL )

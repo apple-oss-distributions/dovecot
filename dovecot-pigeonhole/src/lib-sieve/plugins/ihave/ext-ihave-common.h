@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __EXT_IHAVE_COMMON_H
@@ -35,7 +35,7 @@ extern const struct sieve_operation_def error_operation;
  */
 
 struct ext_ihave_ast_context {
-  ARRAY_DEFINE(missing_extensions, const char *);
+  ARRAY(const char *) missing_extensions;
 };
 
 struct ext_ihave_ast_context *ext_ihave_get_ast_context

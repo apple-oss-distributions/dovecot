@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_RUNTIME_TRACE_H
@@ -20,13 +20,13 @@ struct sieve_runtime_trace {
 /* Trace configuration */
 
 static inline bool sieve_runtime_trace_active
-(const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level) 
+(const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level)
 {
 	return ( renv->trace != NULL && trace_level <= renv->trace->config.level );
 }
 
 static inline bool sieve_runtime_trace_hasflag
-(const struct sieve_runtime_env *renv, unsigned int flag) 
+(const struct sieve_runtime_env *renv, unsigned int flag)
 {
 	return ( renv->trace != NULL && (renv->trace->config.flags & flag) != 0 );
 }
@@ -54,37 +54,38 @@ static inline void sieve_runtime_trace_toplevel
 /* Trace errors */
 
 void _sieve_runtime_trace_error
-	(const struct sieve_runtime_env *renv, const char *fmt, va_list args);	
+	(const struct sieve_runtime_env *renv, const char *fmt, va_list args)
+		ATTR_FORMAT(2, 0);
 
 void _sieve_runtime_trace_operand_error
 	(const struct sieve_runtime_env *renv, const struct sieve_operand *oprnd,
-		const char *fmt, va_list args);
+		const char *fmt, va_list args) ATTR_FORMAT(3, 0);
 
 static inline void sieve_runtime_trace_error
 	(const struct sieve_runtime_env *renv, const char *fmt, ...)
 		ATTR_FORMAT(2, 3);
 
 static inline void sieve_runtime_trace_operand_error
-	(const struct sieve_runtime_env *renv, const struct sieve_operand *oprnd, 
+	(const struct sieve_runtime_env *renv, const struct sieve_operand *oprnd,
 		const char *fmt, ...) ATTR_FORMAT(3, 4);
 
-static inline void sieve_runtime_trace_error
+static inline void ATTR_FORMAT(2, 3) sieve_runtime_trace_error
 	(const struct sieve_runtime_env *renv, const char *fmt, ...)
 {
 	va_list args;
-	
+
 	va_start(args, fmt);
 	if ( renv->trace != NULL )
-		_sieve_runtime_trace_error(renv, fmt, args);	
+		_sieve_runtime_trace_error(renv, fmt, args);
 	va_end(args);
 }
 
-static inline void sieve_runtime_trace_operand_error
-	(const struct sieve_runtime_env *renv, const struct sieve_operand *oprnd, 
+static inline void ATTR_FORMAT(3, 4) sieve_runtime_trace_operand_error
+	(const struct sieve_runtime_env *renv, const struct sieve_operand *oprnd,
 		const char *fmt, ...)
 {
 	va_list args;
-	
+
 	va_start(args, fmt);
 	if ( renv->trace != NULL )
 		_sieve_runtime_trace_operand_error(renv, oprnd, fmt, args);
@@ -94,13 +95,14 @@ static inline void sieve_runtime_trace_operand_error
 /* Trace info */
 
 void _sieve_runtime_trace
-	(const struct sieve_runtime_env *renv, const char *fmt, va_list args);
+	(const struct sieve_runtime_env *renv, const char *fmt, va_list args)
+		ATTR_FORMAT(2, 0);
 
 static inline void sieve_runtime_trace
 	(const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level,
 		const char *fmt, ...) ATTR_FORMAT(3, 4);
 
-static inline void sieve_runtime_trace
+static inline void ATTR_FORMAT(3, 4) sieve_runtime_trace
 (const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level,
 	const char *fmt, ...)
 {
@@ -116,14 +118,14 @@ static inline void sieve_runtime_trace
 }
 
 void _sieve_runtime_trace_address
-	(const struct sieve_runtime_env *renv, sieve_size_t address, 
-		const char *fmt, va_list args);
+	(const struct sieve_runtime_env *renv, sieve_size_t address,
+		const char *fmt, va_list args) ATTR_FORMAT(3, 0);
 
 static inline void sieve_runtime_trace_address
 	(const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level,
 		sieve_size_t address, const char *fmt, ...) ATTR_FORMAT(4, 5);
 
-static inline void sieve_runtime_trace_address
+static inline void ATTR_FORMAT(4, 5) sieve_runtime_trace_address
 (const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level,
 	sieve_size_t address, const char *fmt, ...)
 {
@@ -138,7 +140,7 @@ static inline void sieve_runtime_trace_address
 	va_end(args);
 }
 
-static inline void sieve_runtime_trace_here
+static inline void ATTR_FORMAT(3, 4) sieve_runtime_trace_here
 (const struct sieve_runtime_env *renv, sieve_trace_level_t trace_level,
 	const char *fmt, ...)
 {

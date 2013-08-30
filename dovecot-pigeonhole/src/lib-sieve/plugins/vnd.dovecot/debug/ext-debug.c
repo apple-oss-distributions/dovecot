@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 /* Extension debug
@@ -40,14 +40,10 @@ static bool ext_debug_interpreter_load
 
 
 const struct sieve_extension_def debug_extension = {
-	"vnd.dovecot.debug",
-	NULL, NULL,
-	ext_debug_validator_load,
-	NULL,
-	ext_debug_interpreter_load,
-	NULL, NULL, NULL,
+	.name = "vnd.dovecot.debug",
+	.validator_load = ext_debug_validator_load,
+	.interpreter_load = ext_debug_interpreter_load,
 	SIEVE_EXT_DEFINE_OPERATION(debug_log_operation),
-	SIEVE_EXT_DEFINE_NO_OPERANDS
 };
 
 static bool ext_debug_validator_load
@@ -63,11 +59,8 @@ static bool ext_debug_interpreter_load
 (const struct sieve_extension *ext ATTR_UNUSED,
 	const struct sieve_runtime_env *renv, sieve_size_t *address ATTR_UNUSED)
 {
-	struct sieve_error_handler *ehandler =
-		sieve_interpreter_get_error_handler(renv->interp);
-
-	if ( ehandler != NULL ) {
-		sieve_error_handler_accept_infolog(ehandler, TRUE);
+	if ( renv->ehandler != NULL ) {
+		sieve_error_handler_accept_infolog(renv->ehandler, TRUE);
 	}
 
 	return TRUE;

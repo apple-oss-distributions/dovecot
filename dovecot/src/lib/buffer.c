@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
@@ -39,6 +39,7 @@ static void buffer_alloc(struct real_buffer *buf, size_t size)
 static inline void
 buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 {
+	unsigned int extra;
 	size_t new_size;
 
 	if (unlikely((size_t)-1 - pos < data_size)) {
@@ -53,7 +54,13 @@ buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 
 		memset(buf->w_buffer + buf->used, 0, max - buf->used);
 	}
-	if (new_size > buf->alloc) {
+
+	/* always keep +1 byte allocated available in case str_c() is called
+	   for this buffer. this is mainly for cases where the buffer is
+	   allocated from data stack, and str_c() is called in a separate stack
+	   frame. */
+	extra = buf->dynamic ? 1 : 0;
+	if (new_size + extra > buf->alloc) {
 		if (unlikely(!buf->dynamic)) {
 			i_panic("Buffer full (%"PRIuSIZE_T" > %"PRIuSIZE_T", "
 				"pool %s)", pos + data_size, buf->alloc,
@@ -62,7 +69,7 @@ buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 		}
 
 		buffer_alloc(buf, pool_get_exp_grown_size(buf->pool, buf->alloc,
-							  new_size));
+							  new_size + extra));
 	}
 #if 0
 	else if (new_size > buf->used && buf->alloced &&
@@ -86,7 +93,7 @@ buffer_check_limits(struct real_buffer *buf, size_t pos, size_t data_size)
 	i_assert(buf->used <= buf->alloc);
 }
 
-void buffer_create_data(buffer_t *buffer, void *data, size_t size)
+void buffer_create_from_data(buffer_t *buffer, void *data, size_t size)
 {
 	struct real_buffer *buf;
 
@@ -96,9 +103,14 @@ void buffer_create_data(buffer_t *buffer, void *data, size_t size)
 	memset(buf, 0, sizeof(*buf));
 	buf->alloc = size;
 	buf->r_buffer = buf->w_buffer = data;
+	/* clear the whole memory area. unnecessary usually, but if the
+	   buffer is used by e.g. str_c() it tries to access uninitialized
+	   memory */
+	memset(data, 0, size);
 }
 
-void buffer_create_const_data(buffer_t *buffer, const void *data, size_t size)
+void buffer_create_from_const_data(buffer_t *buffer,
+				   const void *data, size_t size)
 {
 	struct real_buffer *buf;
 
@@ -313,4 +325,18 @@ bool buffer_cmp(const buffer_t *buf1, const buffer_t *buf2)
 		return FALSE;
 
 	return memcmp(buf1->data, buf2->data, buf1->used) == 0;
+}
+
+void buffer_verify_pool(buffer_t *_buf)
+{
+	const struct real_buffer *buf = (const struct real_buffer *)_buf;
+	void *ret;
+
+	if (buf->pool != NULL && buf->pool->datastack_pool && buf->alloc > 0) {
+		/* this doesn't really do anything except verify the
+		   stack frame */
+		ret = p_realloc(buf->pool, buf->w_buffer,
+				buf->alloc, buf->alloc);
+		i_assert(ret == buf->w_buffer);
+	}
 }

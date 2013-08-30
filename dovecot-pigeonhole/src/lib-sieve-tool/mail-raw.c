@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -9,7 +9,6 @@
 #include "str-sanitize.h"
 #include "strescape.h"
 #include "safe-mkstemp.h"
-#include "close-keep-errno.h"
 #include "mkdir-parents.h"
 #include "abspath.h"
 #include "message-address.h"
@@ -56,14 +55,15 @@ struct mail_raw_user {
  */
 
 static int seekable_fd_callback
-(const char **path_r, void *context ATTR_UNUSED)
+(const char **path_r, void *context)
 {
+	struct mail_user *ruser = (struct mail_user *)context;
 	const char *dir, *p;
 	string_t *path;
 	int fd;
 
- 	path = t_str_new(128);
- 	str_append(path, "/tmp/dovecot.sieve-tool.");
+	path = t_str_new(128);
+	mail_user_set_get_temp_prefix(path, ruser->set);
 	fd = safe_mkstemp(path, 0600, (uid_t)-1, (gid_t)-1);
 	if (fd == -1 && errno == ENOENT) {
 		dir = str_c(path);
@@ -87,7 +87,7 @@ static int seekable_fd_callback
 	if (unlink(str_c(path)) < 0) {
 		/* shouldn't happen.. */
 		i_error("unlink(%s) failed: %m", str_c(path));
-		close_keep_errno(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 
@@ -95,8 +95,8 @@ static int seekable_fd_callback
 	return fd;
 }
 
-static struct istream *create_raw_stream
-(int fd, time_t *mtime_r, const char **sender)
+static struct istream *mail_raw_create_stream
+(struct mail_user *ruser, int fd, time_t *mtime_r, const char **sender)
 {
 	struct istream *input, *input2, *input_list[2];
 	const unsigned char *data;
@@ -114,7 +114,7 @@ static struct istream *create_raw_stream
 	if (ret > 0 && size >= 5 && memcmp(data, "From ", 5) == 0) {
 		/* skip until the first LF */
 		i_stream_skip(input, 5);
-		while ((ret = i_stream_read_data(input, &data, &size, 0)) > 0) {
+		while ( i_stream_read_data(input, &data, &size, 0) > 0 ) {
 			for (i = 0; i < size; i++) {
 				if (data[i] == '\n')
 					break;
@@ -143,7 +143,7 @@ static struct istream *create_raw_stream
 
 	input_list[0] = input2; input_list[1] = NULL;
 	input = i_stream_create_seekable(input_list, MAIL_MAX_MEMORY_BUFFER,
-		seekable_fd_callback, NULL);
+		seekable_fd_callback, (void*)ruser);
 	i_stream_unref(&input2);
 	return input;
 }
@@ -152,47 +152,12 @@ static struct istream *create_raw_stream
  * Init/Deinit
  */
 
-struct mail_raw_user *mail_raw_user_init
-(struct master_service *service, const char *username,
-	struct mail_user *mail_user) 
+struct mail_user *mail_raw_user_create
+(struct master_service *service, struct mail_user *mail_user)
 {
-	struct mail_raw_user *ruser;
-	struct mail_namespace_settings ns_set;
-	const char *errstr;
-	void **sets;
+	void **sets = master_service_settings_get_others(service);
 
-	ruser = i_new(struct mail_raw_user, 1);
-	
-	sets = master_service_settings_get_others(service);
-
-	ruser->mail_user = mail_user_alloc(username, mail_user->set_info, sets[0]);
-	mail_user_set_home(ruser->mail_user, "/");
-   
-	if (mail_user_init(ruser->mail_user, &errstr) < 0)
-		i_fatal("Raw user initialization failed: %s", errstr);
-
-	memset(&ns_set, 0, sizeof(ns_set));
-	ns_set.location = ":LAYOUT=none";
-
-	ruser->ns = mail_namespaces_init_empty(ruser->mail_user);
-	ruser->ns->flags |= NAMESPACE_FLAG_NOQUOTA | NAMESPACE_FLAG_NOACL;
-	ruser->ns->set = &ns_set;
-    
-	if (mail_storage_create(ruser->ns, "raw", 0, &errstr) < 0)
-		i_fatal("Couldn't create internal raw storage: %s", errstr);
-
-	return ruser;
-}
-
-void mail_raw_user_deinit(struct mail_raw_user **_ruser)
-{
-	struct mail_raw_user *ruser = *_ruser;
-
-	*_ruser = NULL;
-
-	mail_user_unref(&ruser->mail_user);
-
-	i_free(ruser);	
+	return raw_storage_create_from_set(mail_user->set_info, sets[0]);
 }
 
 /*
@@ -200,86 +165,74 @@ void mail_raw_user_deinit(struct mail_raw_user **_ruser)
  */
 
 static struct mail_raw *mail_raw_create
-(struct mail_raw_user *ruser, struct istream *input, 
+(struct mail_user *ruser, struct istream *input,
 	const char *mailfile, const char *sender, time_t mtime)
 {
-	pool_t pool;
-	struct mail_namespace *raw_ns = ruser->ns;
-	struct raw_mailbox *raw_box;
 	struct mail_raw *mailr;
-	enum mail_error error;
 	struct mailbox_header_lookup_ctx *headers_ctx;
+	const char *envelope_sender;
+	int ret;
 
 	if ( mailfile != NULL && *mailfile != '/' )
-		mailfile = t_abspath(mailfile);		
+		mailfile = t_abspath(mailfile);
 
-	pool = pool_alloconly_create("mail_raw", 1024);
-	mailr = p_new(pool, struct mail_raw, 1);
-	mailr->pool = pool;
+	mailr = i_new(struct mail_raw, 1);
 
+	envelope_sender = sender != NULL ? sender : DEFAULT_ENVELOPE_SENDER;
 	if ( mailfile == NULL ) {
-		mailr->box = mailbox_alloc(raw_ns->list, "Dovecot Delivery Mail",
-			MAILBOX_FLAG_NO_INDEX_FILES);
-
-		if (mailbox_open_stream(mailr->box, input) < 0) {
-			i_fatal("Can't open mail stream as raw: %s",
-				mail_storage_get_last_error(raw_ns->storage, &error));
-		}
+		ret = raw_mailbox_alloc_stream(ruser, input, mtime,
+					       envelope_sender, &mailr->box);
 	} else {
-		mtime = (time_t)-1;
-		mailr->box = mailbox_alloc(raw_ns->list, mailfile,
-			MAILBOX_FLAG_NO_INDEX_FILES);
+		ret = raw_mailbox_alloc_path(ruser, mailfile, (time_t)-1,
+					     envelope_sender, &mailr->box);
+	}
 
-		if ( mailbox_open(mailr->box) < 0 ) {
-			i_fatal("Can't open mail stream as raw: %s",
-				mail_storage_get_last_error(raw_ns->storage, &error));
+	if ( ret < 0 ) {
+		if ( mailfile == NULL ) {
+			i_fatal("Can't open delivery mail as raw: %s",
+				mailbox_get_last_error(mailr->box, NULL));
+		} else {
+			i_fatal("Can't open delivery mail as raw (file=%s): %s",
+				mailfile, mailbox_get_last_error(mailr->box, NULL));
 		}
 	}
-
-	if ( mailbox_sync(mailr->box, 0) < 0 ) {
-		i_fatal("Can't sync delivery mail: %s",
-		mail_storage_get_last_error(raw_ns->storage, &error));
-	}
-
-	raw_box = (struct raw_mailbox *)mailr->box;
-	raw_box->envelope_sender = sender != NULL ? sender : DEFAULT_ENVELOPE_SENDER;
-	raw_box->mtime = mtime;
 
 	mailr->trans = mailbox_transaction_begin(mailr->box, 0);
 	headers_ctx = mailbox_header_lookup_init(mailr->box, wanted_headers);
 	mailr->mail = mail_alloc(mailr->trans, 0, headers_ctx);
-    mailbox_header_lookup_unref(&headers_ctx);
+	mailbox_header_lookup_unref(&headers_ctx);
 	mail_set_seq(mailr->mail, 1);
 
 	return mailr;
 }
 
 struct mail_raw *mail_raw_open_data
-(struct mail_raw_user *ruser, string_t *mail_data)
+(struct mail_user *ruser, string_t *mail_data)
 {
 	struct mail_raw *mailr;
 	struct istream *input;
 
 	input = i_stream_create_from_data(str_data(mail_data), str_len(mail_data));
-	
+	i_stream_set_name(input, "data");
+
 	mailr = mail_raw_create(ruser, input, NULL, NULL, (time_t)-1);
 
 	i_stream_unref(&input);
 
 	return mailr;
 }
-	
+
 struct mail_raw *mail_raw_open_file
-(struct mail_raw_user *ruser, const char *path)
+(struct mail_user *ruser, const char *path)
 {
 	struct mail_raw *mailr;
 	struct istream *input = NULL;
-	time_t mtime;
+	time_t mtime = (time_t)-1;
 	const char *sender = NULL;
-	
+
 	if ( path == NULL || strcmp(path, "-") == 0 ) {
 		path = NULL;
-		input = create_raw_stream(0, &mtime, &sender);
+		input = mail_raw_create_stream(ruser, 0, &mtime, &sender);
 	}
 
 	mailr = mail_raw_create(ruser, input, path, sender, mtime);
@@ -290,13 +243,13 @@ struct mail_raw *mail_raw_open_file
 	return mailr;
 }
 
-void mail_raw_close(struct mail_raw **mailr) 
+void mail_raw_close(struct mail_raw **mailr)
 {
 	mail_free(&(*mailr)->mail);
 	mailbox_transaction_rollback(&(*mailr)->trans);
 	mailbox_free(&(*mailr)->box);
 
-	pool_unref(&(*mailr)->pool);
+	i_free(*mailr);
 	*mailr = NULL;
 }
 

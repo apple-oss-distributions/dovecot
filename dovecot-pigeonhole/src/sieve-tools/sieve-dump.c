@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -28,7 +28,7 @@
 static void print_help(void)
 {
 	printf(
-"Usage: sieve-dump [-c <config-file>] [-h] [-P <plugin>] [-x <extensions>]\n"
+"Usage: sieve-dump [-c <config-file>] [-D] [-h] [-P <plugin>] [-x <extensions>]\n"
 "                  <sieve-binary> [<out-file>]\n"
 	);
 }
@@ -37,7 +37,7 @@ static void print_help(void)
  * Tool implementation
  */
 
-int main(int argc, char **argv) 
+int main(int argc, char **argv)
 {
 	struct sieve_instance *svinst;
 	struct sieve_binary *sbin;
@@ -46,9 +46,9 @@ int main(int argc, char **argv)
 	int exit_status = EXIT_SUCCESS;
 	int c;
 
-	sieve_tool = sieve_tool_init("sieve-dump", &argc, &argv, "hP:x:", FALSE);
-		
-	binfile = outfile = NULL;
+	sieve_tool = sieve_tool_init("sieve-dump", &argc, &argv, "DhP:x:", FALSE);
+
+	outfile = NULL;
 
 	while ((c = sieve_tool_getopt(sieve_tool)) > 0) {
 		switch (c) {
@@ -65,17 +65,17 @@ int main(int argc, char **argv)
 
 	if ( optind < argc ) {
 		binfile = argv[optind++];
-	} else { 
+	} else {
 		print_help();
 		i_fatal_status(EX_USAGE, "Missing <script-file> argument");
 	}
 
 	if ( optind < argc ) {
 		outfile = argv[optind++];
-	} 
-	
+	}
+
 	/* Finish tool initialization */
-	svinst = sieve_tool_init_finish(sieve_tool, FALSE);
+	svinst = sieve_tool_init_finish(sieve_tool, FALSE, TRUE);
 
         /* Enable debug extension */
         sieve_enable_debug_extension(svinst);
@@ -84,7 +84,7 @@ int main(int argc, char **argv)
 	sbin = sieve_load(svinst, binfile, NULL);
 	if ( sbin != NULL ) {
 		sieve_tool_dump_binary_to(sbin, outfile == NULL ? "-" : outfile, hexdump);
-	
+
 		sieve_close(&sbin);
 	} else {
 		i_error("failed to load binary: %s", binfile);

@@ -18,9 +18,6 @@
 #define N_ELEMENTS(arr) \
 	(sizeof(arr) / sizeof((arr)[0]))
 
-#define BITS_IN_UINT (CHAR_BIT * sizeof(unsigned int))
-#define BITS_IN_SIZE_T (CHAR_BIT * sizeof(size_t))
-
 #define MEM_ALIGN(size) \
 	(((size) + MEM_ALIGN_SIZE-1) & ~((unsigned int) MEM_ALIGN_SIZE-1))
 
@@ -33,13 +30,6 @@
    files that are included after this file generating tons of warnings. */
 #define I_MIN(a, b)  (((a) < (b)) ? (a) : (b))
 #define I_MAX(a, b)  (((a) > (b)) ? (a) : (b))
-
-#undef CLAMP
-#define CLAMP(x, low, high) \
-	(((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))
-
-#undef NVL
-#define NVL(str, nullstr) ((str) != NULL ? (str) : (nullstr))
 
 /* make it easier to cast from/to pointers. assumes that
    sizeof(size_t) == sizeof(void *) and they're both the largest datatypes
@@ -103,6 +93,8 @@
 	__attribute__((format_arg (arg_idx)))
 #  define ATTR_SCANF(format_idx, arg_idx) \
 	__attribute__((format (scanf, format_idx, arg_idx)))
+#  define ATTR_STRFTIME(format_idx) \
+	__attribute__((format (strftime, format_idx, 0)))
 #  define ATTR_UNUSED __attribute__((unused))
 #  define ATTR_NORETURN __attribute__((noreturn))
 #  define ATTR_CONST __attribute__((const))
@@ -110,11 +102,22 @@
 #else
 #  define ATTR_FORMAT(format_idx, arg_idx)
 #  define ATTR_FORMAT_ARG(arg_idx)
-#  define ATTR_SCANF
+#  define ATTR_SCANF(format_idx, arg_idx)
+#  define ATTR_STRFTIME(format_idx)
 #  define ATTR_UNUSED
 #  define ATTR_NORETURN
 #  define ATTR_CONST
 #  define ATTR_PURE
+#endif
+#ifdef HAVE_ATTR_NULL
+#  define ATTR_NULL(...) __attribute__((null(__VA_ARGS__)))
+#else
+#  define ATTR_NULL(...)
+#endif
+#ifdef HAVE_ATTR_NOWARN_UNUSED_RESULT
+#  define ATTR_NOWARN_UNUSED_RESULT __attribute__((nowarn_unused_result))
+#else
+#  define ATTR_NOWARN_UNUSED_RESULT
 #endif
 #if __GNUC__ > 2
 #  define ATTR_MALLOC __attribute__((malloc))
@@ -139,33 +142,28 @@
 #endif
 
 /* Macros to provide type safety for callback functions' context parameters */
-#ifdef __GNUC__
-#  define CONTEXT_TYPE_SAFETY
-#endif
-#ifdef CONTEXT_TYPE_SAFETY
-#  define CONTEXT_CALLBACK(name, callback_type, callback, context, ...) \
-	({(void)(1 ? 0 : callback(context)); \
-	name(__VA_ARGS__, (callback_type *)callback, context); })
-#  define CONTEXT_CALLBACK2(name, callback_type, callback, arg1_type, context, ...) \
-	({(void)(1 ? 0 : callback((arg1_type)0, context)); \
-	name(__VA_ARGS__, (callback_type *)callback, context); })
+#if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 3))
+#  define CALLBACK_TYPECHECK(callback, type) \
+	(COMPILE_ERROR_IF_TRUE(!__builtin_types_compatible_p( \
+		typeof(&callback), type)) ? 1 : 0)
 #else
-#  define CONTEXT_CALLBACK(name, callback_type, callback, context, ...) \
-	name(__VA_ARGS__, (callback_type *)callback, context)
-#  define CONTEXT_CALLBACK2(name, callback_type, callback, arg1_type, context, ...) \
-	name(__VA_ARGS__, (callback_type *)callback, context)
+#  define CALLBACK_TYPECHECK(callback, type) 0
 #endif
 
-#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 0)
-#  define HAVE_TYPEOF
+#if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 0)) && !defined(__cplusplus)
 #  define COMPILE_ERROR_IF_TRUE(condition) \
 	(sizeof(char[1 - 2 * !!(condition)]) - 1)
 #  define COMPILE_ERROR_IF_TYPES_NOT_COMPATIBLE(_a, _b) \
 	COMPILE_ERROR_IF_TRUE( \
 		!__builtin_types_compatible_p(typeof(_a), typeof(_b)))
+#define COMPILE_ERROR_IF_TYPES2_NOT_COMPATIBLE(_a1, _a2, _b) \
+	COMPILE_ERROR_IF_TRUE( \
+		!__builtin_types_compatible_p(typeof(_a1), typeof(_b)) && \
+		!__builtin_types_compatible_p(typeof(_a2), typeof(_b)))
 #else
 #  define COMPILE_ERROR_IF_TRUE(condition) 0
 #  define COMPILE_ERROR_IF_TYPES_NOT_COMPATIBLE(_a, _b) 0
+#  define COMPILE_ERROR_IF_TYPES2_NOT_COMPATIBLE(_a1, _a2, _b) 0
 #endif
 
 #if __GNUC__ > 2
@@ -200,7 +198,21 @@
 
 #endif
 
+#define i_close_fd(fd) STMT_START {  \
+	if (unlikely(close_keep_errno(fd)) < 0) \
+		i_error("close(%d[%s:%d]) failed: %m", \
+			*(fd), __FILE__, __LINE__); \
+	} STMT_END
+
 #define i_unreached() \
 	i_panic("file %s: line %d: unreached", __FILE__, __LINE__)
+
+/* Convenience macros to test the versions of dovecot. */
+#if defined DOVECOT_VERSION_MAJOR && defined DOVECOT_VERSION_MINOR
+#  define DOVECOT_PREREQ(maj, min) \
+          ((DOVECOT_VERSION_MAJOR << 16) + DOVECOT_VERSION_MINOR >= ((maj) << 16) + (min))
+#else
+#  define DOVECOT_PREREQ(maj, min) 0
+#endif
 
 #endif

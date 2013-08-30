@@ -68,4 +68,37 @@ after the colon character is required, else 'sendmail' will fail to pass
 command arguments to 'dovecot-lda' correctly.  Make sure all the virtual
 domains are in the 'virtuserdomains' file.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+===========================================
+
+(Fedora 14: dovecot 2.0.8 & sendmail 8.14.4)
+
+Summing up all previous experience, one may keep all virtual user accounts
+under one system account.
+
+The sendmail's "U=" mailer option with changing the owner of lda (to "keeper"
+here for instance):
+
+---%<-------------------------------------------------------------------------
+-rwxr-xr-x. 1 keeper mail 14536 Dec  7 16:43 /usr/libexec/dovecot/dovecot-lda
+---%<-------------------------------------------------------------------------
+
+allows to run virtual users under one system account without applying SUID.
+
+Sendmail can pass a user account to LDA with or without the domain. Passing a
+user name without the domain can be achievedwith S=/R= rewriting rules of the
+local mailer. Finally, into 'cf/mailer/dovecot.m4' goes the block of lines:
+
+---%<-------------------------------------------------------------------------
+Mdovecot,      P=/usr/libexec/dovecot/dovecot-lda,
+               F=l59DFMPhnu,
+               S=EnvFromL/HdrFromL, R=EnvToL/HdrToL,
+               M=51200000,
+               U=keeper:mail,
+               T=DNS/RFC822/X-Unix,
+               A=/usr/libexec/dovecot/dovecot-lda -d $u
+---%<-------------------------------------------------------------------------
+
+dovecot.m4 [http://sites.google.com/site/mclroy/dovecot/dovecot-m4] can be a
+bit more complex.
+
+(This file was created from the wiki on 2013-08-05 04:42)

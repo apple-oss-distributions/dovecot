@@ -2,6 +2,9 @@ noinst_LTLIBRARIES = libsql.la
 
 SQL_DRIVER_PLUGINS =
 
+# automake seems to force making this unconditional..
+NOPLUGIN_LDFLAGS =
+
 if SQL_PLUGINS
 if BUILD_MYSQL
 MYSQL_LIB = libdriver_mysql.la
@@ -47,6 +50,9 @@ libsql_la_SOURCES = \
 	driver-sqlpool.c
 nodist_libsql_la_SOURCES = sql-drivers-register.c
 
+deplibs = \
+	../lib-dovecot/libdovecot.la
+
 if SQL_PLUGINS
 libdriver_mysql_la_LDFLAGS = -module -avoid-version
 libdriver_mysql_la_LIBADD = $(MYSQL_LIBS)
@@ -62,11 +68,18 @@ libdriver_sqlite_la_LDFLAGS = -module -avoid-version
 libdriver_sqlite_la_LIBADD = $(SQLITE_LIBS)
 libdriver_sqlite_la_CPPFLAGS = -I$(top_srcdir)/src/lib $(SQLITE_CFLAGS)
 libdriver_sqlite_la_SOURCES = driver-sqlite.c
+
+sql_libs =
+else
+sql_libs = \
+	$(MYSQL_LIBS) \
+	$(PGSQL_LIBS) \
+	$(SQLITE_LIBS)
 endif
 
 pkglib_LTLIBRARIES = libdovecot-sql.la
 libdovecot_sql_la_SOURCES = 
-libdovecot_sql_la_LIBADD = libsql.la $(MODULE_LIBS)
+libdovecot_sql_la_LIBADD = libsql.la $(deplibs) $(sql_libs)
 libdovecot_sql_la_DEPENDENCIES = libsql.la
 libdovecot_sql_la_LDFLAGS = -export-dynamic
 

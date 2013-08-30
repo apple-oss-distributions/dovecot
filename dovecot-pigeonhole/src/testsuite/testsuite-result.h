@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __TESTSUITE_RESULT_H
@@ -7,7 +7,7 @@
 void testsuite_result_init(void);
 void testsuite_result_deinit(void);
 
-void testsuite_result_reset    
+void testsuite_result_reset
 	(const struct sieve_runtime_env *renv);
 
 struct sieve_result *testsuite_result_get(void);

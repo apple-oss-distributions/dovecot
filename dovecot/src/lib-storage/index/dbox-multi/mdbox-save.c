@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -32,6 +32,7 @@ struct mdbox_save_context {
 	struct mdbox_mailbox *mbox;
 	struct mdbox_sync_context *sync_ctx;
 
+	struct dbox_file *cur_file;
 	struct dbox_file_append_context *cur_file_append;
 	struct mdbox_map_append_context *append_ctx;
 
@@ -39,7 +40,7 @@ struct mdbox_save_context {
 	struct mdbox_map_atomic_context *atomic;
 	struct mdbox_map_transaction_context *map_trans;
 
-	ARRAY_DEFINE(mails, struct dbox_save_mail);
+	ARRAY(struct dbox_save_mail) mails;
 };
 
 static struct dbox_file *
@@ -50,11 +51,9 @@ mdbox_copy_file_get_file(struct mailbox_transaction_context *t,
 		(struct mdbox_save_context *)t->save_ctx;
 	const struct mdbox_mail_index_record *rec;
 	const void *data;
-	bool expunged;
 	uint32_t file_id;
 
-	mail_index_lookup_ext(t->view, seq, ctx->mbox->ext_id,
-			      &data, &expunged);
+	mail_index_lookup_ext(t->view, seq, ctx->mbox->ext_id, &data, NULL);
 	rec = data;
 
 	if (mdbox_map_lookup(ctx->mbox->storage->map, rec->map_uid,
@@ -105,9 +104,9 @@ mdbox_save_alloc(struct mailbox_transaction_context *t)
 
 	if (ctx != NULL) {
 		/* use the existing allocated structure */
+		ctx->cur_file = NULL;
 		ctx->ctx.failed = FALSE;
 		ctx->ctx.finished = FALSE;
-		ctx->ctx.cur_file = NULL;
 		ctx->ctx.dbox_output = NULL;
 		ctx->cur_file_append = NULL;
 		return &ctx->ctx.ctx;
@@ -132,14 +131,12 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 	/* get the size of the mail to be saved, if possible */
 	if (i_stream_get_size(input, TRUE, &mail_size) <= 0) {
-		const struct stat *st;
-
 		/* we couldn't find out the exact size. fallback to non-exact,
 		   maybe it'll give something useful. the mail size is used
 		   only to figure out if it's causing mdbox file to grow
 		   too large. */
-		st = i_stream_stat(input, FALSE);
-		mail_size = st->st_size > 0 ? st->st_size : 0;
+		if (i_stream_get_size(input, FALSE, &mail_size) <= 0)
+			mail_size = 0;
 	}
 	if (mdbox_map_append_next(ctx->append_ctx, mail_size, 0,
 				  &ctx->cur_file_append,
@@ -150,7 +147,7 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 	i_assert(ctx->ctx.dbox_output->offset <= (uint32_t)-1);
 	append_offset = ctx->ctx.dbox_output->offset;
 
-	ctx->ctx.cur_file = ctx->cur_file_append->file;
+	ctx->cur_file = ctx->cur_file_append->file;
 	dbox_save_begin(&ctx->ctx, input);
 
 	save_mail = array_append_space(&ctx->mails);
@@ -166,7 +163,7 @@ static int mdbox_save_mail_write_metadata(struct mdbox_save_context *ctx,
 	struct dbox_file *file = mail->file_append->file;
 	struct dbox_message_header dbox_msg_hdr;
 	uoff_t message_size;
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 
 	i_assert(file->msg_header_size == sizeof(dbox_msg_hdr));
 
@@ -199,8 +196,6 @@ static int mdbox_save_finish_write(struct mail_save_context *_ctx)
 		return -1;
 
 	dbox_save_end(&ctx->ctx);
-	index_mail_cache_parse_deinit(_ctx->dest_mail,
-				      _ctx->received_date, !ctx->ctx.failed);
 
 	mail = array_idx_modifiable(&ctx->mails, array_count(&ctx->mails) - 1);
 	if (!ctx->ctx.failed) T_BEGIN {
@@ -254,7 +249,6 @@ mdbox_save_set_map_uids(struct mdbox_save_context *ctx,
 	const struct dbox_save_mail *mails;
 	unsigned int i, count;
 	const void *data;
-	bool expunged;
 	uint32_t next_map_uid = first_map_uid;
 
 	mdbox_update_header(mbox, ctx->ctx.trans, NULL);
@@ -264,7 +258,7 @@ mdbox_save_set_map_uids(struct mdbox_save_context *ctx,
 	mails = array_get(&ctx->mails, &count);
 	for (i = 0; i < count; i++) {
 		mail_index_lookup_ext(view, mails[i].seq, mbox->ext_id,
-				      &data, &expunged);
+				      &data, NULL);
 		old_rec = data;
 		if (old_rec != NULL && old_rec->map_uid != 0) {
 			/* message was copied. keep the existing map uid */
@@ -287,29 +281,42 @@ int mdbox_transaction_save_commit_pre(struct mail_save_context *_ctx)
 
 	i_assert(ctx->ctx.finished);
 
+	/* flush/fsync writes to m.* files before locking the map */
+	if (mdbox_map_append_flush(ctx->append_ctx) < 0) {
+		mdbox_transaction_save_rollback(_ctx);
+		return -1;
+	}
+
 	/* make sure the map gets locked */
 	if (mdbox_map_atomic_lock(ctx->atomic) < 0) {
 		mdbox_transaction_save_rollback(_ctx);
 		return -1;
 	}
+	/* lock the mailbox after map to avoid deadlocks. if we've noticed
+	   any corruption, deal with it later, otherwise we won't have
+	   up-to-date atomic->sync_view */
+	if (mdbox_sync_begin(ctx->mbox, MDBOX_SYNC_FLAG_NO_PURGE |
+			     MDBOX_SYNC_FLAG_FORCE |
+			     MDBOX_SYNC_FLAG_FSYNC |
+			     MDBOX_SYNC_FLAG_NO_REBUILD, ctx->atomic,
+			     &ctx->sync_ctx) < 0) {
+		mdbox_transaction_save_rollback(_ctx);
+		return -1;
+	}
 
-	/* assign map UIDs for newly saved messages. they're written to
-	   transaction log immediately within this function, but the map
-	   is left locked. */
+	/* assign map UIDs for newly saved messages after we've successfully
+	   acquired all the locks. the transaction is now very unlikely to
+	   fail. the UIDs are written to the transaction log immediately within
+	   this function, but the map is left locked. */
 	if (mdbox_map_append_assign_map_uids(ctx->append_ctx, &first_map_uid,
 					     &last_map_uid) < 0) {
 		mdbox_transaction_save_rollback(_ctx);
 		return -1;
 	}
 
-	/* lock the mailbox after map to avoid deadlocks. */
-	if (mdbox_sync_begin(ctx->mbox, MDBOX_SYNC_FLAG_NO_PURGE |
-			     MDBOX_SYNC_FLAG_FORCE |
-			     MDBOX_SYNC_FLAG_FSYNC, ctx->atomic,
-			     &ctx->sync_ctx) < 0) {
-		mdbox_transaction_save_rollback(_ctx);
-		return -1;
-	}
+	/* update dbox header flags */
+	dbox_save_update_header_flags(&ctx->ctx, ctx->sync_ctx->sync_view,
+		ctx->mbox->hdr_ext_id, offsetof(struct mdbox_index_header, flags));
 
 	/* assign UIDs for new messages */
 	hdr = mail_index_get_header(ctx->sync_ctx->sync_view);
@@ -365,10 +372,11 @@ void mdbox_transaction_save_commit_post(struct mail_save_context *_ctx,
 	(void)mdbox_map_atomic_finish(&ctx->atomic);
 
 	if (storage->set->parsed_fsync_mode != FSYNC_MODE_NEVER) {
-		if (fdatasync_path(ctx->mbox->box.path) < 0) {
+		const char *box_path = mailbox_get_path(&ctx->mbox->box);
+
+		if (fdatasync_path(box_path) < 0) {
 			mail_storage_set_critical(storage,
-				"fdatasync_path(%s) failed: %m",
-				ctx->mbox->box.path);
+				"fdatasync_path(%s) failed: %m", box_path);
 		}
 	}
 	mdbox_transaction_save_rollback(_ctx);
@@ -404,22 +412,37 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 	struct dbox_save_mail *save_mail;
 	struct mdbox_mailbox *src_mbox;
 	struct mdbox_mail_index_record rec;
-	const void *data;
-	bool expunged;
+	const void *guid_data;
+	guid_128_t wanted_guid;
 
 	ctx->ctx.finished = TRUE;
 
 	if (mail->box->storage != _ctx->transaction->box->storage ||
-	    _ctx->transaction->box->disable_reflink_copy_to ||
-	    _ctx->guid != NULL)
+	    _ctx->transaction->box->disable_reflink_copy_to)
 		return mail_storage_copy(_ctx, mail);
 	src_mbox = (struct mdbox_mailbox *)mail->box;
 
 	memset(&rec, 0, sizeof(rec));
 	rec.save_date = ioloop_time;
 	if (mdbox_mail_lookup(src_mbox, mail->transaction->view, mail->seq,
-			      &rec.map_uid) < 0)
+			      &rec.map_uid) < 0) {
+		index_save_context_free(_ctx);
 		return -1;
+	}
+
+	mail_index_lookup_ext(mail->transaction->view, mail->seq,
+			      src_mbox->guid_ext_id, &guid_data, NULL);
+	if (guid_data == NULL || guid_128_is_empty(guid_data)) {
+		/* missing GUID, something's broken. don't copy using
+		   refcounting. */
+		return mail_storage_copy(_ctx, mail);
+	} else if (_ctx->data.guid != NULL &&
+		   (guid_128_from_string(_ctx->data.guid, wanted_guid) < 0 ||
+		    memcmp(guid_data, wanted_guid, sizeof(wanted_guid)) != 0)) {
+		/* GUID change requested. we can't do it with refcount
+		   copying */
+		return mail_storage_copy(_ctx, mail);
+	}
 
 	/* remember the map_uid so we can later increase its refcount */
 	if (!array_is_created(&ctx->copy_map_uids))
@@ -431,20 +454,15 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 	mail_index_update_ext(ctx->ctx.trans, ctx->ctx.seq,
 			      ctx->mbox->ext_id, &rec, NULL);
 
-	mail_index_lookup_ext(mail->transaction->view, mail->seq,
-			      src_mbox->guid_ext_id, &data, &expunged);
-	if (data != NULL) {
-		mail_index_update_ext(ctx->ctx.trans, ctx->ctx.seq,
-				      ctx->mbox->guid_ext_id, data, NULL);
-	}
+	mail_index_update_ext(ctx->ctx.trans, ctx->ctx.seq,
+			      ctx->mbox->guid_ext_id, guid_data, NULL);
 	index_copy_cache_fields(_ctx, mail, ctx->ctx.seq);
 
 	save_mail = array_append_space(&ctx->mails);
 	save_mail->seq = ctx->ctx.seq;
 
-	if (_ctx->dest_mail != NULL) {
-		mail_set_seq(_ctx->dest_mail, ctx->ctx.seq);
-		_ctx->dest_mail->saving = TRUE;
-	}
+	if (_ctx->dest_mail != NULL)
+		mail_set_seq_saving(_ctx->dest_mail, ctx->ctx.seq);
+	index_save_context_free(_ctx);
 	return 0;
 }

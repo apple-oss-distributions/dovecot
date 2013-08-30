@@ -15,7 +15,7 @@
 #include "lib-signals.h"
 #include "str.h"
 #include "var-expand.h"
-#include "network.h"
+#include "net.h"
 #include "safe-memset.h"
 #include "auth-cache.h"
 
@@ -312,7 +312,7 @@ pam_verify_plain(struct auth_request *request, const char *password,
 
 	if (module->requests_left > 0) {
 		if (--module->requests_left == 0)
-			shutdown_request = TRUE;
+			worker_restart_request = TRUE;
 	}
 
 	expanded_service = t_str_new(64);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "module-dir.h"
@@ -14,6 +14,12 @@
 #define DOVEADM_EXPIRE_MAIL_CMD_CONTEXT(obj) \
 	MODULE_CONTEXT(obj, doveadm_expire_mail_cmd_module)
 
+enum expire_user_state {
+	EXPIRE_USER_STATE_NONEXISTENT = 0,
+	EXPIRE_USER_STATE_EXISTS = 1,
+	EXPIRE_USER_STATE_SEEN = 2
+};
+
 struct expire_query {
 	const char *mailbox;
 	struct imap_match_glob *glob;
@@ -27,12 +33,14 @@ struct doveadm_expire_mail_cmd_context {
 	struct dict_transaction_context *trans;
 	struct dict_iterate_context *iter;
 
-	struct hash_table *seen_users;
-	ARRAY_DEFINE(queries, struct expire_query);
+	/* username => enum expire_user_state */
+	HASH_TABLE(char *, void *) user_states;
+	ARRAY(struct expire_query) queries;
 	time_t oldest_before_time;
+	bool delete_nonexistent_users;
 };
 
-const char *doveadm_expire_plugin_version = DOVECOT_VERSION;
+const char *doveadm_expire_plugin_version = DOVECOT_ABI_VERSION;
 
 void doveadm_expire_plugin_init(struct module *module);
 void doveadm_expire_plugin_deinit(void);
@@ -62,41 +70,54 @@ doveadm_expire_mail_match_mailbox(struct doveadm_expire_mail_cmd_context *ectx,
 	return FALSE;
 }
 
-static bool
+static int
 doveadm_expire_mail_want(struct doveadm_mail_cmd_context *ctx,
-			 const char *key, time_t oldest_savedate,
+			 const char *dict_key, time_t oldest_savedate,
 			 const char **username_r)
 {
 	struct doveadm_expire_mail_cmd_context *ectx =
 		DOVEADM_EXPIRE_MAIL_CMD_CONTEXT(ctx);
 	const char *username, *mailbox;
-	char *username_dup;
+	enum expire_user_state state;
+	char *orig_username;
+	void *value;
 
-	/* key = DICT_EXPIRE_PREFIX<user>/<mailbox> */
-	username = key + strlen(DICT_EXPIRE_PREFIX);
+	/* dict_key = DICT_EXPIRE_PREFIX<user>/<mailbox> */
+	username = dict_key + strlen(DICT_EXPIRE_PREFIX);
 	mailbox = strchr(username, '/');
 	if (mailbox == NULL) {
 		/* invalid record, ignore */
-		i_error("expire: Invalid key: %s", key);
-		return FALSE;
+		i_error("expire: Invalid key: %s", dict_key);
+		return -1;
 	}
 	username = t_strdup_until(username, mailbox++);
 
-	if (hash_table_lookup(ectx->seen_users, username) != NULL) {
+	if (!hash_table_lookup_full(ectx->user_states, username,
+				    &orig_username, &value)) {
+		/* user no longer exists, delete the record */
+		return -1;
+	}
+	state = POINTER_CAST_TO(value, enum expire_user_state);
+	switch (state) {
+	case EXPIRE_USER_STATE_NONEXISTENT:
+		i_unreached();
+	case EXPIRE_USER_STATE_EXISTS:
+		break;
+	case EXPIRE_USER_STATE_SEEN:
 		/* seen this user already, skip the record */
-		return FALSE;
+		return 0;
 	}
 
 	if (!doveadm_expire_mail_match_mailbox(ectx, mailbox,
 					       oldest_savedate)) {
 		/* this mailbox doesn't have any matching messages */
-		return FALSE;
+		return 0;
 	}
-	username_dup = p_strdup(ctx->pool, username);
-	hash_table_insert(ectx->seen_users, username_dup, username_dup);
-
-	*username_r = username_dup;
-	return TRUE;
+	state = EXPIRE_USER_STATE_SEEN;
+	hash_table_update(ectx->user_states, orig_username,
+			  POINTER_CAST(state));
+	*username_r = orig_username;
+	return 1;
 }
 
 static int
@@ -107,7 +128,7 @@ doveadm_expire_mail_cmd_get_next_user(struct doveadm_mail_cmd_context *ctx,
 		DOVEADM_EXPIRE_MAIL_CMD_CONTEXT(ctx);
 	const char *key, *value;
 	unsigned long oldest_savedate;
-	bool ret;
+	int ret;
 
 	while (dict_iterate(ectx->iter, &key, &value)) {
 		if (str_to_ulong(value, &oldest_savedate) < 0) {
@@ -129,8 +150,12 @@ doveadm_expire_mail_cmd_get_next_user(struct doveadm_mail_cmd_context *ctx,
 						       oldest_savedate,
 						       username_r);
 		} T_END;
-		if (ret)
+		if (ret > 0)
 			return TRUE;
+		if (ret < 0 && ectx->delete_nonexistent_users) {
+			/* user has been deleted */
+			dict_unset(ectx->trans, key);
+		}
 	}
 
 	/* finished */
@@ -145,7 +170,7 @@ static const char *const *doveadm_expire_get_patterns(void)
 {
 	ARRAY_TYPE(const_string) patterns;
 	const char *str;
-	char set_name[20];
+	char set_name[6+MAX_INT_STRLEN+1];
 	unsigned int i;
 
 	t_array_init(&patterns, 16);
@@ -153,10 +178,11 @@ static const char *const *doveadm_expire_get_patterns(void)
 	for (i = 2; str != NULL; i++) {
 		array_append(&patterns, &str, 1);
 
-		i_snprintf(set_name, sizeof(set_name), "expire%u", i);
+		if (i_snprintf(set_name, sizeof(set_name), "expire%u", i) < 0)
+			i_unreached();
 		str = doveadm_plugin_getenv(set_name);
 	}
-	(void)array_append_space(&patterns);
+	array_append_zero(&patterns);
 	return array_idx(&patterns, 0);
 }
 
@@ -283,6 +309,8 @@ static bool doveadm_expire_analyze_query(struct doveadm_mail_cmd_context *ctx)
 	const struct expire_query *queries;
 	unsigned int i, count;
 
+	i_assert(args != NULL);
+
 	/* we support two kinds of queries:
 
 	   1) mailbox-pattern savedbefore <stamp> ...
@@ -327,11 +355,12 @@ static void doveadm_expire_mail_cmd_deinit(struct doveadm_mail_cmd_context *ctx)
 
 	if (ectx->iter != NULL) {
 		if (dict_iterate_deinit(&ectx->iter) < 0)
-			i_error("Dictionary iteration failed");
+			i_error("expire: Dictionary iteration failed");
 	}
-	dict_transaction_commit(&ectx->trans);
+	if (dict_transaction_commit(&ectx->trans) < 0)
+		i_error("expire: Dictionary commit failed");
 	dict_deinit(&ectx->dict);
-	hash_table_destroy(&ectx->seen_users);
+	hash_table_destroy(&ectx->user_states);
 
 	ectx->module_ctx.super.deinit(ctx);
 }
@@ -341,7 +370,9 @@ static void doveadm_expire_mail_init(struct doveadm_mail_cmd_context *ctx)
 	struct doveadm_expire_mail_cmd_context *ectx;
 	struct dict *dict;
 	const struct expire_query *query;
-	const char *expire_dict;
+	const char *expire_dict, *username, *value, *error;
+	char *username_dup;
+	enum expire_user_state state;
 
 	if (ctx->search_args == NULL)
 		return;
@@ -350,7 +381,10 @@ static void doveadm_expire_mail_init(struct doveadm_mail_cmd_context *ctx)
 	if (expire_dict == NULL)
 		return;
 
-	if (ctx->iterate_single_user) {
+	/* doveadm proxying uses expire database only locally. the remote
+	   doveadm handles each user one at a time (even though
+	   iterate_single_user=FALSE) */
+	if (ctx->iterate_single_user || ctx->proxying) {
 		if (doveadm_debug) {
 			i_debug("expire: Iterating only a single user, "
 				"ignoring expire database");
@@ -360,6 +394,9 @@ static void doveadm_expire_mail_init(struct doveadm_mail_cmd_context *ctx)
 
 	ectx = p_new(ctx->pool, struct doveadm_expire_mail_cmd_context, 1);
 	ectx->module_ctx.super = ctx->v;
+	value = doveadm_plugin_getenv("expire_keep_nonexistent_users");
+	ectx->delete_nonexistent_users =
+		value == NULL || strcmp(value, "yes") != 0;
 	MODULE_CONTEXT_SET(ctx, doveadm_expire_mail_cmd_module, ectx);
 
 	/* we can potentially optimize this query. see if the search args
@@ -370,10 +407,10 @@ static void doveadm_expire_mail_init(struct doveadm_mail_cmd_context *ctx)
 	if (doveadm_debug)
 		i_debug("expire: Searching only users listed in expire database");
 
-	dict = dict_init(expire_dict, DICT_DATA_TYPE_UINT32, "",
-			 doveadm_settings->base_dir);
-	if (dict == NULL) {
-		i_error("dict_init(%s) failed, not using it", expire_dict);
+	if (dict_init(expire_dict, DICT_DATA_TYPE_UINT32, "",
+		      doveadm_settings->base_dir, &dict, &error) < 0) {
+		i_error("dict_init(%s) failed, not using it: %s",
+			expire_dict, error);
 		return;
 	}
 
@@ -387,9 +424,14 @@ static void doveadm_expire_mail_init(struct doveadm_mail_cmd_context *ctx)
 	ctx->v.deinit = doveadm_expire_mail_cmd_deinit;
 	ctx->v.get_next_user = doveadm_expire_mail_cmd_get_next_user;
 
-	ectx->seen_users =
-		hash_table_create(default_pool, ctx->pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&ectx->user_states, ctx->pool, 0, str_hash, strcmp);
+	while (mail_storage_service_all_next(ctx->storage_service, &username) > 0) {
+		username_dup = p_strdup(ctx->pool, username);
+		state = EXPIRE_USER_STATE_EXISTS;
+		hash_table_insert(ectx->user_states, username_dup,
+				  POINTER_CAST(state));
+	}
+
 	ectx->dict = dict;
 	ectx->trans = dict_transaction_begin(dict);
 	ectx->iter = dict_iterate_init(dict, DICT_EXPIRE_PREFIX,

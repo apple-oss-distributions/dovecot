@@ -19,7 +19,7 @@ PLAIN password scheme. But they mean completely different things.
    client and server talk to each others in order to perform the
    authentication. Most people use only PLAIN authentication, which basically
    means that the user and password are sent without any kind of encryption to
-   server. SSL/TLS can then be used to provide the encryption to make PLAIN
+   the server. SSL/TLS can then be used to provide the encryption to make PLAIN
    authentication secure.
  * *Password scheme is about how the password is hashed in your password
    database*. If you use a PLAIN scheme, your passwords are stored in cleartext
@@ -30,4 +30,4 @@ PLAIN password scheme. But they mean completely different things.
  * Non-plaintext authentication mechanisms require either PLAIN password scheme
    or a mechanism-specific password scheme.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

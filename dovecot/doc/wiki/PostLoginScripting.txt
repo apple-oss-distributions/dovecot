@@ -33,12 +33,12 @@ parameters to 'script-login', for example:
 /usr/local/bin/postlogin2.sh
 ---%<-------------------------------------------------------------------------
 
-Remember that the post-login script runs with the privileges of the "user"
-setting given to the service (root by default). If you need the script to
-access user's mail files, change it to whatever user owns the mails (e.g.
-vmail). If you're using multiple UNIX UIDs (e.g. system users), use
-'script-login -d' to drop to the UID/GID specified by the userdb lookup
-(ignoring user/group/chroot service settings).
+The scripts are run in the specified order. Remember that the post-login script
+runs with the privileges of the "user" setting given to the service (root by
+default). If you need the script to access user's mail files, change it to
+whatever user owns the mails (e.g. vmail). If you're using multiple UNIX UIDs
+(e.g. system users), use 'script-login -d' to drop to the UID/GID specified by
+the userdb lookup (ignoring user/group/chroot service settings).
 
 Running environment
 -------------------
@@ -234,4 +234,4 @@ NAMESPACE/S-SPAMREP/TYPE NAMESPACE/S-SPAMREP/PREFIX
 NAMESPACE/S-SPAMREP/LOCATION
 ---%<-------------------------------------------------------------------------
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

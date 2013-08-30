@@ -13,6 +13,8 @@ Distributed with Dovecot:
    just rename the mails elsewhere
  * <listescape> [Plugins.Listescape.txt]: Allow using characters in mailbox
    names that would otherwise be illegal
+ * <mailbox_alias> [Plugins.MailboxAlias.txt]: Map multiple names to the same
+   mailbox.
  * <mail_log> [Plugins.MailLog.txt]: Log several mail actions
  * <notify> [Plugins.Notify.txt]: Wrapper plugin for easily developing other
    plugins that act on mailbox changes.
@@ -20,6 +22,8 @@ Distributed with Dovecot:
    moving all mails from one mailbox to INBOX
  * <quota> [Quota.txt]: Quota tracking and enforcing
     * imap_quota: IMAP commands for requesting current quota
+ * <stats> [Plugins.Stats.txt]: Send statistics from mail processes to the
+   stats process
  * <trash> [Plugins.Trash.txt]: Delete mails from Trash when user would go over
    quota
  * <virtual> [Plugins.Virtual.txt]: Virtual mailboxes
@@ -32,7 +36,7 @@ External:
  * <antispam> [Plugins.Antispam.txt]: Integrates spam learning into Dovecot
  * drac [http://sourceforge.jp/projects/dovecot2-drac/]: Pop-before-SMTP plugin
    using DRAC
- * whoson [ftp://ftp.ufanet.ru/pub/boco/dovecot/whoson-plugin/]:
+ * whoson [http://ftp.ufanet.ru/pub/boco/dovecot/whoson-plugin-2/]:
    Pop-before-SMTP plugin using WHOSON protocol [http://whoson.sourceforge.net]
 
  * alert [http://dovecot.org/patches/1.0/imap-alert-plugin.c]: Send IMAP ALERT
@@ -59,4 +63,4 @@ Experimental Plugins:
 To enable / disable plugins per user you can make your userdb return
 'mail_plugins' extra field. See <UserDatabase.ExtraFields.txt> for examples.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

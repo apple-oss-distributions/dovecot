@@ -1,10 +1,10 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "str.h"
 #include "hostpid.h"
-#include "network.h"
+#include "net.h"
 #include "lib-signals.h"
 #include "backtrace-string.h"
 #include "printf-format-fix.h"
@@ -24,6 +24,10 @@ const char *failure_log_type_prefixes[LOG_TYPE_COUNT] = {
 	"Error: ",
 	"Fatal: ",
 	"Panic: "
+};
+
+const char *failure_log_type_names[LOG_TYPE_COUNT] = {
+	"debug", "info", "warning", "error", "fatal", "panic"
 };
 
 /* Initialize working defaults */
@@ -338,29 +342,21 @@ void i_debug(const char *format, ...)
 
 void i_set_fatal_handler(failure_callback_t *callback ATTR_NORETURN)
 {
-	if (callback == NULL)
-		callback = default_fatal_handler;
         fatal_handler = callback;
 }
 
 void i_set_error_handler(failure_callback_t *callback)
 {
-	if (callback == NULL)
-		callback = default_error_handler;
 	error_handler = callback;
 }
 
 void i_set_info_handler(failure_callback_t *callback)
 {
-	if (callback == NULL)
-		callback = default_error_handler;
 	info_handler = callback;
 }
 
 void i_set_debug_handler(failure_callback_t *callback)
 {
-	if (callback == NULL)
-		callback = default_error_handler;
 	debug_handler = callback;
 }
 
@@ -481,7 +477,7 @@ static void open_log_file(int *fd, const char *path)
 
 void i_set_failure_file(const char *path, const char *prefix)
 {
-	i_set_failure_prefix(prefix);
+	i_set_failure_prefix("%s", prefix);
 
 	if (log_info_fd != STDERR_FILENO && log_info_fd != log_fd) {
 		if (close(log_info_fd) < 0)
@@ -500,10 +496,10 @@ void i_set_failure_file(const char *path, const char *prefix)
 	log_info_fd = log_fd;
 	log_debug_fd = log_fd;
 
-	i_set_fatal_handler(NULL);
-	i_set_error_handler(NULL);
-	i_set_info_handler(NULL);
-	i_set_debug_handler(NULL);
+	i_set_fatal_handler(default_fatal_handler);
+	i_set_error_handler(default_error_handler);
+	i_set_info_handler(default_error_handler);
+	i_set_debug_handler(default_error_handler);
 }
 
 static void i_failure_send_option(const char *key, const char *value)
@@ -518,11 +514,22 @@ static void i_failure_send_option(const char *key, const char *value)
 	(void)write_full(2, str, strlen(str));
 }
 
-void i_set_failure_prefix(const char *prefix)
+void i_set_failure_prefix(const char *prefix_fmt, ...)
+{
+	va_list args;
+
+	va_start(args, prefix_fmt);
+	i_free(log_prefix);
+	log_prefix = i_strdup_vprintf(prefix_fmt, args);
+	va_end(args);
+
+	log_prefix_sent = FALSE;
+}
+
+void i_unset_failure_prefix(void)
 {
 	i_free(log_prefix);
-	log_prefix = i_strdup(prefix);
-
+	log_prefix = i_strdup("");
 	log_prefix_sent = FALSE;
 }
 
@@ -676,7 +683,7 @@ void i_set_info_file(const char *path)
 	/* write debug-level messages to the info_log_path,
 	  until i_set_debug_file() was called */
 	log_debug_fd = log_info_fd;
-	i_set_debug_handler(NULL);
+	i_set_debug_handler(default_error_handler);
 }
 
 void i_set_debug_file(const char *path)
@@ -694,9 +701,14 @@ void i_set_failure_timestamp_format(const char *fmt)
         log_stamp_format = i_strdup(fmt);
 }
 
-void i_set_failure_ip(const struct ip_addr *ip)
+void i_set_failure_send_ip(const struct ip_addr *ip)
 {
 	i_failure_send_option("ip", net_ip2addr(ip));
+}
+
+void i_set_failure_send_prefix(const char *prefix)
+{
+	i_failure_send_option("prefix", prefix);
 }
 
 void i_set_failure_exit_callback(void (*callback)(int *status))
@@ -713,17 +725,17 @@ void failures_deinit(void)
 		log_info_fd = STDERR_FILENO;
 
 	if (log_fd != STDERR_FILENO) {
-		(void)close(log_fd);
+		i_close_fd(&log_fd);
 		log_fd = STDERR_FILENO;
 	}
 
 	if (log_info_fd != STDERR_FILENO) {
-		(void)close(log_info_fd);
+		i_close_fd(&log_info_fd);
 		log_info_fd = STDERR_FILENO;
 	}
 
 	if (log_debug_fd != STDERR_FILENO) {
-		(void)close(log_debug_fd);
+		i_close_fd(&log_debug_fd);
 		log_debug_fd = STDERR_FILENO;
 	}
 

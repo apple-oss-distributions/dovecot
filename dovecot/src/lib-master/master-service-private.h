@@ -9,6 +9,7 @@ struct master_service_listener {
 	int fd;
 	bool ssl;
 	struct io *io;
+	const char *name;
 };
 
 struct master_service {
@@ -22,23 +23,29 @@ struct master_service {
 	char **argv;
 
 	const char *version_string;
-	const char *config_path;
+	char *config_path;
 	ARRAY_TYPE(const_string) config_overrides;
 	int config_fd;
 	int syslog_facility;
 
 	unsigned int socket_count, ssl_socket_count;
-        struct master_service_listener *listeners;
+	struct master_service_listener *listeners;
+	char **listener_names;
+	unsigned int listener_names_count;
 
 	struct io *io_status_write, *io_status_error;
 	unsigned int service_count_left;
 	unsigned int total_available_count;
+	unsigned int process_limit;
+	unsigned int process_min_avail;
+	unsigned int idle_kill_secs;
 
 	struct master_status master_status;
 	unsigned int last_sent_status_avail_count;
 	time_t last_sent_status_time;
 	struct timeout *to_status;
 
+	bool (*idle_die_callback)(void);
 	void (*die_callback)(void);
 	struct timeout *to_die;
 
@@ -53,6 +60,9 @@ struct master_service {
 	const struct master_service_settings *set;
 	struct setting_parser_context *set_parser;
 
+	struct ssl_iostream_context *ssl_ctx;
+	time_t ssl_params_last_refresh;
+
 	unsigned int killed:1;
 	unsigned int stopping:1;
 	unsigned int keep_environment:1;
@@ -61,6 +71,8 @@ struct master_service {
 	unsigned int die_with_master:1;
 	unsigned int call_avail_overflow:1;
 	unsigned int config_path_is_default:1;
+	unsigned int want_ssl_settings:1;
+	unsigned int ssl_ctx_initialized:1;
 };
 
 void master_service_io_listeners_add(struct master_service *service);
@@ -68,5 +80,6 @@ void master_status_update(struct master_service *service);
 void master_service_close_config_fd(struct master_service *service);
 
 void master_service_io_listeners_remove(struct master_service *service);
+void master_service_ssl_io_listeners_remove(struct master_service *service);
 
 #endif

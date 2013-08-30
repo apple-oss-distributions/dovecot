@@ -1,4 +1,6 @@
-# Authentication for vpopmail users. Included from auth.conf.
+# Authentication for vpopmail users. Included from 10-auth.conf.
+#
+# Version 2.2.x (AR14759611)
 #
 # <doc/wiki/AuthDatabase.VPopMail.txt>
 

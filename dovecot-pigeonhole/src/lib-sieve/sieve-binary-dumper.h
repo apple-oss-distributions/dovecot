@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_BINARY_DUMPER_H
@@ -20,14 +20,16 @@ void sieve_binary_dumper_free
 pool_t sieve_binary_dumper_pool
 	(struct sieve_binary_dumper *dumper);
 
-/* 
- * Formatted output 
+/*
+ * Formatted output
  */
 
 void sieve_binary_dumpf
-	(const struct sieve_dumptime_env *denv, const char *fmt, ...);
+	(const struct sieve_dumptime_env *denv, const char *fmt, ...)
+		ATTR_FORMAT(2, 3);
 void sieve_binary_dump_sectionf
-	(const struct sieve_dumptime_env *denv, const char *fmt, ...);
+	(const struct sieve_dumptime_env *denv, const char *fmt, ...)
+		ATTR_FORMAT(2, 3);
 
 /*
  * Dumping the binary

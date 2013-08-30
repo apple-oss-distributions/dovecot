@@ -2,7 +2,34 @@
  * Contains:   Routines Mail Services support for Apple Push Notification Service.
  * Written by: Michael (for addtl writers check SVN comments).
  *
- * Copyright:  © 2008-2012 Apple Inc. All Rights Reserved.
+ * Copyright (c) 2010-2013 Apple Inc. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without  
+ * modification, are permitted provided that the following conditions  
+ * are met:
+ * 
+ * 1.  Redistributions of source code must retain the above copyright  
+ * notice, this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above  
+ * copyright notice, this list of conditions and the following  
+ * disclaimer in the documentation and/or other materials provided  
+ * with the distribution.
+ * 3.  Neither the name of Apple Inc. ("Apple") nor the names of its  
+ * contributors may be used to endorse or promote products derived  
+ * from this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND 
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,  
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A  
+ * PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS  
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,  
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT  
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF 
+ * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND  
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,  
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT  
+ * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF  
+ * SUCH DAMAGE.
  * 
  * IMPORTANT NOTE: This file is licensed only for use on Apple-branded
  * computers and is subject to the terms and conditions of the Apple Software
@@ -18,7 +45,7 @@
 #import "APNSNotify.h"
 #import "APNSFeedback.h"
 
-#import <syslog.h>
+#import <asl.h>
 #import <sys/stat.h>
 #import <sys/param.h>
 #import <sys/socket.h>
@@ -29,12 +56,16 @@
 #import <OpenDirectory/NSOpenDirectory.h>
 #import <DirectoryService/DirServicesConst.h>
 
-int sig_usr1 = 0;
+int sig_usr1 = 1;
 int sig_usr2 = 0;
 int got_sighup = 0;
 int got_sigterm = 0;
 
 time_t	g_check_feedback_time = 0;
+
+aslclient g_asl_err = NULL;
+aslclient g_asl_info = NULL;
+aslclient g_asl_debug = NULL;
 
 ODNode	*g_od_search_node = nil;
 NSAutoreleasePool *gPool = nil;
@@ -44,13 +75,98 @@ NSAutoreleasePool *gPool = nil;
 
 void exit_with_error ( const char *msg, int code )
 {
-	syslog(LOG_CRIT, "%s", msg);
-	syslog(VLOG_NOTICE, "exiting");
-
+	log_err("%s: Exiting", msg);
 	[gPool release];
-
 	exit( code );
 } // exit_with_error
+
+// -----------------------------------------------------------------------------
+//	open_logs ()
+
+void open_logs ( void )
+{
+	// get app name
+	NSString *app_name = [[[NSProcessInfo processInfo] processName] lastPathComponent];
+
+	// open error log
+	g_asl_err = asl_open([app_name UTF8String], "com.apple.push_notify.err", 0);
+	if ( !g_asl_err )
+		fprintf(stderr, "Could not initialize ASL logging for mail error log.\n" );
+	else
+		asl_set_filter(g_asl_err, ASL_FILTER_MASK_UPTO(ASL_LEVEL_ERR));
+
+	// open info log
+	g_asl_info = asl_open([app_name UTF8String], "com.apple.push_notify.info", 0);
+	if ( !g_asl_info )
+		fprintf(stderr, "Could not initialize ASL logging for mail info log.\n" );
+	else
+		asl_set_filter(g_asl_info, ASL_FILTER_MASK_UPTO(ASL_LEVEL_INFO));
+
+	// open debug log
+	g_asl_debug = asl_open([app_name UTF8String], "com.apple.push_notify.debug", 0);
+	if ( !g_asl_debug )
+		fprintf(stderr, "Could not initialize ASL logging for mail debug log.\n" );
+	else
+		asl_set_filter(g_asl_debug, ASL_FILTER_MASK_UPTO(ASL_LEVEL_DEBUG));
+} //open_logs
+
+// -----------------------------------------------------------------------------
+//	log_err ()
+
+void log_err ( const char *in_format, ... )
+{
+	if ( !g_asl_err )
+		return;
+
+	va_list args;
+	va_start(args, in_format);
+	asl_vlog( g_asl_err, NULL, ASL_LEVEL_ERR, in_format, args );
+	va_end( args );
+} // log_err
+
+// -----------------------------------------------------------------------------
+//	log_warning ()
+
+void log_warning ( const char *in_format, ... )
+{
+	if ( !g_asl_err )
+		return;
+
+	va_list args;
+	va_start(args, in_format);
+	asl_vlog( g_asl_err, NULL, ASL_LEVEL_WARNING, in_format, args );
+	va_end( args );
+} // log_warning
+
+// -----------------------------------------------------------------------------
+//	log_info ()
+
+void log_info ( const char *in_format, ... )
+{
+	if ( !g_asl_info )
+		return;
+
+	va_list args;
+	va_start(args, in_format);
+	asl_vlog( g_asl_info, NULL, ASL_LEVEL_INFO, in_format, args );
+	va_end( args );
+} // log_info
+
+// -----------------------------------------------------------------------------
+//	log_debug ()
+
+void log_debug ( const char *in_format, ... )
+{
+	if ( !g_asl_debug )
+		return;
+
+	if ( sig_usr1 ) {
+		va_list args;
+		va_start(args, in_format);
+		asl_vlog( g_asl_debug, NULL, ASL_LEVEL_DEBUG, in_format, args );
+		va_end( args );
+	}
+} // log_debug
 
 // -----------------------------------------------------------------
 //	set_rlimits ()
@@ -101,10 +217,10 @@ void sigusr1_handler(int sig __attribute__((unused)))
 {
 	if ( sig_usr1 ) {
 		sig_usr1 = 0;
-		syslog(VLOG_NOTICE, "verbose logging disabled" );
+		log_info("verbose logging disabled" );
 	} else {
 		sig_usr1 = 1;
-		syslog(VLOG_NOTICE, "verbose logging enabled" );
+		log_info("verbose logging enabled" );
 	}
 } //sigusr1_handler
 
@@ -204,14 +320,14 @@ int get_socket ( int in_buff_size )
 	const char		   *socket_path	= "/var/dovecot/push_notify";
 	struct sockaddr_un	sock_addr;
 
-	syslog(VLOG_INFO, "opening socket: %s", socket_path);
+	log_debug("opening socket: %s", socket_path);
 
 	// setup socket directories
 	setup_socket_path("/var/dovecot");
 
 	int out_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
 	if (out_socket < 0) {
-		syslog(VLOG_ERR, "open socket: \"%s\" failed", socket_path);
+		log_err("open socket: \"%s\" failed", socket_path);
 		return( -1 );
 	}
 
@@ -222,15 +338,15 @@ int get_socket ( int in_buff_size )
 		if ( sig_usr1 ) {
 			rc = getsockopt(out_socket, SOL_SOCKET, SO_RCVBUF, (char *)&optval, &optlen);
 			if ( !rc )
-				syslog(VLOG_INFO, "socket get size: %d", optval );
+				log_debug("socket get size: %d", optval );
 		}
 
 		optlen = sizeof(in_buff_size);
 		rc = setsockopt(out_socket, SOL_SOCKET, SO_RCVBUF, &in_buff_size, optlen);
 		if ( !rc )
-			syslog(VLOG_INFO, "socket receive buffer size: %d", in_buff_size);
+			log_debug("socket receive buffer size: %d", in_buff_size);
 		else
-			syslog(VLOG_ERR, "setsockopt(SO_RCVBUF) failed: %d", rc);
+			log_err("setsockopt(SO_RCVBUF) failed: %d", rc);
 	}
 
 	// bind it to a local file
@@ -241,14 +357,14 @@ int get_socket ( int in_buff_size )
 	int len = sizeof(sock_addr.sun_family) + strlen(sock_addr.sun_path) + 1;
 	int result = bind(out_socket, (struct sockaddr *)&sock_addr, len);
 	if (result < 0) {
-		syslog(VLOG_ERR, "bind() to socket: \"%s\" failed: %m", socket_path );
+		log_err("bind() to socket: \"%s\" failed: %m", socket_path );
 		return( -1 );
 	}
 
 	// setup socket permissions
 	chmod( sock_addr.sun_path, 0666 );
 
-	syslog(VLOG_INFO, "socket opened: %d: %s", sock_addr.sun_family, sock_addr.sun_path );
+	log_debug("socket opened: %d: %s", sock_addr.sun_family, sock_addr.sun_path );
 
 	return( out_socket );
 } // get_socket
@@ -260,19 +376,19 @@ int od_init ( void )
 {
 	int	rc = 0;
 
-	syslog(VLOG_INFO, "initializing open directory session" );
+	log_debug("initializing open directory session" );
 
 	NSError *nsError = nil;
 	g_od_search_node = [ODNode nodeWithSession: [ODSession defaultSession] type: kODNodeTypeAuthentication error: &nsError];
 	if ( g_od_search_node == nil ) {
 		rc = 1;
 		if (nsError != nil)
-			syslog(VLOG_ERR, "Error: unable to open search node: %s", [[nsError localizedDescription] UTF8String]);
+			log_err("Error: unable to open search node: %s", [[nsError localizedDescription] UTF8String]);
 		else
-			syslog(VLOG_ERR, "Error: unable to open search node");
+			log_err("Error: unable to open search node");
 	}
 
-	syslog(VLOG_INFO, "open directory session initialized successfully" );
+	log_debug("open directory session initialized successfully" );
 
 	return( rc );
 } // od_init
@@ -285,7 +401,7 @@ int get_user_guid ( const char *in_user, char *out_guid )
 	int			result				= 0;
 	NSAutoreleasePool  *my_pool		= [[NSAutoreleasePool alloc] init];
 
-	syslog(VLOG_INFO, "getting GUID for user: %s, from directory", in_user );
+	log_debug("getting GUID for user: %s, from directory", in_user );
 
 	ODQuery *od_query = [ODQuery queryWithNode: g_od_search_node
 								forRecordTypes: [NSArray arrayWithObject: @kDSStdRecordTypeUsers]
@@ -315,9 +431,9 @@ int get_user_guid ( const char *in_user, char *out_guid )
 	}
 
 	if ( result )
-		syslog(VLOG_INFO, "GUID: %s, for user: %s, found", out_guid, in_user );
+		log_debug("GUID: %s, for user: %s, found", out_guid, in_user );
 	else
-		syslog(VLOG_INFO, "No GUID: for user: %s, found", in_user );
+		log_debug("No GUID: for user: %s, found", in_user );
 
 	[my_pool release];
 
@@ -341,13 +457,13 @@ void received_data_callback (CFSocketRef s, CFSocketCallBackType callbackType, C
 
 	ssize_t msg_size = [msg_data length];
 	if ( msg_size != sizeof(msg_data_t) ) {
-		syslog(VLOG_ERR, "Error: received invalid messagege size. %d != %d", (int)sizeof(msg_data_t), (int)msg_size);
+		log_err("Error: received invalid messagege size. %d != %d", (int)sizeof(msg_data_t), (int)msg_size);
 		return;
 	}
 
 	APNSNotify *apn_conn = (APNSNotify *)in_info;
 	if ( msg_size == 0 ) {
-		syslog(VLOG_ERR, "Error: missing notification context info");
+		log_err("Error: missing notification context info");
 		return;
 	}
 
@@ -358,15 +474,15 @@ void received_data_callback (CFSocketRef s, CFSocketCallBackType callbackType, C
 		case '1':
 			// create node, user ID only
 			// Depricated in 10.7
-			syslog(VLOG_WARNING, "create node: depricated in OS X Server 10.7");
+			log_warning("create node: depricated in OS X Server 10.7");
 			break;
 
 		case '2':
 			// register from IMAP ID command
-			syslog(VLOG_DEBUG, "register device: user: %s, account-id: %s, device-token: %s", message_data.d1, message_data.d2, message_data.d3);
+			log_debug("register device: user: %s, account-id: %s, device-token: %s", message_data.d1, message_data.d2, message_data.d3);
 
 			if (!strlen(message_data.d1) || !strlen(message_data.d2) || !strlen(message_data.d3)) {
-				syslog(VLOG_ERR, "Error: missing registration data");
+				log_err("Error: missing registration data");
 				return;
 			}
 
@@ -398,7 +514,7 @@ void received_data_callback (CFSocketRef s, CFSocketCallBackType callbackType, C
 							NSString *time_stamp = [acct_map objectForKey: @"time-stamp"];
 							if ( time_stamp ) {
 								[acct_map removeObjectForKey: @"time-stamp"];
-								syslog(VLOG_DEBUG, "device: %s re-registered", [token UTF8String] );
+								log_debug("device: %s re-registered", [token UTF8String] );
 								[device_map_data writeToFile: DEVICE_MAPS_PATH atomically: YES];
 								return;
 							}
@@ -416,7 +532,7 @@ void received_data_callback (CFSocketRef s, CFSocketCallBackType callbackType, C
 
 		case '3':
 			// publish/notify to node
-			syslog(VLOG_DEBUG, "send notification: user: %s", message_data.d1);
+			log_debug("send notification: user: %s", message_data.d1);
 
 			if ( get_user_guid(message_data.d1, guid) ) {
 				device_map_data = [NSMutableDictionary dictionaryWithContentsOfFile: DEVICE_MAPS_PATH];
@@ -430,27 +546,27 @@ void received_data_callback (CFSocketRef s, CFSocketCallBackType callbackType, C
 							if ( token && acct_id ) {
 								NSString *time_stamp = [user_acct_map objectForKey: @"time-stamp"];
 								if ( !time_stamp ) {
-									syslog(VLOG_DEBUG, "sending notification to: %s account-id: %s device-token: %s",
+									log_debug("sending notification to: %s account-id: %s device-token: %s",
 											message_data.d1, [acct_id UTF8String], [token UTF8String]);
 									NSString *payload = [NSString stringWithFormat: @"{ \"aps\" : { \"account-id\" : \"%@\" } }", acct_id];
-									syslog(VLOG_DEBUG, "notification payload: %s", [payload UTF8String] );
+									log_debug("notification payload: %s", [payload UTF8String] );
 									[apn_conn send_notification: payload to_device: token];
 								} else
-									syslog(VLOG_DEBUG, "Warning: device not registered: %s", [token UTF8String]);
+									log_debug("Warning: device not registered: %s", [token UTF8String]);
 							} else
-								syslog(VLOG_DEBUG, "Warning: missing device and/or account id for: %s", guid);
+								log_debug("Warning: missing device and/or account id for: %s", guid);
 						}
 					} else
-						syslog(VLOG_DEBUG, "Warning: no device map found for: %s", guid);
+						log_debug("Warning: no device map found for: %s", guid);
 				} else
-					syslog(VLOG_DEBUG, "Warning: no device maps file: %s", [DEVICE_MAPS_PATH UTF8String]);
+					log_debug("Warning: no device maps file: %s", [DEVICE_MAPS_PATH UTF8String]);
 			} else
-				syslog(VLOG_DEBUG, "Warning: no GUID found for: %s", message_data.d1);
+				log_debug("Warning: no GUID found for: %s", message_data.d1);
 
 			break;
 
 		default:
-			syslog(VLOG_ERR, "Error: unknown message type: %c", message_data.msg[0]);
+			log_err("Error: unknown message type: %c", message_data.msg[0]);
 			break;
 	}
 } // received_data_callback
@@ -484,8 +600,7 @@ int main ( int argc, char **argv )
 		}
 	}
 
-	// log to mailaccess.log
-	openlog("push_notify", LOG_PID, LOG_LOCAL6);
+	open_logs();
 
 	// setup the pid file
 	char *pidfile = "/var/run/push_notify.pid";
@@ -509,7 +624,7 @@ int main ( int argc, char **argv )
     gPool = [[NSAutoreleasePool alloc] init];
 
 	// begin setup    
-	syslog(VLOG_INFO, "initializing mail notification services");
+	log_info("initializing mail notification services");
 
 	// setrlimit
 	set_rlimits();
@@ -541,7 +656,7 @@ int main ( int argc, char **argv )
 	APNSFeedback *apn_feedback = [[[APNSFeedback alloc] init_with_connection: apn_conn] retain];
 
 	NSString *topic = [apn_conn topic_name];
-	syslog(VLOG_INFO, "setting server topic: %s", [topic UTF8String]);
+	log_info("setting server topic: %s", [topic UTF8String]);
 
 	// set topic in IMAP server to return to client
 	XSRunTask(SERVER_ADMIN, [NSArray arrayWithObjects: @"settings", @"mail:imap:aps_topic", @"=", topic, nil], nil, nil, nil, nil);
@@ -554,20 +669,20 @@ int main ( int argc, char **argv )
 	CFRelease(rl_source);
 
 	// begin heavy lifting
-	syslog(VLOG_INFO, "starting mail notification services");
+	log_info("starting mail notification services");
 
 	// main loop
 	for (;;) {
 		if ( got_sigterm != 0 ) {
 			// Say goodnight, Gracie
-			syslog(VLOG_INFO, "terminating mail notification services (SIGTERM)");
+			log_info("terminating mail notification services (SIGTERM)");
 			close(a_socket);
 			exit(EXIT_SUCCESS);
 		}
 
 		if ( got_sighup ) {
 			// right now this is a do-nothing check
-			syslog(VLOG_INFO, "SIGHUP received");
+			log_info("SIGHUP received");
 			got_sighup = 0;
 			g_check_feedback_time = 0;
 		}

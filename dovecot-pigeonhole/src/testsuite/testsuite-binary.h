@@ -1,10 +1,10 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __TESTSUITE_BINARY_H
 #define __TESTSUITE_BINARY_H
 
-#include "sieve-common.h" 
+#include "sieve-common.h"
 
 void testsuite_binary_init(void);
 void testsuite_binary_deinit(void);

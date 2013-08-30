@@ -1,16 +1,16 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "ioloop.h"
 #include "istream.h"
 #include "ostream.h"
 #include "llist.h"
-#include "md5.h"
+#include "str.h"
 #include "str-sanitize.h"
 #include "time-util.h"
 #include "master-service.h"
 #include "ipc-server.h"
-#include "dns-lookup.h"
+#include "mail-user-hash.h"
 #include "client-common.h"
 #include "ssl-proxy.h"
 #include "login-proxy-state.h"
@@ -19,10 +19,10 @@
 #define MAX_PROXY_INPUT_SIZE 4096
 #define OUTBUF_THRESHOLD 1024
 #define LOGIN_PROXY_DIE_IDLE_SECS 2
-#define LOGIN_PROXY_DNS_WARN_MSECS 500
 #define LOGIN_PROXY_IPC_PATH "ipc-proxy"
 #define LOGIN_PROXY_IPC_NAME "proxy"
 #define KILLED_BY_ADMIN_REASON "Killed by admin"
+#define PROXY_IMMEDIATE_FAILURE_SECS 30
 
 struct login_proxy {
 	struct login_proxy *prev, *next;
@@ -48,6 +48,7 @@ struct login_proxy {
 
 	proxy_callback_t *callback;
 
+	unsigned int connected:1;
 	unsigned int destroying:1;
 	unsigned int disconnecting:1;
 };
@@ -60,7 +61,8 @@ static struct ipc_server *login_proxy_ipc_server;
 static void login_proxy_ipc_cmd(struct ipc_cmd *cmd, const char *line);
 
 static void
-login_proxy_free_reason(struct login_proxy **_proxy, const char *reason);
+login_proxy_free_reason(struct login_proxy **_proxy, const char *reason)
+	ATTR_NULL(2);
 
 static void login_proxy_free_errno(struct login_proxy **proxy,
 				   int err, const char *who)
@@ -175,6 +177,7 @@ static void proxy_plain_connected(struct login_proxy *proxy)
 				   FALSE);
 	proxy->server_output =
 		o_stream_create_fd(proxy->server_fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(proxy->server_output, TRUE);
 
 	proxy->server_io =
 		io_add(proxy->server_fd, IO_READ, proxy_prelogin_input, proxy);
@@ -193,24 +196,48 @@ static void proxy_fail_connect(struct login_proxy *proxy)
 	proxy->state_rec = NULL;
 }
 
+static void
+proxy_log_connect_error(struct login_proxy *proxy)
+{
+	string_t *str = t_str_new(128);
+	struct ip_addr local_ip;
+	unsigned int local_port;
+
+	str_printfa(str, "proxy(%s): ", proxy->client->virtual_user);
+	if (!proxy->connected) {
+		str_printfa(str, "connect(%s, %u) failed: %m",
+			    proxy->host, proxy->port);
+	} else {
+		str_printfa(str, "Login for %s:%u timed out in state=%u",
+			    proxy->host, proxy->port,
+			    proxy->client->proxy_state);
+	}
+	str_printfa(str, " (after %u secs",
+		    (unsigned int)(ioloop_time - proxy->created.tv_sec));
+
+	if (proxy->server_fd != -1 &&
+	    net_getsockname(proxy->server_fd, &local_ip, &local_port) == 0) {
+		str_printfa(str, ", local=%s:%u",
+			    net_ip2addr(&local_ip), local_port);
+	}
+
+	str_append_c(str, ')');
+	i_error("%s", str_c(str));
+}
+
 static void proxy_wait_connect(struct login_proxy *proxy)
 {
-	int err;
-
-	err = net_geterror(proxy->server_fd);
-	if (err != 0) {
-		i_error("proxy: connect(%s, %u) failed: %s",
-			proxy->host, proxy->port, strerror(err));
+	errno = net_geterror(proxy->server_fd);
+	if (errno != 0) {
+		proxy_log_connect_error(proxy);
 		proxy_fail_connect(proxy);
                 login_proxy_free(&proxy);
 		return;
 	}
+	proxy->connected = TRUE;
 	proxy->state_rec->last_success = ioloop_timeval;
 	proxy->state_rec->num_waiting_connections--;
 	proxy->state_rec = NULL;
-
-	if (proxy->to != NULL)
-		timeout_remove(&proxy->to);
 
 	if ((proxy->ssl_flags & PROXY_SSL_FLAG_YES) != 0 &&
 	    (proxy->ssl_flags & PROXY_SSL_FLAG_STARTTLS) == 0) {
@@ -226,8 +253,10 @@ static void proxy_wait_connect(struct login_proxy *proxy)
 
 static void proxy_connect_timeout(struct login_proxy *proxy)
 {
-	i_error("proxy: connect(%s, %u) timed out", proxy->host, proxy->port);
-	proxy_fail_connect(proxy);
+	errno = ETIMEDOUT;
+	proxy_log_connect_error(proxy);
+	if (!proxy->connected)
+		proxy_fail_connect(proxy);
 	login_proxy_free(&proxy);
 }
 
@@ -237,6 +266,7 @@ static int login_proxy_connect(struct login_proxy *proxy)
 
 	rec = login_proxy_state_get(proxy_state, &proxy->ip, proxy->port);
 	if (timeval_cmp(&rec->last_failure, &rec->last_success) > 0 &&
+	    rec->last_failure.tv_sec - rec->last_success.tv_sec > PROXY_IMMEDIATE_FAILURE_SECS &&
 	    rec->num_waiting_connections != 0) {
 		/* the server is down. fail immediately */
 		i_error("proxy(%s): Host %s:%u is down",
@@ -247,8 +277,7 @@ static int login_proxy_connect(struct login_proxy *proxy)
 
 	proxy->server_fd = net_connect_ip(&proxy->ip, proxy->port, NULL);
 	if (proxy->server_fd == -1) {
-		i_error("proxy(%s): connect(%s, %u) failed: %m",
-			proxy->client->virtual_user, proxy->host, proxy->port);
+		proxy_log_connect_error(proxy);
 		login_proxy_free(&proxy);
 		return -1;
 	}
@@ -264,32 +293,11 @@ static int login_proxy_connect(struct login_proxy *proxy)
 	return 0;
 }
 
-static void login_proxy_dns_done(const struct dns_lookup_result *result,
-				 struct login_proxy *proxy)
-{
-	if (result->ret != 0) {
-		i_error("proxy(%s): DNS lookup of %s failed: %s",
-			proxy->client->virtual_user, proxy->host,
-			result->error);
-		login_proxy_free(&proxy);
-	} else {
-		if (result->msecs > LOGIN_PROXY_DNS_WARN_MSECS) {
-			i_warning("proxy(%s): DNS lookup for %s took %u.%03u s",
-				  proxy->client->virtual_user, proxy->host,
-				  result->msecs/1000, result->msecs % 1000);
-		}
-
-		proxy->ip = result->ips[0];
-		(void)login_proxy_connect(proxy);
-	}
-}
-
 int login_proxy_new(struct client *client,
 		    const struct login_proxy_settings *set,
 		    proxy_callback_t *callback)
 {
 	struct login_proxy *proxy;
-	struct dns_lookup_settings dns_lookup_set;
 
 	i_assert(client->login_proxy == NULL);
 
@@ -298,11 +306,18 @@ int login_proxy_new(struct client *client,
 		return -1;
 	}
 
+	if (client->proxy_ttl <= 1) {
+		i_error("proxy(%s): TTL reached zero - "
+			"proxies appear to be looping?", client->virtual_user);
+		return -1;
+	}
+
 	proxy = i_new(struct login_proxy, 1);
 	proxy->client = client;
 	proxy->client_fd = -1;
 	proxy->server_fd = -1;
 	proxy->created = ioloop_timeval;
+	proxy->ip = set->ip;
 	proxy->host = i_strdup(set->host);
 	proxy->port = set->port;
 	proxy->connect_timeout_msecs = set->connect_timeout_msecs;
@@ -310,14 +325,11 @@ int login_proxy_new(struct client *client,
 	proxy->ssl_flags = set->ssl_flags;
 	client_ref(client);
 
-	memset(&dns_lookup_set, 0, sizeof(dns_lookup_set));
-	dns_lookup_set.dns_client_socket_path = set->dns_client_socket_path;
-	dns_lookup_set.timeout_msecs = set->connect_timeout_msecs;
-
-	if (net_addr2ip(set->host, &proxy->ip) < 0) {
-		if (dns_lookup(set->host, &dns_lookup_set,
-			       login_proxy_dns_done, proxy) < 0)
-			return -1;
+	if (set->ip.family == 0 &&
+	    net_addr2ip(set->host, &proxy->ip) < 0) {
+		i_error("proxy(%s): BUG: host %s is not an IP "
+			"(auth should have changed it)",
+			client->virtual_user, set->host);
 	} else {
 		if (login_proxy_connect(proxy) < 0)
 			return -1;
@@ -330,7 +342,7 @@ int login_proxy_new(struct client *client,
 	return 0;
 }
 
-static void
+static void ATTR_NULL(2)
 login_proxy_free_reason(struct login_proxy **_proxy, const char *reason)
 {
 	struct login_proxy *proxy = *_proxy;
@@ -365,10 +377,11 @@ login_proxy_free_reason(struct login_proxy **_proxy, const char *reason)
 		DLLIST_REMOVE(&login_proxies, proxy);
 
 		ipstr = net_ip2addr(&proxy->client->ip);
-		i_info("proxy(%s): disconnecting %s%s",
-		       proxy->client->virtual_user,
-		       ipstr != NULL ? ipstr : "",
-		       reason == NULL ? "" : t_strdup_printf(" (%s)", reason));
+		client_log(proxy->client, t_strdup_printf(
+			"proxy(%s): disconnecting %s%s",
+			proxy->client->virtual_user,
+			ipstr != NULL ? ipstr : "",
+			reason == NULL ? "" : t_strdup_printf(" (%s)", reason)));
 
 		if (proxy->client_io != NULL)
 			io_remove(&proxy->client_io);
@@ -458,6 +471,9 @@ void login_proxy_detach(struct login_proxy *proxy)
 	i_assert(proxy->client_fd == -1);
 	i_assert(proxy->server_output != NULL);
 
+	if (proxy->to != NULL)
+		timeout_remove(&proxy->to);
+
 	proxy->client_fd = i_stream_get_fd(client->input);
 	proxy->client_output = client->output;
 
@@ -468,7 +484,7 @@ void login_proxy_detach(struct login_proxy *proxy)
 	/* send all pending client input to proxy and get rid of the stream */
 	data = i_stream_get_data(client->input, &size);
 	if (size != 0)
-		(void)o_stream_send(proxy->server_output, data, size);
+		o_stream_nsend(proxy->server_output, data, size);
 
 	/* from now on, just do dummy proxying */
 	io_remove(&proxy->server_io);
@@ -504,23 +520,20 @@ void login_proxy_detach(struct login_proxy *proxy)
 static int login_proxy_ssl_handshaked(void *context)
 {
 	struct login_proxy *proxy = context;
-	struct ip_addr ip;
 
 	if ((proxy->ssl_flags & PROXY_SSL_FLAG_ANY_CERT) != 0)
 		return 0;
 
 	if (ssl_proxy_has_broken_client_cert(proxy->ssl_server_proxy)) {
 		client_log_err(proxy->client, t_strdup_printf(
-			"proxy: Received invalid SSL certificate from %s:%u",
-			proxy->host, proxy->port));
+			"proxy: Received invalid SSL certificate from %s:%u: %s",
+			proxy->host, proxy->port,
+			ssl_proxy_get_cert_error(proxy->ssl_server_proxy)));
 	} else if (!ssl_proxy_has_valid_client_cert(proxy->ssl_server_proxy)) {
 		client_log_err(proxy->client, t_strdup_printf(
 			"proxy: SSL certificate not received from %s:%u",
 			proxy->host, proxy->port));
-	} else if (net_addr2ip(proxy->host, &ip) == 0 ||
-		   /* NOTE: allow IP address for backwards compatibility,
-		      v2.1 no longer accepts it */
-		   ssl_proxy_cert_match_name(proxy->ssl_server_proxy,
+	} else if (ssl_proxy_cert_match_name(proxy->ssl_server_proxy,
 					     proxy->host) < 0) {
 		client_log_err(proxy->client, t_strdup_printf(
 			"proxy: hostname doesn't match SSL certificate at %s:%u",
@@ -543,7 +556,8 @@ int login_proxy_starttls(struct login_proxy *proxy)
 	io_remove(&proxy->server_io);
 
 	fd = ssl_proxy_client_alloc(proxy->server_fd, &proxy->client->ip,
-				    proxy->client->set,
+				    proxy->client->pool, proxy->client->set,
+				    proxy->client->ssl_set,
 				    login_proxy_ssl_handshaked, proxy,
 				    &proxy->ssl_server_proxy);
 	if (fd < 0) {
@@ -616,17 +630,10 @@ login_proxy_cmd_kick(struct ipc_cmd *cmd, const char *const *args)
 	ipc_cmd_success_reply(&cmd, t_strdup_printf("%u", count));
 }
 
-static unsigned int director_username_hash(const char *username)
+static unsigned int director_username_hash(struct client *client)
 {
-	/* NOTE: If you modify this, modify also
-	   user_directory_get_username_hash() in director/user-director.c */
-	unsigned char md5[MD5_RESULTLEN];
-	unsigned int i, hash = 0;
-
-	md5_get_digest(username, strlen(username), md5);
-	for (i = 0; i < sizeof(hash); i++)
-		hash = (hash << CHAR_BIT) | md5[i];
-	return hash;
+	return mail_user_hash(client->virtual_user,
+			      client->set->director_username_hash);
 }
 
 static void
@@ -643,7 +650,7 @@ login_proxy_cmd_kick_director_hash(struct ipc_cmd *cmd, const char *const *args)
 	for (proxy = login_proxies; proxy != NULL; proxy = next) {
 		next = proxy->next;
 
-		if (director_username_hash(proxy->client->virtual_user) == hash) {
+		if (director_username_hash(proxy->client) == hash) {
 			login_proxy_free_reason(&proxy, KILLED_BY_ADMIN_REASON);
 			count++;
 		}
@@ -651,7 +658,7 @@ login_proxy_cmd_kick_director_hash(struct ipc_cmd *cmd, const char *const *args)
 	for (proxy = login_proxies_pending; proxy != NULL; proxy = next) {
 		next = proxy->next;
 
-		if (director_username_hash(proxy->client->virtual_user) == hash) {
+		if (director_username_hash(proxy->client) == hash) {
 			client_destroy(proxy->client, "Connection kicked");
 			count++;
 		}
@@ -668,7 +675,7 @@ login_proxy_cmd_list_reply(struct ipc_cmd *cmd,
 
 		reply = t_strdup_printf("%s\t%s\t%s\t%s\t%u",
 					proxy->client->virtual_user,
-					login_binary.protocol,
+					login_binary->protocol,
 					net_ip2addr(&proxy->client->ip),
 					net_ip2addr(&proxy->ip), proxy->port);
 		ipc_cmd_send(cmd, reply);
@@ -689,7 +696,7 @@ login_proxy_cmd_list(struct ipc_cmd *cmd, const char *const *args ATTR_UNUSED)
 
 static void login_proxy_ipc_cmd(struct ipc_cmd *cmd, const char *line)
 {
-	const char *const *args = t_strsplit(line, "\t");
+	const char *const *args = t_strsplit_tab(line);
 	const char *name = args[0];
 
 	args++;

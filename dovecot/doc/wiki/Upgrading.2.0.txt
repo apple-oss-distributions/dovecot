@@ -6,13 +6,18 @@ configuration files, but it logs a lot of warnings at startup. A quick and easy
 way to convert your old config file to v2.0 format is:
 
 ---%<-------------------------------------------------------------------------
-doveconf -n -c dovecot-1.conf > dovecot-2.conf
+# convert old config to new temp config file
+doveconf -n -c /etc/dovecot/dovecot.conf > dovecot-2.conf
+
+# replace the old config file with the new generated file
+mv dovecot-2.conf /etc/dovecot/dovecot.conf
 ---%<-------------------------------------------------------------------------
 
 This command logs a warning about each obsolete setting it converts to the new
-format. You can either go through the warnings to figure out what changes
-exactly were done, or you can simply trust doveconf and replace your old config
-with the newly generated one.
+format.*You can simply ignore all the warnings* in most cases. If you really
+want to, you can modify your old config file using the instructions from the
+warnings, but even that can be done more easily by looking at the generated
+config file. Some of the warning messages aren't obvious.
 
 Once running v2.0, it's safe to downgrade to v1.2.5 or newer. Older versions
 don't understand some of the changes to index files and will log errors.
@@ -84,4 +89,4 @@ LDA
  * -s parameter was replaced by lda_mailbox_autosubscribe setting. The default
    is "no", as before.
 
-(This file was created from the wiki on 2012-03-15 16:41)
+(This file was created from the wiki on 2013-08-05 04:43)

@@ -1,4 +1,6 @@
-# Authentication for master users. Included from auth.conf.
+# Authentication for master users. Included from 10-auth.conf.
+#
+# Version 2.2.x (AR14759611)
 
 # By adding master=yes setting inside a passdb you make the passdb a list
 # of "master users", who can log in as anyone else.

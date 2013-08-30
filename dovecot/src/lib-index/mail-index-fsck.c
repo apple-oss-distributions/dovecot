@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -210,7 +210,7 @@ mail_index_fsck_keywords(struct mail_index *index, struct mail_index_map *map,
 	/* add keyword records so we can start appending names directly */
 	rec_pos = dest->used;
 	memset(&new_kw_rec, 0, sizeof(new_kw_rec));
-	buffer_append_space_unsafe(dest, keywords_count * sizeof(*kw_rec));
+	(void)buffer_append_space_unsafe(dest, keywords_count * sizeof(*kw_rec));
 
 	/* write the actual records and names */
 	name_base_pos = dest->used;
@@ -431,6 +431,8 @@ int mail_index_fsck(struct mail_index *index)
 
 	i_warning("fscking index file %s", index->filepath);
 
+	index->fscked = TRUE;
+
 	if (index->log->head == NULL) {
 		/* we're trying to open the index files, but there wasn't
 		   any .log file. */
@@ -452,8 +454,6 @@ int mail_index_fsck(struct mail_index *index)
 		mail_index_fsck_map(index, map);
 	} T_END;
 
-	map->write_base_header = TRUE;
-	map->write_atomic = TRUE;
 	mail_index_write(index, FALSE);
 
 	if (!orig_locked)
@@ -468,4 +468,12 @@ void mail_index_fsck_locked(struct mail_index *index)
 	i_assert(index->log_sync_locked);
 	ret = mail_index_fsck(index);
 	i_assert(ret == 0);
+}
+
+bool mail_index_reset_fscked(struct mail_index *index)
+{
+	bool ret = index->fscked;
+
+	index->fscked = FALSE;
+	return ret;
 }

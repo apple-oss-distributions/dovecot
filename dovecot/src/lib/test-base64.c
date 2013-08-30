@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "str.h"
@@ -48,9 +48,9 @@ static void test_base64_decode(void)
 		"aGVs!!!!!"
 	};
 	static const struct test_base64_decode_output output[] = {
-		{ "hello world", 0, -1 },
-		{ "foo barits", 0, -1 },
-		{ "just niin", 1, -1 },
+		{ "hello world", 0, UINT_MAX },
+		{ "foo barits", 0, UINT_MAX },
+		{ "just niin", 1, UINT_MAX },
 		{ "hel", 1, 4 },
 		{ "hel", -1, 4 },
 		{ "hel", -1, 4 }
@@ -71,7 +71,7 @@ static void test_base64_decode(void)
 		test_assert(output[i].ret == ret &&
 			    strcmp(output[i].text, str_c(str)) == 0 &&
 			    (src_pos == output[i].src_pos ||
-			     (output[i].src_pos == (unsigned int)-1 &&
+			     (output[i].src_pos == UINT_MAX &&
 			      src_pos == strlen(input[i]))));
 	}
 	test_end();
@@ -88,14 +88,14 @@ static void test_base64_random(void)
 
 	test_begin("base64 encode/decode with random input");
 	for (i = 0; i < 1000; i++) {
-		max = rand() % sizeof(buf);
+		max = random() % sizeof(buf);			/* APPLE */
 		for (j = 0; j < max; j++)
-			buf[j] = rand();
+			buf[j] = random();			/* APPLE */
 
 		str_truncate(str, 0);
 		str_truncate(dest, 0);
 		base64_encode(buf, max, str);
-		base64_decode(str_data(str), str_len(str), NULL, dest);
+		test_assert(base64_decode(str_data(str), str_len(str), NULL, dest) >= 0);
 		test_assert(str_len(dest) == max &&
 			    memcmp(buf, str_data(dest), max) == 0);
 	}

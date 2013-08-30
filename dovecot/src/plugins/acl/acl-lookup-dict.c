@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -35,17 +35,16 @@ struct acl_lookup_dict_iter {
 struct acl_lookup_dict *acl_lookup_dict_init(struct mail_user *user)
 {
 	struct acl_lookup_dict *dict;
-	const char *uri;
+	const char *uri, *error;
 
 	dict = i_new(struct acl_lookup_dict, 1);
 	dict->user = user;
 
 	uri = mail_user_plugin_getenv(user, "acl_shared_dict");
 	if (uri != NULL) {
-		dict->dict = dict_init(uri, DICT_DATA_TYPE_STRING, "",
-				       user->set->base_dir);
-		if (dict->dict == NULL)
-			i_error("acl: dict_init(%s) failed", uri);
+		if (dict_init(uri, DICT_DATA_TYPE_STRING, "",
+			      user->set->base_dir, &dict->dict, &error) < 0)
+			i_error("acl: dict_init(%s) failed: %s", uri, error);
 	} else if (user->mail_debug) {
 		i_debug("acl: No acl_shared_dict setting - "
 			"shared mailbox listing is disabled");
@@ -92,6 +91,13 @@ acl_lookup_dict_write_rights_id(string_t *dest, const struct acl_rights *right)
 	}
 }
 
+static bool
+acl_rights_is_same_user(const struct acl_rights *right, struct mail_user *user)
+{
+	return right->id_type == ACL_ID_USER &&
+		strcmp(right->identifier, user->username) == 0;
+}
+
 static int acl_lookup_dict_rebuild_add_backend(struct mail_namespace *ns,
 					       ARRAY_TYPE(const_string) *ids)
 {
@@ -104,7 +110,8 @@ static int acl_lookup_dict_rebuild_add_backend(struct mail_namespace *ns,
 	string_t *id;
 	int ret, ret2 = 0;
 
-	if ((ns->flags & NAMESPACE_FLAG_NOACL) != 0 || ns->owner == NULL)
+	if ((ns->flags & NAMESPACE_FLAG_NOACL) != 0 || ns->owner == NULL ||
+	    ACL_LIST_CONTEXT(ns->list) == NULL)
 		return 0;
 
 	id = t_str_new(128);
@@ -115,7 +122,10 @@ static int acl_lookup_dict_rebuild_add_backend(struct mail_namespace *ns,
 
 		iter = acl_object_list_init(aclobj);
 		while ((ret = acl_object_list_next(iter, &rights)) > 0) {
-			if (acl_rights_has_nonowner_lookup_changes(&rights)) {
+			/* avoid pointless user -> user entries,
+			   which some clients do */
+			if (acl_rights_has_nonowner_lookup_changes(&rights) &&
+			    !acl_rights_is_same_user(&rights, ns->owner)) {
 				str_truncate(id, 0);
 				acl_lookup_dict_write_rights_id(id, &rights);
 				str_append_c(id, '/');

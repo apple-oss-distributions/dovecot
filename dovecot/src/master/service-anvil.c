@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "ioloop.h"
@@ -98,7 +98,7 @@ void service_anvil_monitor_start(struct service_list *service_list)
 		service_list_anvil_discard_input(service_anvil_global);
 	else {
 		service = service_lookup_type(service_list, SERVICE_TYPE_ANVIL);
-		service_process_create(service);
+		(void)service_process_create(service);
 	}
 }
 
@@ -125,6 +125,7 @@ void service_anvil_process_destroyed(struct service_process *process)
 
 	if (service_anvil_global->pid == process->pid)
 		service_anvil_global->pid = 0;
+	service_anvil_global->restarted = TRUE;
 }
 
 void service_anvil_send_log_fd(void)

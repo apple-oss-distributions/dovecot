@@ -20,9 +20,8 @@ struct mdbox_map {
 	uint32_t map_ext_id, ref_ext_id;
 
 	struct mailbox_list *root_list;
-	mode_t create_mode;
-	gid_t create_gid;
-	const char *create_gid_origin;
+
+	unsigned int verify_existing_file_ids:1;
 };
 
 struct mdbox_map_append {
@@ -35,9 +34,9 @@ struct mdbox_map_append_context {
 	struct mdbox_map_atomic_context *atomic;
 	struct mail_index_transaction *trans;
 
-	ARRAY_DEFINE(file_appends, struct dbox_file_append_context *);
-	ARRAY_DEFINE(files, struct dbox_file *);
-	ARRAY_DEFINE(appends, struct mdbox_map_append);
+	ARRAY(struct dbox_file_append_context *) file_appends;
+	ARRAY(struct dbox_file *) files;
+	ARRAY(struct mdbox_map_append) appends;
 
 	uint32_t first_new_file_id;
 
@@ -55,6 +54,7 @@ struct mdbox_map_atomic_context {
 	unsigned int map_refreshed:1;
 	unsigned int locked:1;
 	unsigned int success:1;
+	unsigned int failed:1;
 };
 
 int mdbox_map_view_lookup_rec(struct mdbox_map *map,

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -31,7 +31,7 @@ static struct quota_root *dict_quota_alloc(void)
 static int dict_quota_init(struct quota_root *_root, const char *args)
 {
 	struct dict_quota_root *root = (struct dict_quota_root *)_root;
-	const char *username, *p;
+	const char *username, *p, *error;
 
 	p = args == NULL ? NULL : strchr(args, ':');
 	if (p == NULL) {
@@ -77,19 +77,21 @@ static int dict_quota_init(struct quota_root *_root, const char *args)
 
 	/* FIXME: we should use 64bit integer as datatype instead but before
 	   it can actually be used don't bother */
-	root->dict = dict_init(args, DICT_DATA_TYPE_STRING, username,
-			       _root->quota->user->set->base_dir);
-	return root->dict != NULL ? 0 : -1;
+	if (dict_init(args, DICT_DATA_TYPE_STRING, username,
+		      _root->quota->user->set->base_dir, &root->dict,
+		      &error) < 0) {
+		i_error("dict quota: dict_init(%s) failed: %s", args, error);
+		return -1;
+	}
+	return 0;
 }
 
 static void dict_quota_deinit(struct quota_root *_root)
 {
 	struct dict_quota_root *root = (struct dict_quota_root *)_root;
 
-	if (root->dict != NULL) {
-		(void)dict_wait(root->dict);
+	if (root->dict != NULL)
 		dict_deinit(&root->dict);
-	}
 	i_free(root);
 }
 
@@ -208,6 +210,13 @@ dict_quota_update(struct quota_root *_root,
 	return 0;
 }
 
+static void dict_quota_flush(struct quota_root *_root)
+{
+	struct dict_quota_root *root = (struct dict_quota_root *)_root;
+
+	(void)dict_wait(root->dict);
+}
+
 struct quota_backend quota_backend_dict = {
 	"dict",
 
@@ -221,6 +230,7 @@ struct quota_backend quota_backend_dict = {
 		dict_quota_root_get_resources,
 		dict_quota_get_resource,
 		dict_quota_update,
-		NULL
+		NULL,
+		dict_quota_flush
 	}
 };

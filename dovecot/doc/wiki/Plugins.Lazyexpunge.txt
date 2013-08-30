@@ -11,10 +11,41 @@ The plugin is configured by defining namespaces where the mails are moved. You
 can decide if you want the namespaces to be visible to clients, or if you want
 to show them only via some special webmail interface.
 
-You can use either one or three namespaces:
+1 namespace
+-----------
 
-3 namespaces
-------------
+You create only a single namespace. When a message is expunged from mailbox
+/<name>/, it's moved to a mailbox /<name>/ in the expunge namespace. When an
+entire mailbox /<name>/ is deleted, it's also moved to this namespace as
+/<name>/. If it already exists, their contents are merged.
+
+Example configuration:
+
+---%<-------------------------------------------------------------------------
+# the default namespace
+namespace {
+  prefix =
+  separator = /
+  inbox = yes
+}
+
+# namespace for lazy_expunge plugin:
+namespace {
+  prefix = .EXPUNGED/
+  hidden = yes
+  list = no
+  separator = /
+  location = maildir:~/Maildir/expunged
+}
+
+mail_plugins = $mail_plugins lazy_expunge
+plugin {
+  lazy_expunge = .EXPUNGED/
+}
+---%<-------------------------------------------------------------------------
+
+3 namespaces (obsolete, v2.0 only)
+----------------------------------
 
 The namespaces are:
 
@@ -63,61 +94,50 @@ plugin {
 }
 ---%<-------------------------------------------------------------------------
 
-1 namespace
------------
-
-You create only a single namespace. When a message is expunged from mailbox
-/<name>/, it's moved to a mailbox /<name>/ in the expunge namespace. When an
-entire mailbox /<name>/ is deleted, it's also moved to this namespace as
-/<name>/. If it already exists, their contents are merged.
-
-Example configuration:
-
----%<-------------------------------------------------------------------------
-# the default namespace
-namespace {
-  prefix =
-  separator = /
-  inbox = yes
-}
-
-# namespace for lazy_expunge plugin:
-namespace {
-  prefix = .EXPUNGED/
-  separator = /
-  location = maildir:~/Maildir/expunged
-}
-
-mail_plugins = $mail_plugins lazy_expunge
-plugin {
-  lazy_expunge = .EXPUNGED/
-}
----%<-------------------------------------------------------------------------
-
 Multi-dbox
 ----------
 
 With multi-dbox use different MAILBOXDIRs (so copying between namespaces works
-quickly within the same storage):
+quickly within the same storage), but otherwise exactly the same paths (index,
+control):
 
 ---%<-------------------------------------------------------------------------
 # the default namespace
 namespace {
   prefix =
   inbox = yes
-  location = mdbox:~/mdbox
+  location = mdbox:~/mdbox:INDEX=/var/index/%d/%n
 }
 
 # lazy_expunge namespace(s):
 namespace {
   prefix = .EXPUNGED/
-  location =
-mdbox:~/mdbox:MAILBOXDIR=expunged:SUBSCRIPTIONS=subscriptions-expunged
+  hidden = yes
+  list = no
+  subscriptions = no
+  location = mdbox:~/mdbox:INDEX=/var/index/%d/%n:MAILBOXDIR=expunged
 }
 ---%<-------------------------------------------------------------------------
 
+Copy only the last instance (v2.2+)
+-----------------------------------
+
+If mail has multiple copies (via IMAP COPY), each copy is normally moved to
+lazy expunge namespace when it's expunged. With v2.2+ you can set 'plugin {
+lazy_expunge_only_last_instance = yes }' to copy only the last instance and
+immediately expunge the others. This may be useful if you want to provide a
+flat list of all expunged mails without duplicates in your webmail. With many
+clients this means that the last instance is always in the Trash mailbox.
+
 Cleaning up
 -----------
+
+doveadm
+-------
+
+---%<-------------------------------------------------------------------------
+doveadm expunge mailbox 'deleted/*' savedsince 1d
+---%<-------------------------------------------------------------------------
 
 cronjob
 -------
@@ -147,4 +167,4 @@ specific mailboxes, and expunge them when they've been there for a specified
 amount of time. It keeps an internal database (e.g. SQL) of all such mailboxes,
 so it doesn't have to go through all the mailboxes for all the users.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

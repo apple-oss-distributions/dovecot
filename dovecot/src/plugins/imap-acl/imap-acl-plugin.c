@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "str.h"
@@ -16,9 +16,6 @@
 
 #define ERROR_NOT_ADMIN "["IMAP_RESP_CODE_NOPERM"] " \
 	"You lack administrator privileges on this mailbox."
-
-#define ACL_MAILBOX_FLAGS \
-	(MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT)
 
 #define IMAP_ACL_ANYONE "anyone"
 #define IMAP_ACL_AUTHENTICATED "authenticated"
@@ -47,18 +44,17 @@ static const struct imap_acl_letter_map imap_acl_letter_map[] = {
 	{ '\0', NULL }
 };
 
-const char *imap_acl_plugin_version = DOVECOT_VERSION;
+const char *imap_acl_plugin_version = DOVECOT_ABI_VERSION;
 
 static struct module *imap_acl_module;
-static void (*next_hook_client_created)(struct client **client);
+static imap_client_created_func_t *next_hook_client_created;
 
 static struct mailbox *
 acl_mailbox_open_as_admin(struct client_command_context *cmd, const char *name)
 {
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *storage_name;
-	enum mailbox_name_status status;
+	enum mailbox_existence existence = MAILBOX_EXISTENCE_NONE;
 	int ret;
 
 	if (ACL_USER_CONTEXT(cmd->client->user) == NULL) {
@@ -66,29 +62,24 @@ acl_mailbox_open_as_admin(struct client_command_context *cmd, const char *name)
 		return NULL;
 	}
 
-	ns = client_find_namespace(cmd, name, &storage_name, &status);
+	ns = client_find_namespace(cmd, &name);
 	if (ns == NULL)
 		return NULL;
 
-	switch (status) {
-	case MAILBOX_NAME_INVALID:
-	case MAILBOX_NAME_VALID:
-		client_fail_mailbox_name_status(cmd, name, NULL, status);
-		return NULL;
-	default:
-		break;
-	}
-
 	/* Force opening the mailbox so that we can give a nicer error message
 	   if mailbox isn't selectable but is listable. */
-	box = mailbox_alloc(ns->list, storage_name, ACL_MAILBOX_FLAGS |
+	box = mailbox_alloc(ns->list, name, MAILBOX_FLAG_READONLY |
 			    MAILBOX_FLAG_IGNORE_ACLS);
-	ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_ADMIN);
-	if (ret > 0)
-		return box;
+	if (mailbox_exists(box, TRUE, &existence) == 0 &&
+	    existence == MAILBOX_EXISTENCE_SELECT) {
+		ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_ADMIN);
+		if (ret > 0)
+			return box;
+	}
 
-	/* not an administrator. */
-	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_LOOKUP) <= 0) {
+	/* mailbox doesn't exist / not an administrator. */
+	if (existence != MAILBOX_EXISTENCE_SELECT ||
+	    acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_LOOKUP) <= 0) {
 		client_send_tagline(cmd, t_strdup_printf(
 			"NO ["IMAP_RESP_CODE_NONEXISTENT"] "
 			MAIL_ERRSTR_MAILBOX_NOT_FOUND, name));
@@ -172,7 +163,7 @@ imap_acl_write_right(string_t *dest, string_t *tmp,
 		i_unreached();
 	}
 
-	imap_quote_append(dest, str_data(tmp), str_len(tmp), FALSE);
+	imap_append_astring(dest, str_c(tmp));
 	str_append_c(dest, ' ');
 	imap_acl_write_rights_list(dest, rights);
 }
@@ -297,13 +288,13 @@ static bool cmd_getacl(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* ACL ");
-	imap_quote_append_string(str, mailbox, FALSE);
+	imap_append_astring(str, mailbox);
 
 	ns = mailbox_get_namespace(box);
 	backend = acl_mailbox_list_get_backend(ns->list);
 	ret = imap_acl_write_aclobj(str, backend,
 				    acl_mailbox_get_aclobj(box), TRUE,
-				    ns->type == NAMESPACE_PRIVATE);
+				    ns->type == MAIL_NAMESPACE_TYPE_PRIVATE);
 	if (ret == 0) {
 		client_send_line(cmd->client, str_c(str));
 		client_send_tagline(cmd, "OK Getacl completed.");
@@ -318,24 +309,25 @@ static bool cmd_myrights(struct client_command_context *cmd)
 {
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *mailbox, *storage_name;
+	const char *mailbox, *orig_mailbox;
 	const char *const *rights;
 	string_t *str;
 
 	if (!client_read_string_args(cmd, 1, &mailbox))
 		return FALSE;
+	orig_mailbox = mailbox;
 
 	if (ACL_USER_CONTEXT(cmd->client->user) == NULL) {
 		client_send_command_error(cmd, "ACLs disabled.");
 		return TRUE;
 	}
 
-	ns = client_find_namespace(cmd, mailbox, &storage_name, NULL);
+	ns = client_find_namespace(cmd, &mailbox);
 	if (ns == NULL)
 		return TRUE;
 
-	box = mailbox_alloc(ns->list, storage_name,
-			    ACL_MAILBOX_FLAGS | MAILBOX_FLAG_IGNORE_ACLS);
+	box = mailbox_alloc(ns->list, mailbox,
+			    MAILBOX_FLAG_READONLY | MAILBOX_FLAG_IGNORE_ACLS);
 	if (acl_object_get_my_rights(acl_mailbox_get_aclobj(box),
 				     pool_datastack_create(), &rights) < 0) {
 		client_send_tagline(cmd, "NO "MAIL_ERRSTR_CRITICAL_MSG);
@@ -355,7 +347,7 @@ static bool cmd_myrights(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* MYRIGHTS ");
-	imap_quote_append_string(str, mailbox, FALSE);
+	imap_append_astring(str, orig_mailbox);
 	str_append_c(str,' ');
 	imap_acl_write_rights_list(str, rights);
 
@@ -380,9 +372,9 @@ static bool cmd_listrights(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* LISTRIGHTS ");
-	imap_quote_append_string(str, mailbox, FALSE);
+	imap_append_astring(str, mailbox);
 	str_append_c(str, ' ');
-	imap_quote_append_string(str, identifier, FALSE);
+	imap_append_astring(str, identifier);
 	str_append_c(str, ' ');
 	str_append(str, "\"\" l r w s t p i e k x a c d");
 
@@ -431,7 +423,7 @@ imap_acl_letters_parse(const char *letters, const char *const **rights_r,
 			}
 		}
 	}
-	(void)array_append_space(&rights);
+	array_append_zero(&rights);
 	*rights_r = array_idx(&rights, 0);
 	return 0;
 }
@@ -536,8 +528,29 @@ static void imap_acl_update_ensure_keep_admins(struct acl_backend *backend,
 	default:
 		return;
 	}
-	(void)array_append_space(&new_rights);
+	array_append_zero(&new_rights);
 	update->rights.rights = array_idx(&new_rights, 0);
+}
+
+static int
+cmd_acl_mailbox_update(struct mailbox *box,
+		       const struct acl_rights_update *update,
+		       const char **error_r)
+{
+	struct mailbox_transaction_context *t;
+	int ret;
+
+	if (mailbox_open(box) < 0) {
+		*error_r = mailbox_get_last_error(box, NULL);
+		return -1;
+	}
+
+	t = mailbox_transaction_begin(box, MAILBOX_TRANSACTION_FLAG_EXTERNAL);
+	ret = acl_mailbox_update_acl(t, update);
+	if (mailbox_transaction_commit(&t) < 0)
+		ret = -1;
+	*error_r = MAIL_ERRSTR_CRITICAL_MSG;
+	return ret;
 }
 
 static bool cmd_setacl(struct client_command_context *cmd)
@@ -596,7 +609,8 @@ static bool cmd_setacl(struct client_command_context *cmd)
 
 	ns = mailbox_get_namespace(box);
 	backend = acl_mailbox_list_get_backend(ns->list);
-	if (ns->type == NAMESPACE_PUBLIC && r->id_type == ACL_ID_OWNER) {
+	if (ns->type == MAIL_NAMESPACE_TYPE_PUBLIC &&
+	    r->id_type == ACL_ID_OWNER) {
 		client_send_tagline(cmd, "NO Public namespaces have no owner");
 		mailbox_free(&box);
 		return TRUE;
@@ -608,7 +622,8 @@ static bool cmd_setacl(struct client_command_context *cmd)
 		update.modify_mode = ACL_MODIFY_MODE_REMOVE;
 		update.rights.neg_rights = update.rights.rights;
 		update.rights.rights = NULL;
-	} else if (ns->type == NAMESPACE_PRIVATE && r->rights != NULL &&
+	} else if (ns->type == MAIL_NAMESPACE_TYPE_PRIVATE &&
+		   r->rights != NULL &&
 		   ((r->id_type == ACL_ID_USER &&
 		     acl_backend_user_name_equals(backend, r->identifier)) ||
 		    (r->id_type == ACL_ID_OWNER &&
@@ -619,8 +634,8 @@ static bool cmd_setacl(struct client_command_context *cmd)
 		imap_acl_update_ensure_keep_admins(backend, aclobj, &update);
 	}
 
-	if (acl_object_update(aclobj, &update) < 0)
-		client_send_tagline(cmd, "NO "MAIL_ERRSTR_CRITICAL_MSG);
+	if (cmd_acl_mailbox_update(box, &update, &error) < 0)
+		client_send_tagline(cmd, t_strdup_printf("NO %s", error));
 	else
 		client_send_tagline(cmd, "OK Setacl complete.");
 	mailbox_free(&box);
@@ -658,8 +673,8 @@ static bool cmd_deleteacl(struct client_command_context *cmd)
 	if (box == NULL)
 		return TRUE;
 
-	if (acl_object_update(acl_mailbox_get_aclobj(box), &update) < 0)
-		client_send_tagline(cmd, "NO "MAIL_ERRSTR_CRITICAL_MSG);
+	if (cmd_acl_mailbox_update(box, &update, &error) < 0)
+		client_send_tagline(cmd, t_strdup_printf("NO %s", error));
 	else
 		client_send_tagline(cmd, "OK Deleteacl complete.");
 	mailbox_free(&box);

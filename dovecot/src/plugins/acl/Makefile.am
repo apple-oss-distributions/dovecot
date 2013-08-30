@@ -9,6 +9,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage \
 	-I$(top_srcdir)/src/doveadm
 
+NOPLUGIN_LDFLAGS =
 lib10_doveadm_acl_plugin_la_LDFLAGS = -module -avoid-version
 lib01_acl_plugin_la_LDFLAGS = -module -avoid-version
 
@@ -17,6 +18,7 @@ module_LTLIBRARIES = \
 
 lib01_acl_plugin_la_SOURCES = \
 	acl-api.c \
+	acl-attributes.c \
 	acl-backend.c \
 	acl-backend-vfile.c \
 	acl-backend-vfile-acllist.c \

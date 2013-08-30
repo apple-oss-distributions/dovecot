@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -9,7 +9,7 @@
 #include "maildir-storage.h"
 #include "maildir-uidlist.h"
 #include "maildir-keywords.h"
-#include "maildir-filename.h"
+#include "maildir-filename-flags.h"
 #include "maildir-sync.h"
 
 #include <stdio.h>
@@ -23,13 +23,16 @@
 
 static const char *
 maildir_filename_guess(struct maildir_mailbox *mbox, uint32_t uid,
-		       const char *fname, bool *have_flags_r)
+		       const char *fname,
+		       enum maildir_uidlist_rec_flag *uidlist_flags,
+		       bool *have_flags_r)
 
 {
 	struct mail_index_view *view = mbox->flags_view;
 	struct maildir_keywords_sync_ctx *kw_ctx;
 	enum mail_flags flags;
 	ARRAY_TYPE(keyword_indexes) keywords;
+	const char *p;
 	uint32_t seq;
 
 	if (view == NULL || !mail_index_lookup_seq(view, uid, &seq)) {
@@ -41,15 +44,29 @@ maildir_filename_guess(struct maildir_mailbox *mbox, uint32_t uid,
 	mail_index_lookup_view_flags(view, seq, &flags, &keywords);
 	if (array_count(&keywords) == 0) {
 		*have_flags_r = (flags & MAIL_FLAGS_NONRECENT) != 0;
-		fname = maildir_filename_set_flags(NULL, fname, flags, NULL);
+		fname = maildir_filename_flags_set(fname, flags);
 	} else {
 		*have_flags_r = TRUE;
 		kw_ctx = maildir_keywords_sync_init_readonly(mbox->keywords,
 							     mbox->box.index);
-		fname = maildir_filename_set_flags(kw_ctx, fname,
-						   flags, &keywords);
+		fname = maildir_filename_flags_kw_set(kw_ctx, fname,
+						      flags, &keywords);
 		maildir_keywords_sync_deinit(&kw_ctx);
 	}
+
+	if (*have_flags_r) {
+		/* don't even bother looking into new/ dir */
+		*uidlist_flags &= MAILDIR_UIDLIST_REC_FLAG_NEW_DIR;
+	} else if ((*uidlist_flags & MAILDIR_UIDLIST_REC_FLAG_MOVED) == 0 &&
+		   ((*uidlist_flags & MAILDIR_UIDLIST_REC_FLAG_NEW_DIR) != 0 ||
+		    index_mailbox_is_recent(&mbox->box, uid))) {
+		/* probably in new/ dir, drop ":2," from fname */
+		*uidlist_flags |= MAILDIR_UIDLIST_REC_FLAG_NEW_DIR;
+		p = strrchr(fname, MAILDIR_INFO_SEP);
+		if (p != NULL)
+			fname = t_strdup_until(fname, p);
+	}
+
 	return fname;
 }
 
@@ -61,29 +78,41 @@ static int maildir_file_do_try(struct maildir_mailbox *mbox, uint32_t uid,
 	bool have_flags;
 	int ret;
 
-	ret = maildir_uidlist_lookup(mbox->uidlist, uid, &flags, &fname);
+	ret = maildir_sync_lookup(mbox, uid, &flags, &fname);
 	if (ret <= 0)
 		return ret == 0 ? -2 : -1;
 
 	if ((flags & MAILDIR_UIDLIST_REC_FLAG_NONSYNCED) != 0) {
 		/* let's see if we can guess the filename based on index */
-		fname = maildir_filename_guess(mbox, uid, fname, &have_flags);
-		if (have_flags) {
-			/* don't even bother looking into new/ dir */
-			flags &= MAILDIR_UIDLIST_REC_FLAG_NEW_DIR;
-		}
+		fname = maildir_filename_guess(mbox, uid, fname,
+					       &flags, &have_flags);
 	}
+	/* make a copy, just in case callback refreshes uidlist and
+	   the pointer becomes invalid. */
+	fname = t_strdup(fname);
 
+	ret = 0;
 	if ((flags & MAILDIR_UIDLIST_REC_FLAG_NEW_DIR) != 0) {
 		/* probably in new/ dir */
-		path = t_strconcat(mbox->box.path, "/new/", fname, NULL);
+		path = t_strconcat(mailbox_get_path(&mbox->box),
+				   "/new/", fname, NULL);
 		ret = callback(mbox, path, context);
-		if (ret != 0)
-			return ret;
 	}
-
-	path = t_strconcat(mbox->box.path, "/cur/", fname, NULL);
-	ret = callback(mbox, path, context);
+	if (ret == 0) {
+		path = t_strconcat(mailbox_get_path(&mbox->box), "/cur/",
+				   fname, NULL);
+		ret = callback(mbox, path, context);
+	}
+	if (ret > 0 && (flags & MAILDIR_UIDLIST_REC_FLAG_NONSYNCED) != 0) {
+		/* file was found. make sure we remember its latest name. */
+		maildir_uidlist_update_fname(mbox->uidlist, fname);
+	} else if (ret == 0 &&
+		   (flags & MAILDIR_UIDLIST_REC_FLAG_NONSYNCED) == 0) {
+		/* file wasn't found. mark this message nonsynced, so we can
+		   retry the lookup by guessing the flags */
+		maildir_uidlist_add_flags(mbox->uidlist, fname,
+					  MAILDIR_UIDLIST_REC_FLAG_NONSYNCED);
+	}
 	return ret;
 }
 
@@ -113,6 +142,11 @@ int maildir_file_do(struct maildir_mailbox *mbox, uint32_t uid,
 	T_BEGIN {
 		ret = maildir_file_do_try(mbox, uid, callback, context);
 	} T_END;
+	if (ret == 0 && mbox->storage->set->maildir_very_dirty_syncs) T_BEGIN {
+		/* try guessing again with refreshed flags */
+		if (maildir_sync_refresh_flags_view(mbox) == 0)
+			ret = maildir_file_do_try(mbox, uid, callback, context);
+	} T_END;
 	for (i = 0; i < MAILDIR_RESYNC_RETRY_COUNT && ret == 0; i++) {
 		/* file is either renamed or deleted. sync the maildir and
 		   see which one. if file appears to be renamed constantly,
@@ -135,10 +169,11 @@ int maildir_file_do(struct maildir_mailbox *mbox, uint32_t uid,
 static int maildir_create_path(struct mailbox *box, const char *path,
 			       enum mailbox_list_path_type type, bool retry)
 {
+	const struct mailbox_permissions *perm = mailbox_get_permissions(box);
 	const char *p, *parent;
 
-	if (mkdir_chgrp(path, box->dir_create_mode, box->file_create_gid,
-			box->file_create_gid_origin) == 0)
+	if (mkdir_chgrp(path, perm->dir_create_mode, perm->file_create_gid,
+			perm->file_create_gid_origin) == 0)
 		return 0;
 
 	switch (errno) {
@@ -154,12 +189,12 @@ static int maildir_create_path(struct mailbox *box, const char *path,
 		}
 		/* create index/control root directory */
 		parent = t_strdup_until(path, p);
-		if (mailbox_list_mkdir(box->list, parent, type) == 0) {
-			/* should work now, try again */
-			return maildir_create_path(box, path, type, FALSE);
+		if (mailbox_list_mkdir_root(box->list, parent, type) < 0) {
+			mail_storage_copy_list_error(box->storage, box->list);
+			return -1;
 		}
-		/* fall through */
-		path = parent;
+		/* should work now, try again */
+		return maildir_create_path(box, path, type, FALSE);
 	default:
 		mail_storage_set_critical(box->storage,
 					  "mkdir(%s) failed: %m", path);
@@ -174,24 +209,28 @@ static int maildir_create_subdirs(struct mailbox *box)
 	enum mailbox_list_path_type types[N_ELEMENTS(subdirs) + 2];
 	struct stat st;
 	const char *path;
-	unsigned int i;
+	unsigned int i, count;
 
 	/* @UNSAFE: get a list of directories we want to create */
 	for (i = 0; i < N_ELEMENTS(subdirs); i++) {
 		types[i] = MAILBOX_LIST_PATH_TYPE_MAILBOX;
-		dirs[i] = t_strconcat(box->path, "/", subdirs[i], NULL);
+		dirs[i] = t_strconcat(mailbox_get_path(box),
+				      "/", subdirs[i], NULL);
 	}
-	types[i] = MAILBOX_LIST_PATH_TYPE_CONTROL;
-	dirs[i++] = mailbox_list_get_path(box->list, box->name,
-					  MAILBOX_LIST_PATH_TYPE_CONTROL);
-	types[i] = MAILBOX_LIST_PATH_TYPE_INDEX;
-	dirs[i++] = mailbox_list_get_path(box->list, box->name,
-					  MAILBOX_LIST_PATH_TYPE_INDEX);
-	i_assert(i == N_ELEMENTS(dirs));
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_CONTROL, &path) > 0) {
+		types[i] = MAILBOX_LIST_PATH_TYPE_CONTROL;
+		dirs[i++] = path;
+	}
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &path) > 0) {
+		types[i] = MAILBOX_LIST_PATH_TYPE_INDEX;
+		dirs[i++] = path;
+	}
+	count = i;
+	i_assert(count <= N_ELEMENTS(dirs));
 
-	for (i = 0; i < N_ELEMENTS(dirs); i++) {
+	for (i = 0; i < count; i++) {
 		path = dirs[i];
-		if (path == NULL || stat(path, &st) == 0)
+		if (stat(path, &st) == 0)
 			continue;
 		if (errno != ENOENT) {
 			mail_storage_set_critical(box->storage,
@@ -209,12 +248,12 @@ bool maildir_set_deleted(struct mailbox *box)
 	struct stat st;
 	int ret;
 
-	if (stat(box->path, &st) < 0) {
+	if (stat(mailbox_get_path(box), &st) < 0) {
 		if (errno == ENOENT)
 			mailbox_set_deleted(box);
 		else {
 			mail_storage_set_critical(box->storage,
-				"stat(%s) failed: %m", box->path);
+				"stat(%s) failed: %m", mailbox_get_path(box));
 		}
 		return FALSE;
 	}

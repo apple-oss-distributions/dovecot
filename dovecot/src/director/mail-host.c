@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -8,7 +8,7 @@
 
 struct mail_host_list {
 	ARRAY_TYPE(mail_host) hosts;
-	ARRAY_DEFINE(vhosts, struct mail_host *);
+	ARRAY(struct mail_host *) vhosts;
 	bool hosts_unsorted;
 };
 
@@ -59,7 +59,7 @@ static int mail_host_add(struct mail_host_list *list, const char *host)
 	}
 
 	for (i = 0; i < ips_count; i++)
-		mail_host_add_ip(list, &ips[i]);
+		(void)mail_host_add_ip(list, &ips[i]);
 	return 0;
 }
 
@@ -110,7 +110,7 @@ mail_hosts_add_range(struct mail_host_list *list,
 	i2 = htonl(ip2_arr[i]);
 
 	for (j = last_bits; j < 32; j++) {
-		if ((i1 & (1 << j)) != (i2 & (1 << j))) {
+		if ((i1 & (1U << j)) != (i2 & (1U << j))) {
 			i_error("IP address range too large: %s-%s",
 				net_ip2addr(&ip1), net_ip2addr(&ip2));
 			return -1;
@@ -120,7 +120,7 @@ mail_hosts_add_range(struct mail_host_list *list,
 	/* create hosts from the final bits */
 	do {
 		ip1_arr[i] = ntohl(i1);
-		mail_host_add_ip(list, &ip1);
+		(void)mail_host_add_ip(list, &ip1);
 		i1++;
 	} while (ip1_arr[i] != ip2_arr[i]);
 	return 0;

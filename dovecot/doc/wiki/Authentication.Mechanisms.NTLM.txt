@@ -31,4 +31,4 @@ Dovecot's NTLM logic is:
 For more information about NTLM internals, see http://ubiqx.org/cifs/ and
 http://davenport.sourceforge.net/ntlm.html
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

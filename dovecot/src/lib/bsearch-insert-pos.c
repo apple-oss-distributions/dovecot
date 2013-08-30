@@ -1,9 +1,10 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "bsearch-insert-pos.h"
 
+#undef bsearch_insert_pos
 bool bsearch_insert_pos(const void *key, const void *base, unsigned int nmemb,
 			size_t size, int (*cmp)(const void *, const void *),
 			unsigned int *idx_r)
@@ -11,6 +12,8 @@ bool bsearch_insert_pos(const void *key, const void *base, unsigned int nmemb,
 	const void *p;
 	unsigned int idx, left_idx, right_idx;
 	int ret;
+
+	i_assert(nmemb < INT_MAX);
 
 	idx = 0; left_idx = 0; right_idx = nmemb;
 	while (left_idx < right_idx) {

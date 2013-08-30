@@ -1,4 +1,4 @@
-/* Copyright (c) 2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "restrict-access.h"
@@ -8,30 +8,24 @@
 #include "ipc-connection.h"
 #include "client.h"
 
-static bool ipc_socket_is_client(int listen_fd)
+static bool ipc_socket_is_client(const char *name)
 {
-	const char *path, *name;
+	unsigned int len;
 
-	if (net_getunixname(listen_fd, &path) < 0) {
-		if (errno != ENOTSOCK)
-			i_fatal("getunixname(%d) failed: %m", listen_fd);
-		/* not a UNIX socket. let's just assume it's a client. */
+	if (strcmp(name, "ipc") == 0)
 		return TRUE;
-	}
 
-	name = strrchr(path, '/');
-	if (name == NULL)
-		name = path;
-	else
-		name++;
-	return strcmp(name, "ipc") == 0;
+	len = strlen(name);
+	if (len > 7 && strcmp(name + len - 7, "-client") == 0)
+		return TRUE;
+	return FALSE;
 }
 
 static void client_connected(struct master_service_connection *conn)
 {
 	master_service_client_connection_accept(conn);
 
-	if (ipc_socket_is_client(conn->listen_fd))
+	if (ipc_socket_is_client(conn->name))
 		(void)client_create(conn->fd);
 	else
 		(void)ipc_connection_create(conn->listen_fd, conn->fd);
@@ -44,7 +38,7 @@ int main(int argc, char *argv[])
 	const char *error;
 
 	master_service = master_service_init("ipc", service_flags,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 	if (master_service_settings_read_simple(master_service,
@@ -54,8 +48,8 @@ int main(int argc, char *argv[])
 
 	restrict_access_by_env(NULL, FALSE);
 	restrict_access_allow_coredumps(TRUE);
-	master_service_init_finish(master_service);
 	ipc_groups_init();
+	master_service_init_finish(master_service);
 
 	master_service_run(master_service, client_connected);
 

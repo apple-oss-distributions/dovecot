@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "nfs-workarounds.h"
@@ -15,6 +15,7 @@ sdbox_file_copy_attachments(struct sdbox_file *src_file,
 {
 	struct dbox_storage *src_storage = src_file->file.storage;
 	struct dbox_storage *dest_storage = dest_file->file.storage;
+	struct fs_file *src_fsfile, *dest_fsfile;
 	ARRAY_TYPE(mail_attachment_extref) extrefs;
 	const struct mail_attachment_extref *extref;
 	const char *extrefs_line, *src, *dest, *dest_relpath;
@@ -58,10 +59,14 @@ sdbox_file_copy_attachments(struct sdbox_file *src_file,
 			sdbox_file_attachment_relpath(src_file, extref->path));
 		dest_relpath = p_strconcat(dest_file->attachment_pool,
 					   extref->path, "-",
-					   mail_generate_guid_string(), NULL);
+					   guid_generate(), NULL);
 		dest = t_strdup_printf("%s/%s", dest_storage->attachment_dir,
 				       dest_relpath);
-		if (fs_link(dest_storage->attachment_fs, src, dest) < 0) {
+		src_fsfile = fs_file_init(src_storage->attachment_fs, src,
+					  FS_OPEN_MODE_READONLY);
+		dest_fsfile = fs_file_init(dest_storage->attachment_fs, dest,
+					   FS_OPEN_MODE_READONLY);
+		if (fs_copy(src_fsfile, dest_fsfile) < 0) {
 			mail_storage_set_critical(&dest_storage->storage, "%s",
 				fs_last_error(dest_storage->attachment_fs));
 			ret = -1;
@@ -69,6 +74,8 @@ sdbox_file_copy_attachments(struct sdbox_file *src_file,
 			array_append(&dest_file->attachment_paths,
 				     &dest_relpath, 1);
 		}
+		fs_file_deinit(&src_fsfile);
+		fs_file_deinit(&dest_fsfile);
 	} T_END;
 	pool_unref(&pool);
 	return ret;
@@ -104,9 +111,12 @@ sdbox_copy_hardlink(struct mail_save_context *_ctx, struct mail *mail)
 	if (ret < 0) {
 		if (ECANTLINK(errno))
 			ret = 0;
-		else if (errno == ENOENT)
-			mail_set_expunged(mail);
-		else {
+		else if (errno == ENOENT) {
+			/* try if the fallback copying code can still
+			   read the file (the mail could still have the
+			   stream open) */
+			ret = 0;
+		} else {
 			mail_storage_set_critical(
 				_ctx->transaction->box->storage,
 				"link(%s, %s) failed: %m",
@@ -120,7 +130,7 @@ sdbox_copy_hardlink(struct mail_save_context *_ctx, struct mail *mail)
 	ret = sdbox_file_copy_attachments((struct sdbox_file *)src_file,
 					  (struct sdbox_file *)dest_file);
 	if (ret <= 0) {
-		sdbox_file_unlink_aborted_save((struct sdbox_file *)dest_file);
+		(void)sdbox_file_unlink_aborted_save((struct sdbox_file *)dest_file);
 		dbox_file_unref(&src_file);
 		dbox_file_unref(&dest_file);
 		return ret;
@@ -130,10 +140,8 @@ sdbox_copy_hardlink(struct mail_save_context *_ctx, struct mail *mail)
 	index_copy_cache_fields(_ctx, mail, ctx->seq);
 
 	sdbox_save_add_file(_ctx, dest_file);
-	if (_ctx->dest_mail != NULL) {
-		mail_set_seq(_ctx->dest_mail, ctx->seq);
-		_ctx->dest_mail->saving = TRUE;
-	}
+	if (_ctx->dest_mail != NULL)
+		mail_set_seq_saving(_ctx->dest_mail, ctx->seq);
 	dbox_file_unref(&src_file);
 	return 1;
 }
@@ -149,7 +157,7 @@ int sdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 
 	ctx->finished = TRUE;
 	if (mail_storage_copy_can_use_hardlink(mail->box, &mbox->box) &&
-	    _ctx->guid == NULL) {
+	    _ctx->data.guid == NULL) {
 		T_BEGIN {
 			ret = sdbox_copy_hardlink(_ctx, mail);
 		} T_END;

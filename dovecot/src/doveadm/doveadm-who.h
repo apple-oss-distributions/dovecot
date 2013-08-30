@@ -22,7 +22,7 @@ struct who_context {
 	struct who_filter filter;
 
 	pool_t pool;
-	struct hash_table *users; /* username -> who_user */
+	HASH_TABLE(struct who_user *, struct who_user *) users;
 
 	unsigned int dump_elapsed:1;				/* APPLE */
 };

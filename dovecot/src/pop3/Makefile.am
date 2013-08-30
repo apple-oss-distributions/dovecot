@@ -12,19 +12,12 @@ AM_CPPFLAGS = \
 
 pop3_LDFLAGS = -export-dynamic
 
-if !BUILD_SHARED_LIBS
-unused_objects = \
-	../lib/mountpoint.o \
-	../lib-imap/imap-util.o \
-	../lib-storage/mail-search-parser-imap.o
-endif
-
-libs = \
+pop3_LDADD = \
 	$(LIBDOVECOT_STORAGE) \
-	$(unused_objects)
-
-pop3_LDADD = $(libs) $(LIBDOVECOT) $(MODULE_LIBS)
-pop3_DEPENDENCIES = $(libs) $(LIBDOVECOT_DEPS)
+	$(LIBDOVECOT)
+pop3_DEPENDENCIES = \
+	$(LIBDOVECOT_STORAGE_DEPS) \
+	$(LIBDOVECOT_DEPS)
 
 pop3_SOURCES = \
 	main.c \

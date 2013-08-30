@@ -114,17 +114,24 @@ $pat = '(?:pop3|imap)-login: (... .. ..:..:..) Info: Login: \S+
 DRAC
 ====
 
-There is a Dovecot plugin for DRAC [http://mail.cc.umanitoba.ca/drac/] at
-drac.c [http://www.dovecot.org/patches/1.1/drac.c]. DRAC runs as a separate
-daemon, maintaining a BerkeleyDB database of IPs that have successfully
-authenticated via POP3 or IMAP, expiring them after 30 minutes. Installing it
-therefore requires that both your POP3/IMAP server and your SMTP daemon
-(Postfix/Sendmail/qmail) be set up to support it. DRAC is a small C program,
-and accessing BerkeleyDB databases is efficient so it works pretty well.
+The DRAC historical plugin for Dovecot 1.x, located here
+[http://mail.cc.umanitoba.ca/drac/], doesn't work with Dovecot 2.x, since it
+relies on the "IP" environment variable, not set anymore by Dovecot 2.x
 
-The file drac.c has instructions on how to compile it in a comment at the top.
-By following the instructions you will install a file drac.so in your dovecot
-'lib/' directories for IMAP and/or POP3 loadable modules.
+a more recent version of this plugin is available here: DRAC Plugin for Dovecot
+2.x [http://sourceforge.jp/projects/dovecot2-drac/]. The README file explains
+how to compile it. Change the path to your Dovecot 2.x source code into the
+Makefile to compile it.
+
+DRAC runs as a separate daemon, maintaining a BerkeleyDB database of IPs that
+have successfully authenticated via POP3 or IMAP, expiring them after 30
+minutes. Installing it therefore requires that both your POP3/IMAP server and
+your SMTP daemon (Postfix/Sendmail/qmail) be set up to support it.
+DRAC-PLUGIN.c is a small C program, and accessing BerkeleyDB databases is
+efficient so it works pretty well.
+
+By following the instructions you will install a file drac_plugin.so in your
+dovecot 'lib/' directories for IMAP and/or POP3 loadable modules.
 
 To turn on the new DRAC plugin in dovecot, you must set up these lines in your
 dovecot.conf. There is a separate section for ''protocol imap'' and another
@@ -132,13 +139,13 @@ under ''protocol pop3''; make sure you enable both.
 
 ---%<-------------------------------------------------------------------------
   # Support for dynamically loadable modules
-  mail_plugin_dir = /usr/lib/dovecot/imap
+  mail_plugin_dir = /usr/lib/dovecot/imap # not mandatory
   mail_plugins = drac                            # provide a list of all
 plugins you want to load here
 ---%<-------------------------------------------------------------------------
 
-Permissions note: the directory containing the drac.so file has to be readable
-by ordinary users. Check your Dovecot error log for help.
+Permissions note: the directory containing the drac_plugin.so file has to be
+readable by ordinary users. Check your Dovecot error log for help.
 
 To get DRAC working on your machine, download the main DRAC
 [http://mail.cc.umanitoba.ca/drac/] daemon, edit the makefile as directed in
@@ -353,4 +360,4 @@ Restart Dovecot. Verify that your IMAP client still works. Verify that
 relay-ctrl has recorded your client IP. Hook 'relay-ctrl-check' into your SMTP
 service, as documented in the relay-ctrl README, and you're done.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

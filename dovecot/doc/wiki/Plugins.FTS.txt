@@ -49,6 +49,7 @@ Settings (v2.1+)
    setting adds a maximum timeout to this wait. If the timeout is reached, the
    SEARCH fails with:'NO [INUSE] Timeout while waiting for indexing to finish'
  * 'fts_decoder': Decode attachments to plaintext using this service and index
-   the resulting plaintext.
+   the resulting plaintext. See the 'decode2text.sh' script included in Dovecot
+   for how to use this.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

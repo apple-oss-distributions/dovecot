@@ -9,7 +9,7 @@
 
 #ifdef IOLOOP_NOTIFY_KQUEUE
 
-#include "ioloop-internal.h"
+#include "ioloop-private.h"
 #include "fd-close-on-exec.h"
 #include <unistd.h>
 #include <fcntl.h>
@@ -71,7 +71,7 @@ static void event_callback(struct ioloop_notify_handler_context *ctx)
 		/* there can be multiple events for a single io.
 		   call the callback only once if that happens. */
 		if (io->refcount == 2 && io->io.callback != NULL)
-			io->io.callback(io->io.context);
+			io_loop_call_io(&io->io);
 
 		if (--io->refcount == 0)
 			i_free(io);
@@ -141,7 +141,7 @@ enum io_notify_result io_add_notify(const char *path, io_callback_t *callback,
 		  NOTE_DELETE | NOTE_WRITE | NOTE_EXTEND | NOTE_REVOKE, 0, io);
 	if (kevent(ctx->kq, &ev, 1, NULL, 0, NULL) < 0) {
 		i_error("kevent(%d, %s) for notify failed: %m", fd, path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		i_free(io);
 		return IO_NOTIFY_NOSUPPORT;
 	}

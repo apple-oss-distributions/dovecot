@@ -1,12 +1,15 @@
 #ifndef SERVICE_H
 #define SERVICE_H
 
-#include "network.h"
+#include "net.h"
 #include "master-settings.h"
 
 /* If a service process doesn't send its first status notification in
    this many seconds, kill the process */
 #define SERVICE_FIRST_STATUS_TIMEOUT_SECS 30
+
+#define SERVICE_STARTUP_FAILURE_THROTTLE_MIN_SECS 2
+#define SERVICE_STARTUP_FAILURE_THROTTLE_MAX_SECS 60
 
 enum service_listener_type {
 	SERVICE_LISTENER_UNIX,
@@ -21,6 +24,7 @@ struct service_listener {
 	int fd; /* may be -1 */
 	struct io *io;
 
+	const char *name;
 	const char *inet_address;
 
 	union {
@@ -51,7 +55,7 @@ struct service {
 	const char *extra_gids; /* comma-separated list */
 
 	/* all listeners, even those that aren't currently listening */
-	ARRAY_DEFINE(listeners, struct service_listener *);
+	ARRAY(struct service_listener *) listeners;
 	/* linked list of all processes belonging to this service */
 	struct service_process *processes;
 
@@ -79,6 +83,10 @@ struct service {
 	int status_fd[2];
 	struct io *io_status;
 
+	unsigned int throttle_secs;
+	time_t exit_failure_last;
+	unsigned int exit_failures_in_sec;
+
 	/* Login process's notify fd. We change its seek position to
 	   communicate state to login processes. */
 	int login_notify_fd;
@@ -103,6 +111,8 @@ struct service {
 	unsigned int have_inet_listeners:1;
 	/* service_login_notify()'s last notification state */
 	unsigned int last_login_full_notify:1;
+	/* service has exited at least once with exit code 0 */
+	unsigned int have_successful_exits:1;
 };
 
 struct service_list {
@@ -124,21 +134,23 @@ struct service_list {
 
 	int master_dead_pipe_fd[2];
 
-	ARRAY_DEFINE(services, struct service *);
+	ARRAY(struct service *) services;
 
+	unsigned int destroying:1;
 	unsigned int destroyed:1;
 	unsigned int sigterm_sent:1;
 	unsigned int sigterm_sent_to_log:1;
 };
 
-extern struct hash_table *service_pids;
+HASH_TABLE_DEFINE_TYPE(pid_process, void *, struct service_process *);
+extern HASH_TABLE_TYPE(pid_process) service_pids;
 
 /* Create all services from settings */
 int services_create(const struct master_settings *set,
 		    struct service_list **services_r, const char **error_r);
 
 /* Destroy services */
-void services_destroy(struct service_list *service_list);
+void services_destroy(struct service_list *service_list, bool wait);
 
 void service_list_ref(struct service_list *service_list);
 void service_list_unref(struct service_list *service_list);

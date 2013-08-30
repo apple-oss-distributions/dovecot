@@ -80,18 +80,13 @@ src/auth/db-od.c
 src/auth/db-od.h
 src/auth/passdb-od.c
 src/auth/userdb-od.c
-CATENATE support in src/imap/cmd-append.c
 src/imap/cmd-x-apple-push-service.c
 src/lib/dtrace-dovecot.d
 src/lib/dtrace.h
-src/lib/lib-imap/imap-url.c
-src/lib/lib-imap/imap-url.h
 src/plugins/fts-sk/*
-src/plugins/imap-fts/*
 src/plugins/push-notify/*
-src/plugins/urlauth/*
 
- Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ Copyright (c) 2008-2013 Apple Inc. All rights reserved.
  
  Redistribution and use in source and binary forms, with or without  
  modification, are permitted provided that the following conditions  

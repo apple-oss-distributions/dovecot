@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -66,7 +66,7 @@ static const struct setting_define imap_login_setting_defines[] = {
 
 static const struct imap_login_settings imap_login_default_settings = {
 	.imap_capability = "",
-	.imap_id_send = "",
+	.imap_id_send = "name *",
 	.imap_id_log = "",
 #ifdef APPLE_OS_X_SERVER
 	.aps_topic = ""

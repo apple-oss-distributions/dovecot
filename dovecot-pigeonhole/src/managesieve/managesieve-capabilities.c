@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -22,7 +22,7 @@
  */
 
 struct plugin_settings {
-	ARRAY_DEFINE(plugin_envs, const char *);
+	ARRAY(const char *) plugin_envs;
 };
 
 static const struct setting_parser_info **plugin_set_roots;
@@ -52,7 +52,7 @@ static const struct setting_parser_info *default_plugin_set_roots[] = {
 	NULL
 };
 
-static const struct setting_parser_info **plugin_set_roots = 
+static const struct setting_parser_info **plugin_set_roots =
 	default_plugin_set_roots;
 
 static struct plugin_settings *plugin_settings_read(void)
@@ -88,11 +88,6 @@ static const char *plugin_settings_get
  * Sieve environment
  */
 
-static const char *sieve_get_homedir(void *context ATTR_UNUSED)
-{
-	return "/tmp";
-}
-
 static const char *sieve_get_setting
 (void *context, const char *identifier)
 {
@@ -101,8 +96,8 @@ static const char *sieve_get_setting
   return plugin_settings_get(set, identifier);
 }
 
-static const struct sieve_environment sieve_env = {
-	sieve_get_homedir,
+static const struct sieve_callbacks sieve_callbacks = {
+	NULL,
 	sieve_get_setting
 };
 
@@ -113,22 +108,27 @@ static const struct sieve_environment sieve_env = {
 void managesieve_capabilities_dump(void)
 {
 	const struct plugin_settings *global_plugin_settings;
+	struct sieve_environment svenv;
 	struct sieve_instance *svinst;
 	const char *notify_cap;
-	
+
 	/* Read plugin settings */
 
 	global_plugin_settings = plugin_settings_read();
 
 	/* Initialize Sieve engine */
 
-	svinst = sieve_init(&sieve_env, (void *) global_plugin_settings, FALSE);
+	memset((void*)&svenv, 0, sizeof(svenv));
+	svenv.home_dir = "/tmp";
+
+	svinst = sieve_init
+		(&svenv, &sieve_callbacks, (void *) global_plugin_settings, FALSE);
 
 	/* Dump capabilities */
 
 	notify_cap = sieve_get_capabilities(svinst, "notify");
 
-	if ( notify_cap == NULL ) 
+	if ( notify_cap == NULL )
 		printf("SIEVE: %s\n", sieve_get_capabilities(svinst, NULL));
 	else
 		printf("SIEVE: %s, NOTIFY: %s\n", sieve_get_capabilities(svinst, NULL),

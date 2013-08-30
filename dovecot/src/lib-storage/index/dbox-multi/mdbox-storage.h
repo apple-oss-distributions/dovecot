@@ -16,7 +16,9 @@
 #define MDBOX_INDEX_HEADER_MIN_SIZE (sizeof(uint32_t))
 struct mdbox_index_header {
 	uint32_t map_uid_validity;
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	guid_128_t mailbox_guid;
+	uint8_t flags; /* enum dbox_index_header_flags */
+	uint8_t unused[3];
 };
 
 struct mdbox_storage {
@@ -27,7 +29,7 @@ struct mdbox_storage {
 	const char *storage_dir, *alt_storage_dir;
 	struct mdbox_map *map;
 
-	ARRAY_DEFINE(open_files, struct mdbox_file *);
+	ARRAY(struct mdbox_file *) open_files;
 	struct timeout *to_close_unused_files;
 
 	ARRAY_TYPE(uint32_t) move_to_alt_map_uids;
@@ -61,10 +63,6 @@ struct mdbox_mailbox {
 
 extern struct mail_vfuncs mdbox_mail_vfuncs;
 
-struct mailbox *
-mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		    const char *name, enum mailbox_flags flags);
-
 int mdbox_mail_open(struct dbox_mail *mail, uoff_t *offset_r,
 		    struct dbox_file **file_r);
 
@@ -73,10 +71,10 @@ int mdbox_mail_lookup(struct mdbox_mailbox *mbox, struct mail_index_view *view,
 		      uint32_t seq, uint32_t *map_uid_r);
 uint32_t dbox_get_uidvalidity_next(struct mailbox_list *list);
 int mdbox_read_header(struct mdbox_mailbox *mbox,
-		      struct mdbox_index_header *hdr);
+		      struct mdbox_index_header *hdr, bool *need_resize_r);
 void mdbox_update_header(struct mdbox_mailbox *mbox,
 			 struct mail_index_transaction *trans,
-			 const struct mailbox_update *update);
+			 const struct mailbox_update *update) ATTR_NULL(3);
 
 struct mail_save_context *
 mdbox_save_alloc(struct mailbox_transaction_context *_t);

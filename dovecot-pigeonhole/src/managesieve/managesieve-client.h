@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __MANAGESIEVE_CLIENT_H
@@ -35,12 +35,14 @@ extern struct managesieve_module_register managesieve_module_register;
 struct client {
 	struct client *prev, *next;
 
+	const char *session_id;
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
 	struct ostream *output;
 	struct timeout *to_idle, *to_idle_output;
 
+	pool_t pool;
 	struct mail_storage_service_user *service_user;
 	const struct managesieve_settings *set;
 
@@ -71,9 +73,10 @@ extern unsigned int managesieve_client_count;
 
 /* Create new client with specified input/output handles. socket specifies
    if the handle is a socket. */
-struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
-			     struct mail_storage_service_user *service_user,
-			     const struct managesieve_settings *set);
+struct client *client_create
+	(int fd_in, int fd_out, const char *session_id, struct mail_user *user,
+		struct mail_storage_service_user *service_user,
+		const struct managesieve_settings *set);
 void client_destroy(struct client *client, const char *reason);
 
 void client_dump_capability(struct client *client);
@@ -113,12 +116,13 @@ void client_send_storage_error(struct client *client,
 
 /* Read a number of arguments. Returns TRUE if everything was read or
    FALSE if either needs more data or error occurred. */
-bool client_read_args(struct client_command_context *cmd, unsigned int count,
-		      unsigned int flags, bool no_more, struct managesieve_arg **args_r);
+bool client_read_args
+	(struct client_command_context *cmd, unsigned int count, unsigned int flags,
+		bool no_more, const struct managesieve_arg **args_r);
 /* Reads a number of string arguments. ... is a list of pointers where to
    store the arguments. */
-bool client_read_string_args(struct client_command_context *cmd,
-			     unsigned int count, bool no_more, ...);
+bool client_read_string_args
+	(struct client_command_context *cmd, unsigned int count, bool no_more, ...);
 
 static inline bool client_read_no_args
 (struct client_command_context *cmd)

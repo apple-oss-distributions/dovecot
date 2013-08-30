@@ -10,8 +10,10 @@
 
 void usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s [skindex-path ...]\n",
+    fprintf(stderr, "Usage: %s [options] skindex-path [...]\n",
 	    prog);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -t    print each document's terms too (slow)\n");
     exit(1);
 }
 

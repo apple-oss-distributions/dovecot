@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static ARRAY_DEFINE(dumps, const struct doveadm_cmd_dump *);
+static ARRAY(const struct doveadm_cmd_dump *) dumps;
 
 void doveadm_dump_register(const struct doveadm_cmd_dump *dump)
 {
@@ -63,10 +63,13 @@ static void cmd_dump(int argc, char *argv[])
 
 	dump = type != NULL ? dump_find_name(type) : dump_find_test(argv[1]);
 	if (dump == NULL) {
-		if (type != NULL)
-			i_fatal("Unknown type: %s", type);
-		else
-			i_fatal("Can't autodetect file type: %s", argv[1]);
+		if (type != NULL) {
+			print_dump_types();
+			i_fatal_status(EX_USAGE, "Unknown type: %s", type);
+		} else {
+			i_fatal_status(EX_DATAERR,
+				"Can't autodetect file type: %s", argv[1]);
+		}
 	} else {
 		if (type == NULL)
 			printf("Detected file type: %s\n", dump->name);
@@ -83,8 +86,19 @@ static const struct doveadm_cmd_dump *dumps_builtin[] = {
 	&doveadm_cmd_dump_index,
 	&doveadm_cmd_dump_log,
 	&doveadm_cmd_dump_mailboxlog,
-	&doveadm_cmd_dump_thread
+	&doveadm_cmd_dump_thread,
+	&doveadm_cmd_dump_zlib
 };
+
+void print_dump_types(void)
+{
+	unsigned int i;
+
+	fprintf(stderr, "Available dump types: %s", dumps_builtin[0]->name);
+	for (i = 1; i < N_ELEMENTS(dumps_builtin); i++)
+		fprintf(stderr, " %s", dumps_builtin[i]->name);
+	fprintf(stderr, "\n");
+}
 
 void doveadm_dump_init(void)
 {

@@ -16,7 +16,15 @@ enum imap_parser_flags {
 	/* Don't check if atom contains invalid characters */
 	IMAP_PARSE_FLAG_ATOM_ALLCHARS	= 0x08,
 	/* Allow strings to contain CRLFs */
-	IMAP_PARSE_FLAG_MULTILINE_STR	= 0x10
+	IMAP_PARSE_FLAG_MULTILINE_STR	= 0x10,
+	/* Parse in list context; ')' parses as EOL */
+	IMAP_PARSE_FLAG_INSIDE_LIST	= 0x20,
+	/* Parse literal8 and set it as flag to imap_arg. */
+	IMAP_PARSE_FLAG_LITERAL8	= 0x40,
+	/* We're parsing IMAP server replies. Parse the "text" after
+	   OK/NO/BAD/BYE replies as a single atom. We assume that the initial
+	   "*" or tag was already skipped over. */
+	IMAP_PARSE_FLAG_SERVER_TEXT	= 0x80
 };
 
 struct imap_parser;
@@ -34,23 +42,21 @@ struct imap_parser;
    2 * max_line_size. */
 struct imap_parser *
 imap_parser_create(struct istream *input, struct ostream *output,
-		   size_t max_line_size);
-void imap_parser_destroy(struct imap_parser **parser);
+		   size_t max_line_size) ATTR_NULL(2);
+void imap_parser_ref(struct imap_parser *parser);
+void imap_parser_unref(struct imap_parser **parser);
 
 /* Reset the parser to initial state. */
 void imap_parser_reset(struct imap_parser *parser);
 
 /* Change parser's input and output streams */
 void imap_parser_set_streams(struct imap_parser *parser, struct istream *input,
-			     struct ostream *output);
+			     struct ostream *output) ATTR_NULL(3);
 
 /* Return the last error in parser. fatal is set to TRUE if there's no way to
    continue parsing, currently only if too large non-sync literal size was
    given. */
 const char *imap_parser_get_error(struct imap_parser *parser, bool *fatal);
-
-/* APPLE - catenate - was static */
-void imap_parser_open_list(struct imap_parser *parser);
 
 /* Read a number of arguments. This function doesn't call i_stream_read(), you
    need to do that. Returns number of arguments read (may be less than count
@@ -69,9 +75,6 @@ bool imap_parser_get_literal_size(struct imap_parser *parser, uoff_t *size_r);
    Calling this function causes the literal size to be replaced with the actual
    literal data when continuing argument parsing. */
 void imap_parser_read_last_literal(struct imap_parser *parser);
-
-/* APPLE - catenate */
-bool imap_parser_has_nonsync_literal(struct imap_parser *parser);
 
 /* just like imap_parser_read_args(), but assume \n at end of data in
    input stream. */

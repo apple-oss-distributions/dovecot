@@ -121,6 +121,25 @@ Dovecot supports reading a few fields from the <base filename>:
 A maildir filename with those fields would look something like:
 '1035478339.27041_118.foo.org,S=1000,W=1030:2,S'
 
+Usage of timestamps
+-------------------
+
+Timestamps of message files:
+
+ * 'mtime' is used as IMAP INTERNALDATE, RFC 3501 sec 2.3.3.
+   [http://www.faqs.org/rfcs/rfc3501.html], must never change, see sec.
+   2.3.1.1. 4)
+ * 'ctime' used as Dovecot's internal "save/copy date", unless the correct
+   value is found from 'dovecot.index.cache'. This is used only by external
+   commands, e.g. "doveadm expunge savedbefore".
+ * 'atime' not used
+
+Timestamps of 'cur' and 'new' directories:
+
+ * 'mtime' is used to detect changes of the mailbox and may force regeneration
+   of <index files> [IndexFiles.txt]
+ * 'atime' and 'ctime' not used
+
 Maildir and filesystems
 -----------------------
 
@@ -195,10 +214,19 @@ Various tips
    noatime,logbufs=8,logbsize=131072' (Source:
    http://www.htiweb.inf.br/benchmark/fsbench.htm)
 
+NFS
+---
+
+NFS v3 performance can be adversely affected by readdirplus, which causes the
+NFS server to stat() every file in a directory.  The solution under Linux is to
+make sure the NFS filesystem is mounted with the "nordirplus" option.
+
+ * http://www.dovecot.org/list/dovecot/2012-July/066939.html
+
 Directory Structure
 -------------------
 
-Dovecot uses Maildir++
+By default Dovecot uses Maildir++
 [http://www.inter7.com/courierimap/README.maildirquota.html] directory layout
 for organizing mailbox directories. This means that all the folders are
 directly inside '~/Maildir' directory:
@@ -210,10 +238,22 @@ directly inside '~/Maildir' directory:
  * '~/Maildir/.folder.subfolder/' is a subfolder of a folder (ie.
    "folder/subfolder")
 
-Most importantly this means that if your maildir folders exist in eg.
-'~/Maildir/folder' and '~/Maildir/folder/subfolder', Dovecot won't see them
-unless you rename them to Maildir++ layout. v1.1 supports them by adding
-':LAYOUT=fs' to <mail_location> [MailLocation.txt].
+You can also optionally use the "fs" layout by appending ':LAYOUT=fs' to
+<mail_location> [MailLocation.txt]. This makes the folder structure look like:
+
+ * '~/Maildir/new', '~/Maildir/cur' and '~/Maildir/tmp' directories contain the
+   messages for INBOX, just like with Maildir++.
+ * '~/Maildir/folder/' is a mailbox folder
+ * '~/Maildir/folder/subfolder/' is a subfolder of a folder
+
+Filesystem permissions
+----------------------
+
+See <SharedMailboxes.Permissions.txt> for how permissions are set for newly
+created files and directories.
+
+Since Dovecot v2.0 "Permissions for newly created mail files are no longer
+copied from dovecot-shared file", see <Upgrading.2.0.txt>.
 
 Issues with the specification
 -----------------------------
@@ -285,6 +325,24 @@ maildir is the step 1: Always create filenames that are guaranteed to be
 unique. Forget about the 2 second waits and such that the Qmail's man page
 talks about.
 
+Maildir and mail header metadata
+--------------------------------
+
+Unlike when using <mbox> [MailboxFormat.mbox.txt] as <mailbox format>
+[MailboxFormat.txt], where mail headers (for example 'Status', 'X-UID', etc.)
+are <used to determine and store meta-data> [MailboxFormat.mbox.txt], the mail
+headers within maildir files are (usually)*not* used for this purpose by
+dovecot; neither when mails are created/moved/etc. via IMAP nor when maildirs
+are placed (e.g. copied or moved in the filesystem) in a mail location (and
+then "imported" by dovecot).Therefore, it is (usually) *not* necessary, to
+strip any such mail headers at the MTA, MDA or LDA (as it is recommended with
+<mbox> [MailboxFormat.mbox.txt]).
+
+There is one exception, though, namely when 'pop3_reuse_xuidl=yes' (which is
+however rather deprecated):In this case 'X-UIDL' is used for the POP3 UIDLs.
+Therefore,*in this case, is recommended to strip the 'X-UIDL' mail headers
+_case-insensitively_ at the MTA, MDA or LDA*.
+
 Procmail Problems
 -----------------
 
@@ -309,4 +367,4 @@ References
  * Maildir++ [http://www.inter7.com/courierimap/README.maildirquota.html]
  * Wikipedia [http://en.wikipedia.org/wiki/Maildir]
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

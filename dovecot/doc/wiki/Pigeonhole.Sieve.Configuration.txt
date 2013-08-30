@@ -26,14 +26,19 @@ sieve = ~/.dovecot.sieve :
   active script in the 'sieve_dir' directory. Avoid placing the active Sieve
   script inside the 'sieve_dir' directory.
 
-sieve_global_path :
-  A path to a global sieve script file, which gets executed ONLY if user's
-  private Sieve script doesn't exist, e.g.'/var/lib/dovecot/default.sieve'.
-  Check the <multiscript section> [Pigeonhole.Sieve.Configuration.txt] for
-  instructions on running global Sieve scripts before and after the user's
-  personal script. Be sure to pre-compile the specified script manually using
-  the 'sievec' command line tool, as explained <here>
+sieve_default = (v0.3+) :
+  The location of the default personal sieve script file which gets executed
+  ONLY if user's private Sieve script does no exist,
+  e.g.'/var/lib/dovecot/default.sieve'. Check the <multiscript section>
+  [Pigeonhole.Sieve.Configuration.txt] for instructions on running global Sieve
+  scripts before and after the user's personal script. This is usually a global
+  script, so be sure to pre-compile the specified script manually in that case
+  using the 'sievec' command line tool, as explained <here>
   [Pigeonhole.Sieve.Usage.txt].
+
+sieve_global_path = :
+  The deprecated name for the 'sieve_default' setting (Pigeonhole v0.2 and
+  earlier).
 
 sieve_global_dir = :
   Directory for :global include scripts for the include extension
@@ -68,21 +73,39 @@ sieve_dir = ~/:
 sieve_extensions = :
   Which Sieve language extensions are available to users. By default, all
   supported extensions are available, except for deprecated extensions,
-  extensions that require explicit configuration or those that are still under
-  development. Some system administrators may want to disable certain Sieve
-  extensions or enable those that are not available by default. All supported
-  extensions are listed <here> [Pigeonhole.Sieve.txt]. Normally, all enabled
-  extensions must be listed for this setting, but starting with Sieve version
-  0.1.7, this setting can use '+' and '-' to specify differences relative to
-  the default. For example 'sieve_extensions = +imapflags' will enable the
-  deprecated imapflags extension
-  [http://tools.ietf.org/html/draft-melnikov-sieve-imapflags-03] in addition to
-  all extensions enabled by default.
+  extensions that add the ability to change messages, extensions that require
+  explicit configuration or extensions that are still under development. Some
+  system administrators may want to disable certain Sieve extensions or enable
+  those that are not available by default. All supported extensions are listed
+  <here> [Pigeonhole.Sieve.txt]. Normally, all enabled extensions must be
+  listed for this setting, but starting with Sieve version 0.1.7, this setting
+  can use '+' and '-' to specify differences relative to the default. For
+  example 'sieve_extensions = +imapflags' will enable the deprecated imapflags
+  extension [http://tools.ietf.org/html/draft-melnikov-sieve-imapflags-03] in
+  addition to all extensions enabled by default.
+
+sieve_global_extensions = (v0.3+) :
+  Which Sieve language extensions are ONLY avalable in global scripts. This can
+  be used to restrict the use of certain Sieve extensions to administrator
+  control, for instance when these extensions can cause security concerns. This
+  setting has higher precedence than the 'sieve_extensions' setting (above),
+  meaning that the extensions enabled with this setting are never available to
+  the user's personal script no matter what is specified for the
+  'sieve_extensions' setting. The syntax of this setting is similar to the
+  'sieve_extensions' setting, with the difference that extensions are enabled
+  or disabled for exclusive use in global scripts. Currently, no extensions are
+  marked as such by default.
 
 sieve_plugins = :
   The Pigeonhole Sieve interpreter can have plugins of its own. Using this
   setting, the used plugins can be specified. Check the <Sieve plugins page>
   [Pigeonhole.Sieve.Plugins.txt] for available plugins.
+
+sieve_user_log = :
+  The path to the file where the user log file is written. If not configured, a
+  default location is used. If the main user's personal Sieve (as configured
+  with 'sieve=') is a file, the logfile is set to '<filename>.log' by default.
+  If it is not a file, the default user log file is '~/.dovecot.sieve.log'.
 
 recipient_delimiter = +:
   The separator that is expected between the :user and :detail address parts 
@@ -115,6 +138,74 @@ plugin {
    sieve_global_dir = /var/lib/dovecot/sieve/global/
 }
 ---%<-------------------------------------------------------------------------
+
+Configurable Limits
+-------------------
+
+sieve_max_script_size = 1M :
+  The maximum size of a Sieve script. The compiler will refuse to compile any
+  script larger than this limit. If set to 0, no limit on the script size is
+  enforced.
+
+sieve_max_actions = 32 :
+  The maximum number of actions that can be performed during a single script
+  execution. If set to 0, no limit on the total number of actions is enforced.
+
+sieve_max_redirects = 4 :
+  The maximum number of redirect actions that can be performed during a single
+  script execution. The meaning of 0 differs based on your version. For
+  versions v0.3.0 and beyond this means that redirect is prohibited. For older
+  versions, however, this means that the number of redirects is /unlimited/, so
+  be careful.
+
+Script Locations
+----------------
+
+/(Pigeonhole v0.3.1+ only)/
+
+The location of Sieve scripts is not limited to the file system. The Sieve
+interpreter can be extended to retrieve Sieve scripts from other sources as
+well, such as a database. Currently, all settings that are used to obtain
+thelocation of a single Sieve script, such as 'sieve=', 'sieve_default=',
+'sieve_dir=' and 'sieve_global_dir=' accept the following extended syntax:
+
+---%<-------------------------------------------------------------------------
+location = [<type>:]path[;<option>[=<value>][;...]]
+---%<-------------------------------------------------------------------------
+
+The following script location types are implemented by default:
+
+file :
+  The location path is a file system path pointing to the script file or a
+  directory containing script files with names structured as
+  '<script-name>.sieve'.
+
+dict :
+  Dovecot dict lookup. The location path is a dict uri. Read
+  doc/script-location-dict.txt in the Pigeonhole source package for more
+  information and examples (/FIXME: make a wiki page for this/).
+
+If the type prefix is omitted, the script location type is 'file'.
+
+The following options are defined for all location types:
+
+name=<script-name> :
+  Set the name of the Sieve script that this location points to. If the name of
+  the Sieve script is not contained in the location path, this option is
+  required (e.g. for dict locations that must point to a particular script). If
+  the name of the script is contained in the location, the value of the name
+  option overrides the name retrieved from the location. If the Sieve
+  interpreter explicitly queries for a specific name (e.g. to include a script
+  from the 'sieve_dir=' location), this option has no effect.
+
+bindir=<dirpath> :
+  Points to the directory where the compiled binaries for this script location
+  are stored. If this option is omitted, the behavior depends on the location
+  type. For 'file' type locations, the binary is then stored in the same
+  directory as where the script file was found if possible. For 'dict' type
+  locations, the binary is not stored at all in that case. Don't specify the
+  same directory for different script locations, as this will result in
+  undefined behavior.
 
 Extension-specific Configuration
 --------------------------------
@@ -269,8 +360,12 @@ few important differences in the supported Sieve language features:
    enabled using the 'sieve_extensions' setting (as explained <above>
    [Pigeonhole.Sieve.Configuration.txt]). This is disabled by default.
  * The include extension [http://tools.ietf.org/html/draft-ietf-sieve-include]
-   now requires your script file names to end with ".sieve" :'include :personal
-   "myscript";' won't work unless you rename "myscript" to "myscript.sieve"
+   now requires your script /file/ names to end with ".sieve". This means that
+   'include :personal "myscript"' won't work unless your script file is called
+   "'myscript.sieve'" on disk. Also note that the "'.sieve'" extension has no
+   special meaning within the Sieve script; if you 'include "myscript.sieve"',
+   the Sieve interpreter will look for a script file called
+   'myscript.sieve.sieve' and not 'myscript.sieve'.
  * Be sure to use *UTF8* for the mailbox argument of the *fileinto* command.
    Older CMUSieve installations used modified UTF7 (as IMAP does) for the
    mailbox parameter. If not adjusted, the Pigeonhole Sieve plugin will use the
@@ -285,4 +380,4 @@ From Dovecot Sieve v0.1.x (Dovecot v1.2)
    compatibility, it is recommended to update the setting to the new name,
    since the <LMTP.txt> service also uses the 'recipient_delimiter' setting.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+(This file was created from the wiki on 2013-08-05 04:42)

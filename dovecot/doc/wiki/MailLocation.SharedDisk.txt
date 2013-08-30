@@ -62,4 +62,14 @@ mail_nfs_storage = yes
 
 These probably don't work perfectly.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Samba / CIFS
+------------
+
+Dovecot's temporary files may include a colon character ':' in their filename,
+which is not a permitted character when using cifs.Dovecot also renames the
+temporary files whilst holding a lock in them, which generates the error 'Text
+file is busy'.
+
+Cifs/smbfs is unlikely to work as a remote filesystem.
+
+(This file was created from the wiki on 2013-08-05 04:42)

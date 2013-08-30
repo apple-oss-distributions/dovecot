@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "seq-range-array.h"
@@ -62,8 +62,8 @@ store_parse_modifiers(struct imap_store_context *ctx,
 							  "Invalid modseq");
 				return FALSE;
 			}
-			client_enable(ctx->cmd->client,
-				      MAILBOX_FEATURE_CONDSTORE);
+			(void)client_enable(ctx->cmd->client,
+					    MAILBOX_FEATURE_CONDSTORE);
 		} else {
 			client_send_command_error(ctx->cmd,
 						  "Unknown STORE modifier");
@@ -173,7 +173,8 @@ bool cmd_store(struct client_command_context *cmd)
 	}
 
 	t = mailbox_transaction_begin(client->mailbox, flags);
-	search_ctx = mailbox_search_init(t, search_args, NULL);
+	search_ctx = mailbox_search_init(t, search_args, NULL,
+					 MAIL_FETCH_FLAGS, NULL);
 	mail_search_args_unref(&search_args);
 
 	i_array_init(&modified_set, 64);
@@ -183,14 +184,12 @@ bool cmd_store(struct client_command_context *cmd)
 						   &modified_set);
 	}
 
-	mail = mail_alloc(t, MAIL_FETCH_FLAGS, NULL);
-	while (mailbox_search_next(search_ctx, mail)) {
+	while (mailbox_search_next(search_ctx, &mail)) {
 		if (ctx.max_modseq < (uint64_t)-1) {
 			/* check early so there's less work for transaction
 			   commit if something has to be cancelled */
 			if (mail_get_modseq(mail) > ctx.max_modseq) {
-				seq_range_array_add(&modified_set, 0,
-						    mail->seq);
+				seq_range_array_add(&modified_set, mail->seq);
 				continue;
 			}
 		}
@@ -201,10 +200,9 @@ bool cmd_store(struct client_command_context *cmd)
 					     ctx.keywords);
 		}
 	}
-	mail_free(&mail);
 
 	if (ctx.keywords != NULL)
-		mailbox_keywords_unref(client->mailbox, &ctx.keywords);
+		mailbox_keywords_unref(&ctx.keywords);
 
 	ret = mailbox_search_deinit(&search_ctx);
 	if (ret < 0)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #ifndef __SIEVE_DUMP_H
@@ -25,7 +25,7 @@ struct sieve_dumptime_env {
 	/* Code position */
 	const struct sieve_operation *oprtn;
 	sieve_size_t offset;
-	
+
 	/* Output stream */
 	struct ostream *stream;
 };

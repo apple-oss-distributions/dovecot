@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Pigeonhole authors, see the included COPYING file
+/* Copyright (c) 2002-2013 Pigeonhole authors, see the included COPYING file
  */
 
 #include "lib.h"
@@ -17,24 +17,24 @@ int sieve_stringlist_read_all
 	const char * const **list_r)
 {
 	if ( strlist->read_all == NULL ) {
-		ARRAY_DEFINE(items, const char *);
+		ARRAY(const char *) items;
 		string_t *item;
 		int ret;
-	
+
 		sieve_stringlist_reset(strlist);
-	
+
 		p_array_init(&items, pool, 4);
-	
+
 		item = NULL;
 		while ( (ret=sieve_stringlist_next_item(strlist, &item)) > 0 ) {
 			const char *stritem = p_strdup(pool, str_c(item));
-		
+
 			array_append(&items, &stritem, 1);
 		}
-	
+
 		(void)array_append_space(&items);
 		*list_r = array_idx(&items, 0);
-	
+
 		return ( ret < 0 ? -1 : 1 );
 	}
 
@@ -57,7 +57,7 @@ int sieve_stringlist_get_length
 	}
 
 	return strlist->get_length(strlist);
-}		
+}
 
 /*
  * Single Stringlist
@@ -103,7 +103,7 @@ struct sieve_stringlist *sieve_single_stringlist_create_cstr
 {
 	string_t *str = t_str_new_const(cstr, strlen(cstr));
 
-	return sieve_single_stringlist_create(renv, str, count_empty);	
+	return sieve_single_stringlist_create(renv, str, count_empty);
 }
 
 /* Implementation */
@@ -118,7 +118,7 @@ static int sieve_single_stringlist_next_item
 		*str_r = NULL;
 		return 0;
 	}
-	
+
 	*str_r = strlist->value;
 	strlist->end = TRUE;
 	return 1;

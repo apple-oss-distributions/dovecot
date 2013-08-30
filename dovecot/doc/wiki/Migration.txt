@@ -8,6 +8,8 @@ This page contains generic information related to migrating from another IMAP
 or POP3 server to Dovecot. You should read this page, and then look at the
 server-specific instructions:
 
+ * <Migrating from any IMAP/POP3 server to Dovecot via dsync>
+   [Migration.Dsync.txt]
  * <UW-IMAP / UW-POP3> [Migration.UW.txt]
  * <Linuxconf / VIMAP> [Migration.Linuxconf.txt]
  * <Courier IMAP and POP3> [Migration.Courier.txt]
@@ -15,6 +17,7 @@ server-specific instructions:
  * <vm-pop3d> [Migration.Vm-pop3d.txt]
  * <teapop> [Migration.Teapop.txt]
  * <Binc IMAP> [Migration.BincIMAP.txt]
+ * <Gmail> [Migration.Gmail.txt]
 
 Dovecot is one of the easiest IMAP servers to migrate to because of its
 powerful configuration options. Dovecot can store email in both <mbox>
@@ -122,8 +125,8 @@ uploading them to Dovecot via IMAP.
 
 There are several different tools for this, for example UW-IMAP
 [http://www.washington.edu/imap/]'s mailutil, imapsync
-[http://freshmeat.net/projects/imapsync] and YippieMove
-[http://www.yippiemove.com].
+[http://freshmeat.net/projects/imapsync], YippieMove
+[http://www.yippiemove.com] and Larch [https://github.com/rgrove/larch].
 
 imapsync
 --------
@@ -143,4 +146,16 @@ passwords. Even if you do not, imapsync also supports logging in as an admin
 user that has the ability to copy message for sub users, and a variety of other
 authentication options.
 
-(This file was created from the wiki on 2012-03-15 16:40)
+Larch
+-----
+
+Here's an example of how to run Larch:
+
+---%<-------------------------------------------------------------------------
+larch --from imap://mail1.example.com --to imap://mail2.example.com
+---%<-------------------------------------------------------------------------
+
+When run it will ask you for usernames and passwords that will be used for
+logging into servers, but you can also specify them on the command line.
+
+(This file was created from the wiki on 2013-08-05 04:42)

@@ -1,8 +1,8 @@
-/* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "ostream.h"
 #include "llist.h"
 #include "master-service.h"
@@ -30,7 +30,7 @@ struct login_connection {
 
 struct login_host_request {
 	struct login_connection *conn;
-	char *line;
+	char *line, *username;
 };
 
 static struct login_connection *login_connections;
@@ -47,7 +47,8 @@ static void login_connection_input(struct login_connection *conn)
 		if (ret < 0) {
 			if (errno == EAGAIN)
 				return;
-			i_error("read(login connection) failed: %m");
+			if (errno != ECONNRESET)
+				i_error("read(login connection) failed: %m");
 		}
 		login_connection_deinit(&conn);
 		return;
@@ -67,32 +68,34 @@ login_connection_send_line(struct login_connection *conn, const char *line)
 	iov[0].iov_len = strlen(line);
 	iov[1].iov_base = "\n";
 	iov[1].iov_len = 1;
-	(void)o_stream_sendv(conn->output, iov, N_ELEMENTS(iov));
+	o_stream_nsendv(conn->output, iov, N_ELEMENTS(iov));
 }
 
-static void login_host_callback(const struct ip_addr *ip, void *context)
+static void
+login_host_callback(const struct ip_addr *ip, const char *errormsg,
+		    void *context)
 {
 	struct login_host_request *request = context;
 	struct director *dir = request->conn->dir;
 	const char *line;
 	unsigned int secs;
 
-	T_BEGIN {
-		if (ip != NULL) {
-			secs = dir->set->director_user_expire / 2;
-			line = t_strdup_printf("%s\thost=%s\tproxy_refresh=%u",
-					       request->line, net_ip2addr(ip),
-					       secs);
-		} else {
-			i_assert(strncmp(request->line, "OK\t", 3) == 0);
-			line = t_strconcat("FAIL\t",
-					   t_strcut(request->line + 3, '\t'),
-					   "\ttemp", NULL);
-		}
-		login_connection_send_line(request->conn, line);
-	} T_END;
+	if (ip != NULL) {
+		secs = dir->set->director_user_expire / 2;
+		line = t_strdup_printf("%s\thost=%s\tproxy_refresh=%u",
+				       request->line, net_ip2addr(ip), secs);
+	} else {
+		i_assert(strncmp(request->line, "OK\t", 3) == 0);
+
+		i_error("director: User %s host lookup failed: %s",
+			request->username, errormsg);
+		line = t_strconcat("FAIL\t", t_strcut(request->line + 3, '\t'),
+				   "\ttemp", NULL);
+	}
+	login_connection_send_line(request->conn, line);
 
 	login_connection_unref(&request->conn);
+	i_free(request->username);
 	i_free(request->line);
 	i_free(request);
 }
@@ -119,7 +122,7 @@ static void auth_input_line(const char *line, void *context)
 	}
 
 	/* OK <id> [<parameters>] */
-	args = t_strsplit(line_params, "\t");
+	args = t_strsplit_tab(line_params);
 	if (*args != NULL) {
 		/* we should always get here, but in case we don't just
 		   forward as-is and let login process handle the error. */
@@ -155,6 +158,7 @@ static void auth_input_line(const char *line, void *context)
 	request = i_new(struct login_host_request, 1);
 	request->conn = conn;
 	request->line = i_strdup(line);
+	request->username = i_strdup(username);
 
 	conn->refcount++;
 	director_request(conn->dir, username, login_host_callback, request);
@@ -172,6 +176,7 @@ login_connection_init(struct director *dir, int fd,
 	conn->auth = auth;
 	conn->dir = dir;
 	conn->output = o_stream_create_fd(conn->fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	conn->io = io_add(conn->fd, IO_READ, login_connection_input, conn);
 	conn->userdb = userdb;
 
@@ -192,7 +197,7 @@ void login_connection_deinit(struct login_connection **_conn)
 
 	DLLIST_REMOVE(&login_connections, conn);
 	io_remove(&conn->io);
-	o_stream_unref(&conn->output);
+	o_stream_destroy(&conn->output);
 	if (close(conn->fd) < 0)
 		i_error("close(login connection) failed: %m");
 	conn->fd = -1;

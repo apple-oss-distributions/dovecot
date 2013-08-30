@@ -251,7 +251,8 @@ int i_my_clock_gettime(int clk_id, struct timespec *tp);
 #endif
 
 #define ENOTFOUND(errno) \
-	((errno) == ENOENT || (errno) == ENOTDIR || (errno) == ELOOP)
+	((errno) == ENOENT || (errno) == ENOTDIR || \
+	 (errno) == ELOOP || (errno) == ENAMETOOLONG)
 
 #define ECANTLINK(errno) \
 	((errno) == EXDEV || (errno) == EMLINK || (errno) == EPERM)
@@ -274,6 +275,10 @@ int fdatasync(int);
 /* Try to keep IO operations at least this size */
 #ifndef IO_BLOCK_SIZE
 #  define IO_BLOCK_SIZE 8192
+#endif
+
+#if !defined(PIPE_BUF) && defined(_POSIX_PIPE_BUF)
+#  define PIPE_BUF (8 * _POSIX_PIPE_BUF) /* for HURD */
 #endif
 
 #endif

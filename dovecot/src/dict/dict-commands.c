@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -34,12 +34,12 @@ static int cmd_lookup(struct dict_connection *conn, const char *line)
 	if (ret > 0) {
 		reply = t_strdup_printf("%c%s\n",
 					DICT_PROTOCOL_REPLY_OK, value);
-		o_stream_send_str(conn->output, reply);
+		o_stream_nsend_str(conn->output, reply);
 	} else {
 		reply = t_strdup_printf("%c\n", ret == 0 ?
 					DICT_PROTOCOL_REPLY_NOTFOUND :
 					DICT_PROTOCOL_REPLY_FAIL);
-		o_stream_send_str(conn->output, reply);
+		o_stream_nsend_str(conn->output, reply);
 	}
 	return 0;
 }
@@ -53,9 +53,11 @@ static int cmd_iterate_flush(struct dict_connection *conn)
 	o_stream_cork(conn->output);
 	while (dict_iterate(conn->iter_ctx, &key, &value)) {
 		str_truncate(str, 0);
-		str_printfa(str, "%c%s\t%s\n", DICT_PROTOCOL_REPLY_OK,
-			    key, value);
-		o_stream_send(conn->output, str_data(str), str_len(str));
+		str_printfa(str, "%c%s\t", DICT_PROTOCOL_REPLY_OK, key);
+		if ((conn->iter_flags & DICT_ITERATE_FLAG_NO_VALUE) == 0)
+			str_append(str, value);
+		str_append_c(str, '\n');
+		o_stream_nsend(conn->output, str_data(str), str_len(str));
 
 		if (o_stream_get_buffer_used_size(conn->output) >
 		    DICT_OUTPUT_OPTIMAL_SIZE) {
@@ -75,7 +77,7 @@ static int cmd_iterate_flush(struct dict_connection *conn)
 	if (dict_iterate_deinit(&conn->iter_ctx) < 0)
 		str_append_c(str, DICT_PROTOCOL_REPLY_FAIL);
 	str_append_c(str, '\n');
-	o_stream_send(conn->output, str_data(str), str_len(str));
+	o_stream_nsend(conn->output, str_data(str), str_len(str));
 	o_stream_uncork(conn->output);
 	return 1;
 }
@@ -90,7 +92,7 @@ static int cmd_iterate(struct dict_connection *conn, const char *line)
 		return -1;
 	}
 
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	if (str_array_length(args) < 2 ||
 	    str_to_uint(args[0], &flags) < 0) {
 		i_error("dict client: ITERATE: broken input");
@@ -99,9 +101,10 @@ static int cmd_iterate(struct dict_connection *conn, const char *line)
 
 	/* <flags> <path> */
 	conn->iter_ctx = dict_iterate_init_multiple(conn->dict, args+1, flags);
+	conn->iter_flags = flags;
 
 	o_stream_set_flush_callback(conn->output, cmd_iterate_flush, conn);
-	cmd_iterate_flush(conn);
+	(void)cmd_iterate_flush(conn);
 	return 0;
 }
 
@@ -207,7 +210,7 @@ static int cmd_commit(struct dict_connection *conn, const char *line)
 		chr = DICT_PROTOCOL_REPLY_FAIL;
 		break;
 	}
-	o_stream_send_str(conn->output, t_strdup_printf("%c\n", chr));
+	o_stream_nsend_str(conn->output, t_strdup_printf("%c\n", chr));
 	dict_connection_transaction_array_remove(conn, trans);
 	return 0;
 }
@@ -231,7 +234,7 @@ static void cmd_commit_async_callback(int ret, void *context)
 	}
 	reply = t_strdup_printf("%c%c%u\n", DICT_PROTOCOL_REPLY_ASYNC_COMMIT,
 				chr, trans->id);
-	o_stream_send_str(trans->conn->output, reply);
+	o_stream_nsend_str(trans->conn->output, reply);
 
 	dict_connection_transaction_array_remove(trans->conn, trans);
 }
@@ -272,7 +275,7 @@ static int cmd_set(struct dict_connection *conn, const char *line)
 	const char *const *args;
 
 	/* <id> <key> <value> */
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	if (str_array_length(args) != 3) {
 		i_error("dict client: SET: broken input");
 		return -1;
@@ -291,7 +294,7 @@ static int cmd_unset(struct dict_connection *conn, const char *line)
 	const char *const *args;
 
 	/* <id> <key> */
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	if (str_array_length(args) != 2) {
 		i_error("dict client: UNSET: broken input");
 		return -1;
@@ -304,6 +307,25 @@ static int cmd_unset(struct dict_connection *conn, const char *line)
 	return 0;
 }
 
+static int cmd_append(struct dict_connection *conn, const char *line)
+{
+	struct dict_connection_transaction *trans;
+	const char *const *args;
+
+	/* <id> <key> <value> */
+	args = t_strsplit_tab(line);
+	if (str_array_length(args) != 3) {
+		i_error("dict client: APPEND: broken input");
+		return -1;
+	}
+
+	if (dict_connection_transaction_lookup_parse(conn, args[0], &trans) < 0)
+		return -1;
+
+        dict_append(trans->ctx, args[1], args[2]);
+	return 0;
+}
+
 static int cmd_atomic_inc(struct dict_connection *conn, const char *line)
 {
 	struct dict_connection_transaction *trans;
@@ -311,7 +333,7 @@ static int cmd_atomic_inc(struct dict_connection *conn, const char *line)
 	long long diff;
 
 	/* <id> <key> <diff> */
-	args = t_strsplit(line, "\t");
+	args = t_strsplit_tab(line);
 	if (str_array_length(args) != 3 ||
 	    str_to_llong(args[2], &diff) < 0) {
 		i_error("dict client: ATOMIC_INC: broken input");
@@ -334,6 +356,7 @@ static struct dict_client_cmd cmds[] = {
 	{ DICT_PROTOCOL_CMD_ROLLBACK, cmd_rollback },
 	{ DICT_PROTOCOL_CMD_SET, cmd_set },
 	{ DICT_PROTOCOL_CMD_UNSET, cmd_unset },
+	{ DICT_PROTOCOL_CMD_APPEND, cmd_append },
 	{ DICT_PROTOCOL_CMD_ATOMIC_INC, cmd_atomic_inc },
 
 	{ 0, NULL }

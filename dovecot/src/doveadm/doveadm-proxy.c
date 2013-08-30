@@ -1,4 +1,4 @@
-/* Copyright (c) 2011 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -47,7 +47,7 @@ static void cmd_proxy_list_callback(enum ipc_client_cmd_state state,
 	switch (state) {
 	case IPC_CLIENT_CMD_STATE_REPLY:
 		T_BEGIN {
-			const char *const *args = t_strsplit(data, "\t");
+			const char *const *args = t_strsplit_tab(data);
 			for (; *args != NULL; args++)
 				doveadm_print(*args);
 		} T_END;
@@ -68,15 +68,17 @@ static void cmd_proxy_list(int argc, char *argv[])
 	ctx = cmd_proxy_init(argc, argv, "a:", cmd_proxy_list);
 
 	doveadm_print_init(DOVEADM_PRINT_TYPE_TABLE);
-	doveadm_print_header_simple("username");
+	doveadm_print_header("username", "username", DOVEADM_PRINT_HEADER_FLAG_EXPAND);
 	doveadm_print_header("service", "proto", 0);
 	doveadm_print_header("src-ip", "src ip", 0);
 	doveadm_print_header("dest-ip", "dest ip", 0);
 	doveadm_print_header("dest-port", "port", 0);
 
+	io_loop_set_running(current_ioloop);
 	ipc_client_cmd(ctx->ipc, "proxy\t*\tLIST",
 		       cmd_proxy_list_callback, NULL);
-	io_loop_run(current_ioloop);
+	if (io_loop_is_running(current_ioloop))
+		io_loop_run(current_ioloop);
 	ipc_client_deinit(&ctx->ipc);
 }
 
